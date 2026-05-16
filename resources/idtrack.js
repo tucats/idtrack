@@ -213,7 +213,7 @@ async function submitLogin() {
 
         const user = await res.json();
         _credentials = creds;
-        _currentUser = { username: user.username, display_name: user.display_name };
+        _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
         sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
 
         document.getElementById('login-overlay').style.display = 'none';
@@ -405,6 +405,7 @@ async function selectIssue(id) {
         asnSel.value = issue.assignee || '';
 
         document.getElementById('detail-save-btn').style.display = 'none';
+        document.getElementById('detail-delete-btn').style.display = (_currentUser && _currentUser.is_admin) ? '' : 'none';
         _detailDirty = false;
 
         renderComments(comments);
@@ -476,11 +477,15 @@ function renderComments(comments) {
         el.innerHTML = '<p class="comments-empty">No comments yet.</p>';
         return;
     }
+    const trashBtn = (id) => (_currentUser && _currentUser.is_admin)
+        ? `<button class="btn-trash" onclick="confirmDeleteComment(${id}, event)" title="Delete comment">&#x1F5D1;</button>`
+        : '';
     el.innerHTML = comments.map(c => `
         <div class="comment-item">
             <div class="comment-header">
-                <span class="comment-author">${esc(c.author)}</span>
+                <span class="comment-author">${esc(displayName(c.author))}</span>
                 <span class="comment-date">${fmtDateTime(c.created_at)}</span>
+                ${trashBtn(c.id)}
             </div>
             <div class="comment-body">${esc(c.body)}</div>
         </div>
@@ -502,6 +507,31 @@ async function submitComment() {
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
     } catch (e) {
         if (e.message !== 'Unauthorized') alert('Failed to add comment: ' + e.message);
+    }
+}
+
+async function confirmDeleteIssue() {
+    if (!_currentId) return;
+    if (!confirm(`Delete Issue #${_currentId}? This cannot be undone.`)) return;
+    try {
+        await deleteIssue(_currentId);
+        _allIssues = _allIssues.filter(i => i.id !== _currentId);
+        closeDetail();
+        renderIssues(_allIssues);
+    } catch (e) {
+        if (e.message !== 'Unauthorized') alert('Failed to delete issue: ' + (e.message || 'unknown error'));
+    }
+}
+
+async function confirmDeleteComment(commentId, event) {
+    event.stopPropagation();
+    if (!confirm('Delete this comment? This cannot be undone.')) return;
+    try {
+        await apiDelete(`/api/issues/${_currentId}/comments/${commentId}`);
+        const { comments } = await fetchIssue(_currentId);
+        renderComments(comments);
+    } catch (e) {
+        if (e.message !== 'Unauthorized') alert('Failed to delete comment: ' + (e.message || 'unknown error'));
     }
 }
 

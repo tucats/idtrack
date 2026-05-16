@@ -13,13 +13,18 @@ type User struct {
 	PasswordHash string `json:"password_hash,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	LastLoginAt  string `json:"last_login_at,omitempty"`
+	IsAdmin      bool   `json:"is_admin"`
 }
 
-func AddUser(database *sql.DB, username, displayName, passwordHash string) error {
+func AddUser(database *sql.DB, username, displayName, passwordHash string, isAdmin bool) error {
+	adminInt := 0
+	if isAdmin {
+		adminInt = 1
+	}
 	_, err := database.Exec(
-		`INSERT INTO users (username, display_name, password_hash, created_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, password_hash=excluded.password_hash`,
-		username, displayName, passwordHash, time.Now().UTC().Format(time.RFC3339),
+		`INSERT INTO users (username, display_name, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, password_hash=excluded.password_hash, is_admin=excluded.is_admin`,
+		username, displayName, passwordHash, time.Now().UTC().Format(time.RFC3339), adminInt,
 	)
 	return err
 }
@@ -31,19 +36,21 @@ func DeleteUser(database *sql.DB, username string) error {
 
 func FindUser(database *sql.DB, username string) (*User, error) {
 	row := database.QueryRow(
-		`SELECT username, display_name, password_hash, created_at FROM users WHERE username = ?`, username,
+		`SELECT username, display_name, password_hash, created_at, last_login_at, is_admin FROM users WHERE username = ?`, username,
 	)
 	var u User
-	if err := row.Scan(&u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt); err != nil {
+	var adminInt int
+	if err := row.Scan(&u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt, &u.LastLoginAt, &adminInt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, err
 	}
+	u.IsAdmin = adminInt != 0
 	return &u, nil
 }
 
-func UpdateUser(database *sql.DB, username, displayName, passwordHash string) error {
+func UpdateUser(database *sql.DB, username, displayName, passwordHash string, isAdmin *bool) error {
 	u, err := FindUser(database, username)
 	if err != nil {
 		return err
@@ -61,6 +68,14 @@ func UpdateUser(database *sql.DB, username, displayName, passwordHash string) er
 	if passwordHash != "" {
 		setClauses = append(setClauses, "password_hash = ?")
 		args = append(args, passwordHash)
+	}
+	if isAdmin != nil {
+		adminInt := 0
+		if *isAdmin {
+			adminInt = 1
+		}
+		setClauses = append(setClauses, "is_admin = ?")
+		args = append(args, adminInt)
 	}
 	if len(setClauses) == 0 {
 		return nil
@@ -82,7 +97,7 @@ func RecordLogin(database *sql.DB, username string) error {
 }
 
 func ListUsers(database *sql.DB) ([]User, error) {
-	rows, err := database.Query(`SELECT username, display_name, last_login_at FROM users ORDER BY username`)
+	rows, err := database.Query(`SELECT username, display_name, last_login_at, is_admin FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,9 +106,11 @@ func ListUsers(database *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.Username, &u.DisplayName, &u.LastLoginAt); err != nil {
+		var adminInt int
+		if err := rows.Scan(&u.Username, &u.DisplayName, &u.LastLoginAt, &adminInt); err != nil {
 			return nil, err
 		}
+		u.IsAdmin = adminInt != 0
 		users = append(users, u)
 	}
 	if users == nil {

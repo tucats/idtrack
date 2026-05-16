@@ -48,6 +48,7 @@ func Start(database *sql.DB, port int, static fs.FS) error {
 	mux.Handle("PUT /api/issues/{id}", s.auth(http.HandlerFunc(s.handleUpdateIssue)))
 	mux.Handle("DELETE /api/issues/{id}", s.auth(http.HandlerFunc(s.handleDeleteIssue)))
 	mux.Handle("POST /api/issues/{id}/comments", s.auth(http.HandlerFunc(s.handleCreateComment)))
+	mux.Handle("DELETE /api/issues/{id}/comments/{cid}", s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
 	certData, err := fs.ReadFile(static, "resources/https-server.crt")
 	if err != nil {
@@ -163,9 +164,10 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	db.RecordLogin(s.database, user.Username)
 
-	jsonResponse(w, http.StatusOK, map[string]string{
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"username":     user.Username,
 		"display_name": user.DisplayName,
+		"is_admin":     user.IsAdmin,
 	})
 }
 
@@ -292,6 +294,10 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	id, ok := issueID(w, r)
 	if !ok {
 		return
@@ -330,6 +336,24 @@ func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"comment": comment})
+}
+
+func (s *srv) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	raw := r.PathValue("cid")
+	cid, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || cid <= 0 {
+		jsonError(w, "invalid comment id", http.StatusBadRequest)
+		return
+	}
+	if err := db.DeleteComment(s.database, cid); err != nil {
+		jsonError(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
