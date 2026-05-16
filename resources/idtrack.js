@@ -24,6 +24,7 @@ let _sortCol     = 'id';
 let _sortAsc     = false;
 let _statusFilter   = 'open';
 let _priorityFilter = 'all';
+let _projectFilter  = 'all';
 let _detailDirty = false;
 let _darkMode    = false;
 
@@ -266,10 +267,8 @@ function doLogout() {
 // UI — FILTERS & SORT
 // =====================================================================
 
-function setStatusFilter(val, btn) {
+function setStatusFilter(val) {
     _statusFilter = val;
-    document.querySelectorAll('.filter-btn[data-status]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
     renderIssues(_allIssues);
 }
 
@@ -277,6 +276,11 @@ function setPriorityFilter(val, btn) {
     _priorityFilter = val;
     document.querySelectorAll('.filter-btn[data-priority]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    renderIssues(_allIssues);
+}
+
+function setProjectFilter(val) {
+    _projectFilter = val;
     renderIssues(_allIssues);
 }
 
@@ -339,6 +343,7 @@ function filteredAndSorted(issues) {
             if (!wantOpen && issue.status !== 'Resolved') return false;
         }
         if (_priorityFilter !== 'all' && issue.priority !== _priorityFilter) return false;
+        if (_projectFilter !== 'all' && issue.project !== _projectFilter) return false;
         if (q) {
             const haystack = [issue.title, issue.description, issue.reporter, issue.assignee, issue.project, issue.component].join(' ').toLowerCase();
             if (!haystack.includes(q)) return false;
@@ -797,6 +802,20 @@ async function populateProjectDropdowns() {
         sel.innerHTML = options;
         sel.value = prev;
     });
+
+    populateProjectFilter();
+}
+
+function populateProjectFilter() {
+    const sel = document.getElementById('project-filter');
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = ['<option value="all">All…</option>']
+        .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
+        .join('');
+    sel.value = prev;
+    if (!sel.value) sel.value = 'all';
+    _projectFilter = sel.value;
 }
 
 function populateComponentDropdown(selectId, projectName, selectedComponent) {
