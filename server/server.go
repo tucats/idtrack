@@ -1,3 +1,6 @@
+// Package server implements the HTTPS web server and all HTTP handler functions
+// for idtrack. It exposes both the static single-page app (HTML/CSS/JS) and a
+// JSON REST API consumed by that app.
 package server
 
 import (
@@ -18,23 +21,40 @@ import (
 	"github.com/yuin/goldmark"
 )
 
+// contextKey is a private type used as the key when storing values in a
+// request context. Using a named type (rather than a raw string) prevents
+// accidental collisions with keys set by other packages that also use strings.
 type contextKey string
 
+// ctxUser is the specific key under which the authenticated *db.User is stored
+// in the request context by the auth middleware.
 const ctxUser contextKey = "user"
 
+// srv holds the shared dependencies that all handler methods need. Attaching
+// handlers as methods on a struct (rather than using global variables) keeps
+// the code easy to test and avoids package-level state.
 type srv struct {
 	database  *sql.DB
-	static    fs.FS
+	static    fs.FS   // embedded filesystem containing HTML/CSS/JS and TLS files
 	version   string
 	buildTime string
 }
 
+// Start wires up all routes, loads the TLS certificate, opens a TCP listener,
+// and begins serving HTTPS requests. It blocks until the server encounters a
+// fatal error. All routes are registered on a fresh http.ServeMux so there is
+// no shared global mux that could interfere with tests.
+//
+// Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
+// The mux dispatches based on both method and path, so registering
+// "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
 func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) error {
 	s := &srv{database: database, static: static, version: version, buildTime: buildTime}
 
 	mux := http.NewServeMux()
 
-	// Static asset routes
+	// Static asset routes — no authentication required for the browser to load
+	// the page and its assets.
 	mux.HandleFunc("GET /idtrack", s.serveHTML)
 	mux.HandleFunc("GET /assets/idtrack/idtrack.css", s.serveCSS)
 	mux.HandleFunc("GET /assets/idtrack/idtrack.js", s.serveJS)
@@ -44,10 +64,16 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) 
 	mux.HandleFunc("GET /api/version", s.handleVersion)
 	mux.HandleFunc("GET /manual", s.handleManual)
 
-	// Auth endpoint (uses Basic auth to validate, no separate middleware wrapping)
+	// Login validates credentials and records the login timestamp. It reads
+	// Basic Auth credentials directly rather than going through the auth
+	// middleware because the middleware would reject invalid credentials with
+	// 401 before we could return a descriptive error.
 	mux.HandleFunc("POST /api/login", s.handleLogin)
 
-	// Authenticated API endpoints
+	// Authenticated API endpoints are wrapped with s.auth(), which is a
+	// middleware function that validates Basic Auth on every request and stores
+	// the authenticated user in the request context. Handlers use currentUser()
+	// to retrieve that value.
 	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
 	mux.Handle("POST /api/users", s.auth(http.HandlerFunc(s.handleCreateUser)))
 	mux.Handle("PUT /api/users/{username}", s.auth(http.HandlerFunc(s.handleUpdateUser)))
@@ -66,6 +92,8 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) 
 	mux.Handle("POST /api/issues/{id}/comments", s.auth(http.HandlerFunc(s.handleCreateComment)))
 	mux.Handle("DELETE /api/issues/{id}/comments/{cid}", s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
+	// Read the TLS certificate and key from the embedded filesystem. Both
+	// files are compiled into the binary, so deployment is a single file copy.
 	certData, err := fs.ReadFile(static, "resources/https-server.crt")
 	if err != nil {
 		return fmt.Errorf("reading TLS cert: %w", err)
@@ -75,6 +103,8 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) 
 		return fmt.Errorf("reading TLS key: %w", err)
 	}
 
+	// X509KeyPair parses the PEM-encoded certificate and key into a struct
+	// that the TLS stack can use.
 	cert, err := tls.X509KeyPair(certData, keyData)
 	if err != nil {
 		return fmt.Errorf("loading TLS credentials: %w", err)
@@ -83,6 +113,9 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) 
 	tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
 	addr := fmt.Sprintf(":%d", port)
 
+	// Open a plain TCP listener first, then wrap it with TLS. This two-step
+	// approach (rather than http.ListenAndServeTLS) lets us get a nice error
+	// message if the port is already in use before we try to start serving.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
@@ -93,8 +126,14 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) 
 	return http.Serve(tlsLn, mux)
 }
 
-// auth is the Basic-auth middleware. It validates credentials on every request
-// and places the authenticated user in the request context.
+// auth is a middleware constructor. It returns a new http.Handler that:
+//  1. Reads Basic Auth credentials from the request.
+//  2. Looks up the user in the database and checks the password hash.
+//  3. On success, stores the *db.User in the request context and calls next.
+//  4. On failure, responds with 401 Unauthorized.
+//
+// The password stored in the database (and sent by the browser) is already a
+// SHA-256 hex hash — we compare hashes directly, never plaintext passwords.
 func (s *srv) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		username, hash, ok := r.BasicAuth()
@@ -109,11 +148,19 @@ func (s *srv) auth(next http.Handler) http.Handler {
 			return
 		}
 
+		// context.WithValue returns a new context derived from the request's
+		// context with the user embedded under the ctxUser key. We replace the
+		// request's context so the handler receives it via r.Context().
 		ctx := context.WithValue(r.Context(), ctxUser, user)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
+// currentUser retrieves the *db.User stored by the auth middleware from the
+// request context. It returns nil for unauthenticated requests (though in
+// practice only authenticated handlers call this). The type assertion
+// ".(type)" with a second "ok" return would panic without the comma-ok form;
+// using the two-value form here makes nil the safe zero value on failure.
 func currentUser(r *http.Request) *db.User {
 	u, _ := r.Context().Value(ctxUser).(*db.User)
 	return u
@@ -121,6 +168,9 @@ func currentUser(r *http.Request) *db.User {
 
 // ── Static file handlers ──────────────────────────────────────────────────────
 
+// serveRoot redirects bare "/" to the app page. Any other unrecognised path
+// returns 404 rather than silently serving the app, which avoids confusing the
+// browser when a sub-path is requested.
 func (s *srv) serveRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "" {
 		http.Redirect(w, r, "/idtrack", http.StatusFound)
@@ -129,6 +179,9 @@ func (s *srv) serveRoot(w http.ResponseWriter, r *http.Request) {
 	http.NotFound(w, r)
 }
 
+// serveHTML reads the single HTML file from the embedded filesystem and writes
+// it to the response. All three static handlers (HTML/CSS/JS) follow the same
+// pattern: read from embedded FS, set the correct Content-Type, write the bytes.
 func (s *srv) serveHTML(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.html")
 	if err != nil {
@@ -161,6 +214,8 @@ func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 
 // ── Version ───────────────────────────────────────────────────────────────────
 
+// handleVersion is a public (no-auth) endpoint that returns the server's
+// version string and build timestamp. Useful for health checks and debugging.
 func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"version":    s.version,
@@ -170,6 +225,10 @@ func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
 
 // ── Auth endpoint ─────────────────────────────────────────────────────────────
 
+// handleLogin validates Basic Auth credentials, records the login timestamp,
+// and returns the user's display name and admin flag so the browser can
+// personalise the UI. It is the only endpoint that calls db.RecordLogin — we
+// do not update last_login_at on every authenticated request to keep overhead low.
 func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 	username, hash, ok := r.BasicAuth()
 	if !ok {
@@ -196,8 +255,11 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ── Users ─────────────────────────────────────────────────────────────────────
+// ── Projects ──────────────────────────────────────────────────────────────────
 
+// handleListProjects returns all projects with their component lists. Available
+// to all authenticated users (not admin-only) because the frontend needs the
+// full project tree to populate dropdowns for every user.
 func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	projects, err := db.ListProjects(s.database)
 	if err != nil {
@@ -207,6 +269,8 @@ func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"projects": projects})
 }
 
+// handleCreateProject creates a new project. Admin-only because project
+// structure is considered global configuration that ordinary users shouldn't change.
 func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -230,6 +294,9 @@ func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
+// handleCreateComponent adds a named component to an existing project.
+// The project name is extracted from the URL path using r.PathValue(), which
+// is Go 1.22's built-in way to access named path parameters (e.g. {project}).
 func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -254,6 +321,9 @@ func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
+// handleDeleteProject removes a project and all its components. The db layer
+// returns a 409-worthy error when issues still reference the project, which we
+// surface to the client so the user knows which issues to reassign first.
 func (s *srv) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -267,6 +337,8 @@ func (s *srv) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleDeleteComponent removes a single component from a project. Returns 409
+// when issues still reference the project/component combination.
 func (s *srv) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -281,6 +353,10 @@ func (s *srv) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+// handleCreateUser creates a new user account. Admin-only. Returns 409 Conflict
+// if the username is already taken (unlike the CLI "--add" which upserts).
 func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -289,7 +365,7 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Username     string `json:"username"`
 		DisplayName  string `json:"display_name"`
-		PasswordHash string `json:"password_hash"`
+		PasswordHash string `json:"password_hash"` // pre-hashed by the browser
 		IsAdmin      bool   `json:"is_admin"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -305,6 +381,8 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "password is required", http.StatusBadRequest)
 		return
 	}
+	// Prevent duplicate usernames via the API (the DB layer's upsert is only
+	// used by the CLI; the API enforces strict create semantics).
 	existing, err := db.FindUser(s.database, body.Username)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
@@ -316,7 +394,7 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 	displayName := strings.TrimSpace(body.DisplayName)
 	if displayName == "" {
-		displayName = body.Username
+		displayName = body.Username // default display name to login name
 	}
 	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, body.IsAdmin); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
@@ -325,6 +403,10 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
+// handleUpdateUser modifies an existing user. Admin-only. The is_admin flag is
+// always passed through even if the client didn't intend to change it, because
+// the JSON body always includes a zero-value bool for unset fields. This is
+// intentional — the admin UI always sends the current value.
 func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -348,6 +430,8 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleDeleteUser removes a user account. Admin-only. An admin cannot delete
+// their own account to prevent accidentally locking everyone out.
 func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -365,6 +449,9 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
+// handleListUsers returns all users. Available to all authenticated users (not
+// admin-only) because the frontend needs the user list to populate assignee
+// dropdowns and resolve display names for all logged-in users.
 func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := db.ListUsers(s.database)
 	if err != nil {
@@ -376,6 +463,9 @@ func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 // ── Issues list / create ──────────────────────────────────────────────────────
 
+// handleListIssues reads optional query parameters and delegates filtering and
+// sorting to db.ListIssues. All filtering is done in SQL rather than in Go to
+// keep memory usage low for large issue lists.
 func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	issues, err := db.ListIssues(
@@ -392,10 +482,12 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"issues": issues,
-		"total":  len(issues),
+		"total":  len(issues), // included so the client can show a count without iterating
 	})
 }
 
+// handleCreateIssue creates a new issue. The reporter is always set to the
+// authenticated user's username — clients cannot spoof the reporter field.
 func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string `json:"title"`
@@ -425,10 +517,13 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 
 // ── Single issue: get / update / delete ───────────────────────────────────────
 
+// handleGetIssue returns a single issue together with all of its comments in
+// one response, so the frontend can display the full detail view without a
+// second round-trip.
 func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
-		return
+		return // issueID already wrote the error response
 	}
 
 	issue, err := db.GetIssue(s.database, id)
@@ -453,6 +548,9 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleUpdateIssue replaces all editable fields of an issue. All fields must
+// be sent in the request body — this is a full replacement (PUT semantics), not
+// a partial update (PATCH semantics).
 func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -489,6 +587,8 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})
 }
 
+// handleDeleteIssue permanently removes an issue and all its comments.
+// Admin-only because deletions are irreversible.
 func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -507,6 +607,8 @@ func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 
 // ── Comments ──────────────────────────────────────────────────────────────────
 
+// handleCreateComment adds a comment to an existing issue. The author is always
+// set to the authenticated user — clients cannot post as someone else.
 func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -534,6 +636,8 @@ func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"comment": comment})
 }
 
+// handleDeleteComment removes a single comment by its ID. Admin-only.
+// The comment ID (cid) is a separate path parameter from the issue ID (id).
 func (s *srv) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -554,6 +658,10 @@ func (s *srv) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 
 // ── Manual ────────────────────────────────────────────────────────────────────
 
+// handleManual renders MANUAL.md from the embedded filesystem as a styled HTML
+// page. It uses the goldmark library to convert Markdown to HTML, then wraps
+// the result in a minimal HTML document with inline CSS for readability.
+// Dark mode is supported via the CSS prefers-color-scheme media query.
 func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 	src, err := fs.ReadFile(s.static, "resources/MANUAL.md")
 	if err != nil {
@@ -561,6 +669,8 @@ func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// goldmark.Convert renders the Markdown source into HTML, writing the
+	// output into the bytes.Buffer. A bytes.Buffer satisfies io.Writer.
 	var body bytes.Buffer
 	if err := goldmark.Convert(src, &body); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
@@ -610,6 +720,10 @@ func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// issueID parses the {id} path parameter from the request URL. It writes a
+// 400 Bad Request response and returns (0, false) if the value is missing,
+// non-numeric, or not a positive integer. Callers should return immediately
+// when ok is false — the error response has already been sent.
 func issueID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := r.PathValue("id")
 	id, err := strconv.ParseInt(raw, 10, 64)
@@ -620,12 +734,17 @@ func issueID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
+// jsonResponse sets the Content-Type header, writes the HTTP status code, and
+// encodes v as JSON into the response body. All successful API responses go
+// through this helper to ensure consistent formatting.
 func jsonResponse(w http.ResponseWriter, code int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
+	w.WriteHeader(code) // must be called after setting headers and before writing the body
 	json.NewEncoder(w).Encode(v)
 }
 
+// jsonError sends a JSON body of the form {"error": "message"} with the given
+// HTTP status code. All error responses go through this helper.
 func jsonError(w http.ResponseWriter, msg string, code int) {
 	jsonResponse(w, code, map[string]string{"error": msg})
 }
