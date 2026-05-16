@@ -97,6 +97,71 @@
   </div>
 </div>
 
+<!-- ==================== ADD PROJECT OVERLAY (admin) ==================== -->
+<div id="add-project-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-project-overlay',hideAddProject)">
+  <div class="sheet manage-projects-sheet">
+    <h3>Add Project</h3>
+    <div class="form-group">
+      <label for="ap-name">Project Name <span class="required">*</span></label>
+      <input id="ap-name" type="text" placeholder="e.g. Backend" maxlength="100"
+             onkeydown="if(event.key==='Enter') submitAddProject()">
+    </div>
+    <div id="ap-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="ap-submit-btn" class="btn btn-primary" onclick="submitAddProject()">Add Project</button>
+      <button class="btn btn-secondary" onclick="hideAddProject()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== ADD COMPONENT OVERLAY (admin) ==================== -->
+<div id="add-component-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-component-overlay',hideAddComponent)">
+  <div class="sheet manage-projects-sheet">
+    <h3>Add Component</h3>
+    <div class="form-group">
+      <label for="ac-project">Project <span class="required">*</span></label>
+      <select id="ac-project">
+        <option value="">Choose project…</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="ac-name">Component Name <span class="required">*</span></label>
+      <input id="ac-name" type="text" placeholder="e.g. API" maxlength="100"
+             onkeydown="if(event.key==='Enter') submitAddComponent()">
+    </div>
+    <div id="ac-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="ac-submit-btn" class="btn btn-primary" onclick="submitAddComponent()">Add Component</button>
+      <button class="btn btn-secondary" onclick="hideAddComponent()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== MANAGE PROJECTS OVERLAY (admin) ==================== -->
+<div id="manage-projects-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'manage-projects-overlay',hideManageProjects)">
+  <div class="sheet manage-projects-sheet">
+    <h3>Manage Projects</h3>
+    <p class="manage-projects-intro">Select a project and component to delete. Choose <em>All components</em> to delete the entire project.</p>
+    <div class="form-group">
+      <label for="mp-project">Project</label>
+      <select id="mp-project" onchange="onMpProjectChange()">
+        <option value="">Choose project…</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="mp-component">Component</label>
+      <select id="mp-component" disabled>
+        <option value="">Choose component…</option>
+      </select>
+    </div>
+    <div id="mp-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="mp-delete-btn" class="btn btn-danger" onclick="confirmDeleteProjectOrComponent()">Delete</button>
+      <button class="btn btn-secondary" onclick="hideManageProjects()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== MAIN APP ==================== -->
 <div id="app" style="display:none">
 
@@ -128,6 +193,9 @@
         <button class="btn btn-ghost btn-sm hamburger-btn" onclick="toggleMenu(event)" title="Menu" aria-label="Menu">&#9776;</button>
         <div id="app-menu" class="app-menu" style="display:none">
           <button class="menu-item" onclick="openSettings()">Settings</button>
+          <button id="menu-add-project" class="menu-item" onclick="openAddProject()" style="display:none">Add Project</button>
+          <button id="menu-add-component" class="menu-item" onclick="openAddComponent()" style="display:none">Add Component</button>
+          <button id="menu-manage-projects" class="menu-item" onclick="openManageProjects()" style="display:none">Delete Project/Component</button>
           <button class="menu-item menu-item-danger" onclick="doLogout()">Sign out</button>
         </div>
       </div>

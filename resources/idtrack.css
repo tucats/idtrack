@@ -556,7 +556,21 @@ html, body {
 
 /* ==================== SETTINGS OVERLAY ==================== */
 
-.settings-sheet { max-width: 380px; }
+.settings-sheet         { max-width: 380px; }
+.manage-projects-sheet  { max-width: 420px; }
+
+.manage-projects-sheet h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: .5rem;
+  color: var(--text);
+}
+.manage-projects-intro {
+  font-size: .875rem;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+  line-height: 1.5;
+}
 
 .settings-sheet h3 {
   font-size: 1.1rem;
