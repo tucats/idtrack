@@ -1,0 +1,122 @@
+#!/bin/bash
+# Build script for idtrack — injects version number and optionally increments it.
+
+BUILDVERFILE=tools/buildvers.txt
+GO="go"
+GOARCH=`go env GOARCH`
+GOOS=`go env GOOS`
+RACE=""
+OTHER=""
+VERBOSE=""
+ALL=""
+BIN=""
+DOINCREMENT=""
+
+BUILDVER=$(cat $BUILDVERFILE)
+
+while (( $# )); do
+    case "$1" in
+    --bin)
+            BIN="-bin"
+            ;;
+    -v|--verbose)
+            VERBOSE="-v"
+            ;;
+    --all)
+            ALL="--all"
+            ;;
+    -b|--build)
+            shift
+            OTHER="$1"
+            ;;
+    -r)
+            RACE="-race"
+            ;;
+    -a|--apple|--arm)
+            GOARCH=arm64
+            GOOS=darwin
+            ;;
+    -l|--linux)
+            GOARCH=amd64
+            GOOS=linux
+            ;;
+    -w|--windows)
+            GOARCH=amd64
+            GOOS=windows
+            ;;
+    -i|--increment)
+            DOINCREMENT="-i"
+            ;;
+    -h|--help)
+            echo "Builds the idtrack application."
+            echo ""
+            echo "Usage: build [options]"
+            echo ""
+            echo "Options:"
+            echo "   --all                     Build all platforms"
+            echo "   --apple, -a               Build for Apple Silicon (darwin arm64)"
+            echo "   --bin                     Copy binary to ~/bin"
+            echo "   --build, -b      <flags>  Pass flags to go build"
+            echo "   --increment, -i           Increment the build number"
+            echo "   --linux, -l               Build for Linux (linux amd64)"
+            echo "   --verbose, -v             Show the go build command"
+            echo "   --windows, -w             Build for Windows (windows amd64)"
+            exit 0
+            ;;
+    esac
+    shift
+done
+
+if [[ ! -a $BUILDVERFILE ]]; then
+   echo "Not in a build directory (missing $BUILDVERFILE)"
+   exit 1
+fi
+
+if [ "$DOINCREMENT" == "-i" ]; then
+      BASE=$(echo $BUILDVER | cut -f1 -d- )
+      BUILD=$(echo $BUILDVER | cut -f2 -d- )
+      BUILD=$(expr $BUILD + 1 )
+      BUILDVER=$BASE-$BUILD
+      echo $BUILDVER >$BUILDVERFILE
+      BUILDVER=$(cat $BUILDVERFILE)
+fi
+
+export PATH=/usr/local/go/bin:$PATH
+BUILDTIME=$(date -u +"%Y%m%d%H%M%S")
+FLAGS="-X main.BuildVersion=$BUILDVER -X main.BuildTime=$BUILDTIME"
+
+if [ "$ALL" == "--all" ]; then
+   mkdir -p builds/linux/x86
+   mkdir -p builds/linux/arm64
+   mkdir -p builds/macos/x86
+   mkdir -p builds/macos/applesilicon
+   mkdir -p builds/windows/x64
+   mkdir -p builds/windows/arm64
+
+   echo Linux x86...
+   GOARCH=amd64 GOOS=linux   $GO build -ldflags "$FLAGS" -o builds/linux/x86/idtrack       $RACE $OTHER
+   echo Linux arm64...
+   GOARCH=arm64 GOOS=linux   $GO build -ldflags "$FLAGS" -o builds/linux/arm64/idtrack      $RACE $OTHER
+   echo Mac x86...
+   GOARCH=amd64 GOOS=darwin  $GO build -ldflags "$FLAGS" -o builds/macos/x86/idtrack        $RACE $OTHER
+   echo Mac Apple Silicon...
+   GOARCH=arm64 GOOS=darwin  $GO build -ldflags "$FLAGS" -o builds/macos/applesilicon/idtrack $RACE $OTHER
+   echo Windows x86...
+   GOARCH=amd64 GOOS=windows $GO build -ldflags "$FLAGS" -o builds/windows/x64/idtrack.exe  $RACE $OTHER
+   echo Windows arm64...
+   GOARCH=arm64 GOOS=windows $GO build -ldflags "$FLAGS" -o builds/windows/arm64/idtrack.exe $RACE $OTHER
+   exit 0
+fi
+
+echo "Build idtrack $BUILDVER on $GOOS/$GOARCH"
+
+if [ "$VERBOSE" == "-v" ]; then
+   echo GOARCH=$GOARCH GOOS=$GOOS $GO build -ldflags "$FLAGS" $RACE $OTHER
+fi
+
+GOARCH=$GOARCH GOOS=$GOOS $GO build -ldflags "$FLAGS" $RACE $OTHER
+
+if [ "$BIN" == "-bin" ]; then
+   echo "Updating ~/bin copy"
+   cp idtrack ~/bin/
+fi

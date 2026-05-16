@@ -97,6 +97,22 @@
   </div>
 </div>
 
+<!-- ==================== ABOUT OVERLAY ==================== -->
+<div id="about-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'about-overlay',hideAbout)">
+  <div class="sheet about-sheet">
+    <div class="about-logo">idtrack</div>
+    <p class="about-subtitle">Issue Tracker</p>
+    <div class="about-version" id="about-version">version —</div>
+    <div class="about-build" id="about-build"></div>
+    <div class="about-links">
+      <a href="https://github.com/tucats/idtrack" target="_blank" rel="noopener">github.com/tucats/idtrack</a>
+    </div>
+    <div class="button-row" style="justify-content:center;margin-top:1.5rem">
+      <button class="btn btn-primary" onclick="hideAbout()">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== ADD USER OVERLAY (admin) ==================== -->
 <div id="add-user-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-user-overlay',hideAddUser)">
   <div class="sheet user-admin-sheet">
@@ -270,6 +286,7 @@
         <button class="btn btn-ghost btn-sm hamburger-btn" onclick="toggleMenu(event)" title="Menu" aria-label="Menu">&#9776;</button>
         <div id="app-menu" class="app-menu" style="display:none">
           <button class="menu-item" onclick="openSettings()">Settings</button>
+          <button class="menu-item" onclick="openAbout()">About</button>
           <button id="menu-add-user" class="menu-item" onclick="openAddUser()" style="display:none">Add User</button>
           <button id="menu-edit-user" class="menu-item" onclick="openEditUser()" style="display:none">Edit User</button>
           <button id="menu-add-project" class="menu-item" onclick="openAddProject()" style="display:none">Add Project</button>

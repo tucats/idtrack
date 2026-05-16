@@ -557,10 +557,42 @@ html, body {
 /* ==================== SETTINGS OVERLAY ==================== */
 
 .settings-sheet         { max-width: 380px; }
+.about-sheet            { max-width: 360px; text-align: center; }
 .manage-projects-sheet  { max-width: 420px; }
 .user-admin-sheet       { max-width: 480px; }
 
 .user-admin-sheet h3,
+.about-logo {
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--primary);
+  letter-spacing: -.03em;
+  margin-bottom: .2rem;
+}
+.about-subtitle {
+  font-size: .9rem;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+}
+.about-version {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: .3rem;
+}
+.about-build {
+  font-size: .8rem;
+  color: var(--text-light);
+  margin-bottom: 1.25rem;
+  min-height: 1rem;
+}
+.about-links a {
+  color: var(--primary);
+  text-decoration: none;
+  font-size: .9rem;
+}
+.about-links a:hover { text-decoration: underline; }
+
 .manage-projects-sheet h3 {
   font-size: 1.1rem;
   font-weight: 700;

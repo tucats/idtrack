@@ -21,12 +21,14 @@ type contextKey string
 const ctxUser contextKey = "user"
 
 type srv struct {
-	database *sql.DB
-	static   fs.FS
+	database  *sql.DB
+	static    fs.FS
+	version   string
+	buildTime string
 }
 
-func Start(database *sql.DB, port int, static fs.FS) error {
-	s := &srv{database: database, static: static}
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) error {
+	s := &srv{database: database, static: static, version: version, buildTime: buildTime}
 
 	mux := http.NewServeMux()
 
@@ -35,6 +37,9 @@ func Start(database *sql.DB, port int, static fs.FS) error {
 	mux.HandleFunc("GET /assets/idtrack/idtrack.css", s.serveCSS)
 	mux.HandleFunc("GET /assets/idtrack/idtrack.js", s.serveJS)
 	mux.HandleFunc("GET /", s.serveRoot)
+
+	// Public informational endpoint — no auth required
+	mux.HandleFunc("GET /api/version", s.handleVersion)
 
 	// Auth endpoint (uses Basic auth to validate, no separate middleware wrapping)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
@@ -149,6 +154,15 @@ func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Write(data)
+}
+
+// ── Version ───────────────────────────────────────────────────────────────────
+
+func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]string{
+		"version":    s.version,
+		"build_time": s.buildTime,
+	})
 }
 
 // ── Auth endpoint ─────────────────────────────────────────────────────────────
