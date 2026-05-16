@@ -1,24 +1,21 @@
 'use strict';
 
 // =====================================================================
-// CONFIGURATION & CONSTANTS
+// CONSTANTS
 // =====================================================================
 
-const SETUP_KEY   = 'idtrack_setup';    // localStorage: { user, pass, dsn }
-const SESSION_KEY = 'idtrack_session';  // sessionStorage: { username, display_name }
-const TOKEN_KEY   = 'idtrack_token';    // localStorage: ego bearer token (persists across sessions)
-const PREFS_KEY   = 'idtrack_prefs';    // localStorage: { darkMode: bool }
-const APP_VERSION = '1.0';
+const SESSION_KEY = 'idtrack_session';  // sessionStorage: { user, creds }
+const PREFS_KEY   = 'idtrack_prefs';   // localStorage:   { darkMode: bool }
+const APP_VERSION = '2.0';
 
 // =====================================================================
 // STATE
 // =====================================================================
 
-let _token       = null;   // Ego bearer token for backend calls
-let _setup       = null;   // { user, pass, dsn } — service account config
-let _currentUser = null;   // { username, display_name } — logged-in idtrack user
-let _allIssues   = [];     // master list loaded from server
-let _currentId   = null;   // currently displayed issue id
+let _credentials = null;   // 'Basic base64(username:sha256hash)'
+let _currentUser = null;   // { username, display_name }
+let _allIssues   = [];
+let _currentId   = null;
 let _sortCol     = 'id';
 let _sortAsc     = false;
 let _statusFilter   = 'open';
@@ -34,11 +31,6 @@ function esc(s) {
     return String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;');
-}
-
-function sqlStr(s) {
-    // Escape a value for embedding in a SQL string literal.
-    return String(s == null ? '' : s).replace(/'/g, "''");
 }
 
 function fmtDate(iso) {
@@ -58,10 +50,8 @@ function fmtDateTime(iso) {
     } catch { return iso; }
 }
 
-function now() { return new Date().toISOString(); }
-
 async function sha256(text) {
-    const buf  = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
 }
 
@@ -81,304 +71,113 @@ function statusBadge(s) {
 
 async function apiFetch(url, options = {}) {
     if (!options.headers) options.headers = {};
-    if (_token) options.headers['Authorization'] = 'Bearer ' + _token;
+    if (_credentials) options.headers['Authorization'] = _credentials;
 
     const res = await fetch(url, options);
 
-    if (res.status === 401 || res.status === 403) {
-        _token = null;
-        localStorage.removeItem(TOKEN_KEY);
-        showSetup('Session expired. Please re-enter your credentials.');
+    if (res.status === 401) {
+        _currentUser = null;
+        _credentials = null;
+        sessionStorage.removeItem(SESSION_KEY);
+        showLogin('Session expired. Please sign in again.');
         throw new Error('Unauthorized');
     }
     return res;
 }
 
-// Execute one or more SQL statements against the idtrack DSN.
-// Returns { rows, count } for SELECT, { count } for DML.
-async function apiSql(statements) {
-    const dsn = _setup && _setup.dsn ? _setup.dsn : 'idtrack';
-    const url  = `/dsns/${encodeURIComponent(dsn)}/tables/@sql`;
-    const body = Array.isArray(statements) ? statements : [statements];
+async function apiGet(url) {
+    const res = await apiFetch(url);
+    if (!res.ok) {
+        let msg = `Error ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
+        throw new Error(msg);
+    }
+    return res.json();
+}
 
+async function apiPost(url, body) {
+    const res = await apiFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+        let msg = `Error ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
+        throw new Error(msg);
+    }
+    return res.json();
+}
+
+async function apiPut(url, body) {
     const res = await apiFetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
-
     if (!res.ok) {
-        let msg = `SQL error (${res.status})`;
-        try { const d = await res.json(); msg = d.msg || msg; } catch {}
+        let msg = `Error ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
         throw new Error(msg);
     }
-
-    const ct = res.headers.get('Content-Type') || '';
-    if (ct.includes('rows')) {
-        return await res.json();   // { rows: [...], count: N }
-    }
-    // rowcount response
-    try { return await res.json(); } catch { return { count: 0 }; }
+    return res.json();
 }
 
-// Log into Ego and store the bearer token.
-async function egoLogin(user, pass) {
-    const res = await fetch('/services/admin/logon', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: user, password: pass, source: 'idtrack' }),
-    });
+async function apiDelete(url) {
+    const res = await apiFetch(url, { method: 'DELETE' });
     if (!res.ok) {
-        let msg = `Login failed (${res.status})`;
-        try { const d = await res.json(); msg = d.msg || msg; } catch {}
+        let msg = `Error ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
         throw new Error(msg);
     }
-    const data = await res.json();
-    _token = data.token || (data.data && data.data.token);
-    if (!_token) throw new Error('No token in response');
-    localStorage.setItem(TOKEN_KEY, _token);
-    return data;
+    return res.json();
 }
 
 // =====================================================================
-// DATABASE INITIALIZATION
+// DOMAIN CALLS
 // =====================================================================
 
-async function initTables() {
-    await apiSql([
-        `CREATE TABLE IF NOT EXISTS idtrack_users (
-            username     TEXT PRIMARY KEY,
-            display_name TEXT NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at   TEXT NOT NULL
-        )`,
-        `CREATE TABLE IF NOT EXISTS issues (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            title       TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            reporter    TEXT NOT NULL,
-            assignee    TEXT NOT NULL DEFAULT '',
-            priority    TEXT NOT NULL DEFAULT 'Medium',
-            status      TEXT NOT NULL DEFAULT 'Open',
-            created_at  TEXT NOT NULL,
-            updated_at  TEXT NOT NULL
-        )`,
-        `CREATE TABLE IF NOT EXISTS comments (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            issue_id    INTEGER NOT NULL,
-            author      TEXT NOT NULL,
-            body        TEXT NOT NULL,
-            created_at  TEXT NOT NULL
-        )`,
-    ]);
+async function fetchUsers() {
+    const data = await apiGet('/api/users');
+    return data.users || [];
 }
-
-// =====================================================================
-// IDTRACK USER MANAGEMENT
-// =====================================================================
-
-async function getIdtrackUsers() {
-    const r = await apiSql([`SELECT username, display_name FROM idtrack_users ORDER BY username`]);
-    return (r.rows || []);
-}
-
-async function countIdtrackUsers() {
-    const r = await apiSql([`SELECT COUNT(*) AS cnt FROM idtrack_users`]);
-    const rows = r.rows || [];
-    if (rows.length > 0) {
-        const val = rows[0]['cnt'] || rows[0]['COUNT(*)'] || rows[0]['count(*)'] || 0;
-        return Number(val);
-    }
-    return 0;
-}
-
-async function findUser(username) {
-    const u = sqlStr(username);
-    const r = await apiSql([`SELECT username, display_name, password_hash FROM idtrack_users WHERE username = '${u}'`]);
-    const rows = r.rows || [];
-    return rows.length > 0 ? rows[0] : null;
-}
-
-async function createIdtrackUser(username, displayName, passwordHash) {
-    const u = sqlStr(username), d = sqlStr(displayName), h = sqlStr(passwordHash);
-    await apiSql([`INSERT INTO idtrack_users (username, display_name, password_hash, created_at) VALUES ('${u}','${d}','${h}','${now()}')`]);
-}
-
-// =====================================================================
-// ISSUE MANAGEMENT
-// =====================================================================
 
 async function fetchIssues() {
-    const r = await apiSql([
-        `SELECT id, title, description, reporter, assignee, priority, status, created_at, updated_at FROM issues ORDER BY id DESC`
-    ]);
-    return r.rows || [];
+    const data = await apiGet('/api/issues');
+    return data.issues || [];
 }
 
 async function fetchIssue(id) {
-    const r = await apiSql([`SELECT id, title, description, reporter, assignee, priority, status, created_at, updated_at FROM issues WHERE id = ${Number(id)}`]);
-    const rows = r.rows || [];
-    return rows.length > 0 ? rows[0] : null;
+    return apiGet(`/api/issues/${id}`);  // returns { issue, comments }
 }
 
-async function insertIssue(title, description, priority, assignee) {
-    const t = sqlStr(title), desc = sqlStr(description);
-    const prio = sqlStr(priority), asn = sqlStr(assignee);
-    const rep  = sqlStr(_currentUser.username);
-    const ts   = now();
-    await apiSql([
-        `INSERT INTO issues (title, description, reporter, assignee, priority, status, created_at, updated_at)
-         VALUES ('${t}','${desc}','${rep}','${asn}','${prio}','Open','${ts}','${ts}')`
-    ]);
+async function createIssue(title, description, priority, assignee) {
+    return apiPost('/api/issues', { title, description, priority, assignee });
 }
 
 async function updateIssue(id, title, description, priority, status, assignee) {
-    const t = sqlStr(title), desc = sqlStr(description);
-    const prio = sqlStr(priority), st = sqlStr(status), asn = sqlStr(assignee);
-    const ts = now();
-    await apiSql([
-        `UPDATE issues SET title='${t}', description='${desc}', priority='${prio}', status='${st}', assignee='${asn}', updated_at='${ts}' WHERE id=${Number(id)}`
-    ]);
+    return apiPut(`/api/issues/${id}`, { title, description, priority, status, assignee });
+}
+
+async function deleteIssue(id) {
+    return apiDelete(`/api/issues/${id}`);
+}
+
+async function addComment(issueId, body) {
+    return apiPost(`/api/issues/${issueId}/comments`, { body });
 }
 
 // =====================================================================
-// COMMENT MANAGEMENT
+// UI — LOGIN
 // =====================================================================
 
-async function fetchComments(issueId) {
-    const r = await apiSql([
-        `SELECT id, issue_id, author, body, created_at FROM comments WHERE issue_id = ${Number(issueId)} ORDER BY id ASC`
-    ]);
-    return r.rows || [];
-}
-
-async function insertComment(issueId, body) {
-    const b   = sqlStr(body);
-    const aut = sqlStr(_currentUser.username);
-    const ts  = now();
-    await apiSql([
-        `INSERT INTO comments (issue_id, author, body, created_at) VALUES (${Number(issueId)},'${aut}','${b}','${ts}')`
-    ]);
-}
-
-// =====================================================================
-// UI — SETUP
-// =====================================================================
-
-function showSetup(msg) {
+function showLogin(msg) {
     document.getElementById('app').style.display = 'none';
-    document.getElementById('login-overlay').style.display = 'none';
-    document.getElementById('setup-error').textContent = msg || '';
-    const saved = loadSetupConfig();
-    if (saved) {
-        document.getElementById('setup-user').value = saved.user || '';
-        document.getElementById('setup-pass').value = '';
-        document.getElementById('setup-dsn').value  = saved.dsn  || 'idtrack';
-    }
-    document.getElementById('setup-overlay').style.display = 'flex';
-    document.getElementById('setup-user').focus();
-}
-
-function hideSetup() {
-    document.getElementById('setup-overlay').style.display = 'none';
-}
-
-async function submitSetup() {
-    const user = document.getElementById('setup-user').value.trim();
-    const pass = document.getElementById('setup-pass').value;
-    const dsn  = document.getElementById('setup-dsn').value.trim() || 'idtrack';
-    const err  = document.getElementById('setup-error');
-    const btn  = document.getElementById('setup-submit-btn');
-
-    err.textContent = '';
-    if (!user || !pass) { err.textContent = 'Username and password are required.'; return; }
-
-    btn.disabled = true;
-    btn.textContent = 'Connecting…';
-
-    try {
-        await egoLogin(user, pass);
-        _setup = { user, pass, dsn };
-        saveSetupConfig(_setup);
-
-        // Ensure the DSN exists.
-        await ensureDSN(dsn);
-
-        // Create tables if they don't exist.
-        await initTables();
-
-        hideSetup();
-        await startLoginFlow();
-
-    } catch (e) {
-        err.textContent = e.message || 'Connection failed.';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Connect & Initialize';
-    }
-}
-
-async function ensureDSN(dsn) {
-    try {
-        const res = await apiFetch(`/dsns/${encodeURIComponent(dsn)}/`, { method: 'GET' });
-        if (res.ok) return; // already exists
-    } catch {}
-
-    // Try to create it.
-    const res = await apiFetch('/dsns/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/vnd.ego.dsn+json' },
-        body: JSON.stringify({ name: dsn, provider: 'sqlite3', database: dsn + '.db', secured: false, restricted: false }),
-    });
-    if (!res.ok && res.status !== 409) {
-        let msg = `Failed to create DSN (${res.status})`;
-        try { const d = await res.json(); msg = d.msg || msg; } catch {}
-        throw new Error(msg);
-    }
-}
-
-function loadSetupConfig() {
-    try { return JSON.parse(localStorage.getItem(SETUP_KEY)); } catch { return null; }
-}
-
-function saveSetupConfig(cfg) {
-    localStorage.setItem(SETUP_KEY, JSON.stringify(cfg));
-}
-
-// =====================================================================
-// UI — LOGIN / REGISTER
-// =====================================================================
-
-function showLoginForm() {
-    document.getElementById('login-form').style.display = '';
-    document.getElementById('register-form').style.display = 'none';
-    document.getElementById('login-error').textContent = '';
-    document.getElementById('login-user').focus();
-}
-
-function showRegisterForm() {
-    document.getElementById('login-form').style.display = 'none';
-    document.getElementById('register-form').style.display = '';
-    document.getElementById('reg-error').textContent = '';
-    document.getElementById('reg-user').focus();
-}
-
-async function startLoginFlow() {
-    document.getElementById('app').style.display = 'none';
-    document.getElementById('login-error').textContent = '';
+    document.getElementById('login-error').textContent = msg || '';
     document.getElementById('login-user').value = '';
     document.getElementById('login-pass').value = '';
-
-    // First-time: if no users yet, send straight to register.
-    let count = 0;
-    try { count = await countIdtrackUsers(); } catch {}
-
-    if (count === 0) {
-        showRegisterForm();
-    } else {
-        showLoginForm();
-    }
     document.getElementById('login-overlay').style.display = 'flex';
+    document.getElementById('login-user').focus();
 }
 
 async function submitLogin() {
@@ -394,20 +193,23 @@ async function submitLogin() {
     btn.textContent = 'Signing in…';
 
     try {
-        const hash = await sha256(password);
-        const user = await findUser(username);
+        const hash  = await sha256(password);
+        const creds = 'Basic ' + btoa(username + ':' + hash);
 
-        if (!user) {
-            err.textContent = 'Unknown username. Please check your credentials.';
+        const res = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Authorization': creds },
+        });
+
+        if (!res.ok) {
+            err.textContent = 'Invalid username or password.';
             return;
         }
-        if (user.password_hash !== hash) {
-            err.textContent = 'Incorrect password.';
-            return;
-        }
 
+        const user = await res.json();
+        _credentials = creds;
         _currentUser = { username: user.username, display_name: user.display_name };
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify(_currentUser));
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
 
         document.getElementById('login-overlay').style.display = 'none';
         await launchApp();
@@ -417,48 +219,6 @@ async function submitLogin() {
     } finally {
         btn.disabled = false;
         btn.textContent = 'Sign In';
-    }
-}
-
-async function submitRegister() {
-    const username = document.getElementById('reg-user').value.trim();
-    const display  = document.getElementById('reg-display').value.trim();
-    const pass1    = document.getElementById('reg-pass').value;
-    const pass2    = document.getElementById('reg-pass2').value;
-    const err      = document.getElementById('reg-error');
-    const btn      = document.getElementById('reg-submit-btn');
-
-    err.textContent = '';
-    if (!username) { err.textContent = 'Username is required.'; return; }
-    if (!display)  { err.textContent = 'Display name is required.'; return; }
-    if (!pass1)    { err.textContent = 'Password is required.'; return; }
-    if (pass1 !== pass2) { err.textContent = 'Passwords do not match.'; return; }
-    if (username.length < 2 || !/^[a-zA-Z0-9_.-]+$/.test(username)) {
-        err.textContent = 'Username may only contain letters, digits, underscore, dot, or hyphen.';
-        return;
-    }
-
-    btn.disabled = true;
-    btn.textContent = 'Creating…';
-
-    try {
-        const existing = await findUser(username);
-        if (existing) { err.textContent = 'That username is already taken.'; return; }
-
-        const hash = await sha256(pass1);
-        await createIdtrackUser(username, display, hash);
-
-        _currentUser = { username, display_name: display };
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify(_currentUser));
-
-        document.getElementById('login-overlay').style.display = 'none';
-        await launchApp();
-
-    } catch (e) {
-        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Registration failed.';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Create Account';
     }
 }
 
@@ -474,16 +234,12 @@ async function launchApp() {
 }
 
 function doLogout() {
-    // Clear only the app-level (idtrack) user identity. The Ego service-account
-    // bearer token is intentionally kept in localStorage so the next login does
-    // not require a full Ego re-authentication — the user just needs to re-enter
-    // their idtrack credentials.
     _currentUser = null;
+    _credentials = null;
     sessionStorage.removeItem(SESSION_KEY);
     document.getElementById('app').style.display = 'none';
     closeDetail();
-    showLoginForm();
-    document.getElementById('login-overlay').style.display = 'flex';
+    showLogin();
 }
 
 // =====================================================================
@@ -571,7 +327,6 @@ function filteredAndSorted(issues) {
     });
 
     const priOrder = { High:0, Medium:1, Low:2 };
-
     result.sort((a, b) => {
         let va = a[_sortCol], vb = b[_sortCol];
         if (_sortCol === 'priority') { va = priOrder[va] ?? 99; vb = priOrder[vb] ?? 99; }
@@ -625,38 +380,29 @@ async function selectIssue(id) {
     _currentId   = id;
     _detailDirty = false;
 
-    // Highlight selected row.
-    document.querySelectorAll('.issue-row').forEach(r => r.classList.remove('selected'));
-    const rows = document.querySelectorAll('.issue-row');
-    rows.forEach(r => { if (r.onclick && r.onclick.toString().includes(`(${id})`)) r.classList.add('selected'); });
-
-    // Re-render to update selection highlight.
     renderIssues(_allIssues);
 
     try {
-        const issue = await fetchIssue(id);
+        const { issue, comments } = await fetchIssue(id);
         if (!issue) return;
 
         document.getElementById('detail-issue-id').textContent = `Issue #${issue.id}`;
-        document.getElementById('detail-title').value   = issue.title    || '';
-        document.getElementById('detail-status').value  = issue.status   || 'Open';
-        document.getElementById('detail-priority').value= issue.priority || 'Medium';
-        document.getElementById('detail-desc').value    = issue.description || '';
-        document.getElementById('detail-reporter').textContent = issue.reporter  || '';
+        document.getElementById('detail-title').value    = issue.title       || '';
+        document.getElementById('detail-status').value   = issue.status      || 'Open';
+        document.getElementById('detail-priority').value = issue.priority    || 'Medium';
+        document.getElementById('detail-desc').value     = issue.description || '';
+        document.getElementById('detail-reporter').textContent = issue.reporter || '';
         document.getElementById('detail-created').textContent  = fmtDateTime(issue.created_at);
         document.getElementById('detail-updated').textContent  = fmtDateTime(issue.updated_at);
         document.getElementById('detail-error').textContent    = '';
 
-        // Set assignee select.
         const asnSel = document.getElementById('detail-assignee');
         asnSel.value = issue.assignee || '';
 
         document.getElementById('detail-save-btn').style.display = 'none';
         _detailDirty = false;
 
-        const comments = await fetchComments(id);
         renderComments(comments);
-
         document.getElementById('comment-input').value = '';
         document.getElementById('detail-panel').style.display = '';
 
@@ -684,13 +430,13 @@ function markDetailDirty() {
 
 async function saveIssueChanges() {
     if (!_currentId) return;
-    const title   = document.getElementById('detail-title').value.trim();
-    const status  = document.getElementById('detail-status').value;
-    const priority= document.getElementById('detail-priority').value;
-    const assignee= document.getElementById('detail-assignee').value;
-    const desc    = document.getElementById('detail-desc').value.trim();
-    const err     = document.getElementById('detail-error');
-    const btn     = document.getElementById('detail-save-btn');
+    const title    = document.getElementById('detail-title').value.trim();
+    const status   = document.getElementById('detail-status').value;
+    const priority = document.getElementById('detail-priority').value;
+    const assignee = document.getElementById('detail-assignee').value;
+    const desc     = document.getElementById('detail-desc').value.trim();
+    const err      = document.getElementById('detail-error');
+    const btn      = document.getElementById('detail-save-btn');
 
     err.textContent = '';
     if (!title) { err.textContent = 'Title is required.'; return; }
@@ -699,14 +445,11 @@ async function saveIssueChanges() {
     btn.textContent = 'Saving…';
 
     try {
-        await updateIssue(_currentId, title, desc, priority, status, assignee);
+        const { issue } = await updateIssue(_currentId, title, desc, priority, status, assignee);
         _detailDirty = false;
         btn.style.display = 'none';
+        document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
 
-        // Update updated_at display.
-        document.getElementById('detail-updated').textContent = fmtDateTime(now());
-
-        // Refresh the issues list.
         _allIssues = await fetchIssues();
         renderIssues(_allIssues);
 
@@ -746,11 +489,10 @@ async function submitComment() {
     if (!body) return;
 
     try {
-        await insertComment(_currentId, body);
+        await addComment(_currentId, body);
         input.value = '';
-        const comments = await fetchComments(_currentId);
+        const { comments } = await fetchIssue(_currentId);
         renderComments(comments);
-        // Scroll to bottom of comments.
         const el = document.getElementById('comments-list');
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
     } catch (e) {
@@ -791,12 +533,11 @@ async function submitNewIssue() {
     btn.textContent = 'Creating…';
 
     try {
-        await insertIssue(title, desc, priority, assignee);
+        await createIssue(title, desc, priority, assignee);
         hideNewIssue();
         _allIssues = await fetchIssues();
         renderIssues(_allIssues);
 
-        // Auto-select the newest issue (highest id).
         if (_allIssues.length > 0) {
             const newest = _allIssues.reduce((a, b) => Number(a.id) > Number(b.id) ? a : b);
             selectIssue(newest.id);
@@ -815,7 +556,7 @@ async function submitNewIssue() {
 
 async function populateAssigneeDropdowns() {
     let users = [];
-    try { users = await getIdtrackUsers(); } catch {}
+    try { users = await fetchUsers(); } catch {}
 
     const options = ['<option value="">(unassigned)</option>']
         .concat(users.map(u => `<option value="${esc(u.username)}">${esc(u.display_name || u.username)}</option>`))
@@ -831,16 +572,12 @@ async function populateAssigneeDropdowns() {
 }
 
 // =====================================================================
-// BACKDROP CLICK DISMISS
+// BACKDROP / MENU / SETTINGS
 // =====================================================================
 
 function backdropClick(event, overlayId, hideFn) {
     if (event.target.id === overlayId) hideFn();
 }
-
-// =====================================================================
-// HAMBURGER MENU
-// =====================================================================
 
 function toggleMenu(event) {
     event.stopPropagation();
@@ -856,10 +593,6 @@ function _closeMenuOnOutside() {
     const menu = document.getElementById('app-menu');
     if (menu) menu.style.display = 'none';
 }
-
-// =====================================================================
-// SETTINGS
-// =====================================================================
 
 function openSettings() {
     _closeMenuOnOutside();
@@ -891,9 +624,6 @@ function loadPrefs() {
     } catch {}
 }
 
-// Close the detail panel when the user clicks anywhere in the list area
-// (outside the detail panel itself). Clicks on issue rows are excluded
-// because selectIssue() already handles the dirty-state warning for those.
 function mainLayoutClick(event) {
     const detail = document.getElementById('detail-panel');
     if (!detail || detail.style.display === 'none') return;
@@ -909,59 +639,20 @@ function mainLayoutClick(event) {
 async function init() {
     loadPrefs();
 
-    // Try to restore from session.
-    const savedToken = localStorage.getItem(TOKEN_KEY);
-    const savedUser  = sessionStorage.getItem(SESSION_KEY);
-    const savedSetup = loadSetupConfig();
-
-    if (!savedSetup) {
-        showSetup();
-        return;
-    }
-
-    _setup = savedSetup;
-
-    // Try to restore or obtain a token.
-    if (savedToken) {
-        _token = savedToken;
-    } else {
-        // Re-authenticate with saved credentials.
+    const saved = sessionStorage.getItem(SESSION_KEY);
+    if (saved) {
         try {
-            await egoLogin(_setup.user, _setup.pass);
-        } catch {
-            showSetup('Could not connect to server. Please check your credentials.');
-            return;
-        }
-    }
-
-    // Verify token works and ensure tables exist.
-    try {
-        await initTables();
-    } catch (e) {
-        // Token may be stale — try re-login.
-        try {
-            await egoLogin(_setup.user, _setup.pass);
-            await initTables();
-        } catch {
-            showSetup('Could not initialize database. Please check your server connection.');
-            return;
-        }
-    }
-
-    // Restore session user.
-    if (savedUser) {
-        try {
-            _currentUser = JSON.parse(savedUser);
+            const { user, creds } = JSON.parse(saved);
+            if (user && creds) {
+                _currentUser = user;
+                _credentials = creds;
+                await launchApp();
+                return;
+            }
         } catch {}
     }
 
-    if (!_currentUser) {
-        await startLoginFlow();
-        return;
-    }
-
-    // User is already logged in — jump straight to the app.
-    await launchApp();
+    showLogin();
 }
 
 document.addEventListener('DOMContentLoaded', init);
