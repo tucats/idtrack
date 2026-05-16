@@ -54,8 +54,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  idtrack serve [--port n] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack stop")
 	fmt.Fprintln(os.Stderr, "  idtrack user --list [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack user --add username:password [--name text] [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack user --update username [--name text] [--password text] [--database path]")
+	fmt.Fprintln(os.Stderr, "  idtrack user --add username:password [--name text] [--admin true|false] [--database path]")
+	fmt.Fprintln(os.Stderr, "  idtrack user --update username [--name text] [--password text] [--admin true|false] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack user --delete username [--database path]")
 }
 
@@ -215,7 +215,7 @@ func serverLogPath() string {
 }
 
 func runUser(args []string) {
-	var add, del, update, name, password, database string
+	var add, del, update, name, password, database, adminStr string
 	var list bool
 
 	for i := 0; i < len(args); i++ {
@@ -246,6 +246,15 @@ func runUser(args []string) {
 			if i+1 < len(args) {
 				i++
 				password = args[i]
+			}
+		case "--admin":
+			if i+1 < len(args) {
+				i++
+				adminStr = args[i]
+				if adminStr != "true" && adminStr != "false" {
+					fmt.Fprintln(os.Stderr, "--admin requires true or false")
+					os.Exit(1)
+				}
 			}
 		case "--database":
 			if i+1 < len(args) {
@@ -286,14 +295,18 @@ func runUser(args []string) {
 			fmt.Fprintf(os.Stderr, "error listing users: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("%-20s  %-30s  %s\n", "USERNAME", "DISPLAY NAME", "LAST LOGIN")
-		fmt.Printf("%-20s  %-30s  %s\n", strings.Repeat("-", 20), strings.Repeat("-", 30), strings.Repeat("-", 25))
+		fmt.Printf("%-20s  %-30s  %-7s  %s\n", "USERNAME", "DISPLAY NAME", "ADMIN", "LAST LOGIN")
+		fmt.Printf("%-20s  %-30s  %-7s  %s\n", strings.Repeat("-", 20), strings.Repeat("-", 30), strings.Repeat("-", 7), strings.Repeat("-", 25))
 		for _, u := range users {
 			lastLogin := u.LastLoginAt
 			if lastLogin == "" {
 				lastLogin = "(never)"
 			}
-			fmt.Printf("%-20s  %-30s  %s\n", u.Username, u.DisplayName, lastLogin)
+			admin := "no"
+			if u.IsAdmin {
+				admin = "yes"
+			}
+			fmt.Printf("%-20s  %-30s  %-7s  %s\n", u.Username, u.DisplayName, admin, lastLogin)
 		}
 	}
 
@@ -309,7 +322,7 @@ func runUser(args []string) {
 			displayName = name
 		}
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(pwd)))
-		if err := db.AddUser(d, username, displayName, hash); err != nil {
+		if err := db.AddUser(d, username, displayName, hash, adminStr == "true"); err != nil {
 			fmt.Fprintf(os.Stderr, "error adding user %q: %v\n", username, err)
 			os.Exit(1)
 		}
@@ -317,8 +330,8 @@ func runUser(args []string) {
 	}
 
 	if update != "" {
-		if name == "" && password == "" {
-			fmt.Fprintln(os.Stderr, "--update requires at least --name or --password")
+		if name == "" && password == "" && adminStr == "" {
+			fmt.Fprintln(os.Stderr, "--update requires at least --name, --password, or --admin")
 			usage()
 			os.Exit(1)
 		}
@@ -326,7 +339,12 @@ func runUser(args []string) {
 		if password != "" {
 			hash = fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
 		}
-		if err := db.UpdateUser(d, update, name, hash); err != nil {
+		var adminPtr *bool
+		if adminStr != "" {
+			val := adminStr == "true"
+			adminPtr = &val
+		}
+		if err := db.UpdateUser(d, update, name, hash, adminPtr); err != nil {
 			fmt.Fprintf(os.Stderr, "error updating user %q: %v\n", update, err)
 			os.Exit(1)
 		}

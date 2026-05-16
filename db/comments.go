@@ -36,6 +36,11 @@ func ListComments(database *sql.DB, issueID int64) ([]Comment, error) {
 	return comments, rows.Err()
 }
 
+func DeleteComment(database *sql.DB, commentID int64) error {
+	_, err := database.Exec(`DELETE FROM comments WHERE id = ?`, commentID)
+	return err
+}
+
 func CreateComment(database *sql.DB, issueID int64, author, body string) (*Comment, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := database.Exec(

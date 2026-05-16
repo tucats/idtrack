@@ -51,7 +51,10 @@ func initSchema(database *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	return addColumnIfMissing(database, "users", "last_login_at", "TEXT NOT NULL DEFAULT ''")
+	if err := addColumnIfMissing(database, "users", "last_login_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(database, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
 }
 
 func addColumnIfMissing(database *sql.DB, table, column, definition string) error {

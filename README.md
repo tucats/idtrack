@@ -1,3 +1,190 @@
 # idtrack
 
-Issues Database Tracking - a simple web app and backend to manage tracking issues and problem reports in software projects.
+A lightweight, self-contained issue tracker for small software teams. `idtrack` is a single Go binary that serves a web application for creating, viewing, and managing bug reports and feature requests. Everything — the web UI, TLS certificate, and database — is managed through one command-line tool with no external services required.
+
+## Features
+
+- Web-based issue tracker with filtering, sorting, and search
+- Priority levels (High / Medium / Low) and status tracking (Open / Resolved)
+- Per-issue comments
+- Assignee tracking with display names
+- Admin users can delete issues and comments
+- Runs over HTTPS with an embedded TLS certificate
+- Single SQLite database file — easy to back up or move
+- Launches as a background process; no separate daemon setup needed
+
+## Requirements
+
+- Go 1.22 or later (to build from source)
+- macOS or Linux
+
+## Installation
+
+```
+go install github.com/tucats/idtrack@latest
+```
+
+Or clone the repository and build locally:
+
+```
+git clone https://github.com/tucats/idtrack
+cd idtrack
+go build -o idtrack .
+```
+
+## Quick Start
+
+**1. Set your defaults** (optional, but saves typing later):
+
+```
+idtrack default --port 8443 --database ~/idtrack.db
+```
+
+**2. Add at least one admin user:**
+
+```
+idtrack user --add alice:s3cr3t --name "Alice Smith" --admin true
+```
+
+**3. Start the server:**
+
+```
+idtrack serve
+```
+
+The server starts in the background and prints its PID and log file path. Open `https://localhost:8443/idtrack` in your browser to access the web app.
+
+**4. Stop the server when done:**
+
+```
+idtrack stop
+```
+
+> **Note:** The embedded TLS certificate is self-signed. Your browser will warn you on first visit — you can safely accept the exception for an internal tool.
+
+---
+
+## Command Reference
+
+### `idtrack default`
+
+Saves default values for `--port` and `--database` to `~/.idtrack/defaults.json`. These defaults are used by `serve` and `user` commands so you don't have to repeat them every time. Specifying only one flag preserves the other existing value.
+
+```
+idtrack default [--port <n>] [--database <path>]
+```
+
+### `idtrack serve`
+
+Starts the HTTPS server as a background process. The terminal is returned immediately. Server output is written to `~/.idtrack/idtrack.log` and the process ID is saved to `~/.idtrack/idtrack.pid`. If a server is already running, the command exits with an error rather than starting a duplicate.
+
+```
+idtrack serve [--port <n>] [--database <path>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | `8443` | TCP port to listen on |
+| `--database` | `idtrack.db` | Path to the SQLite database file |
+
+### `idtrack stop`
+
+Stops the running server by sending it a termination signal and removing the PID file.
+
+```
+idtrack stop
+```
+
+### `idtrack user`
+
+Manages user accounts. All `user` subcommands accept an optional `--database` flag to target a specific database file.
+
+#### List users
+
+```
+idtrack user --list [--database <path>]
+```
+
+Prints a table showing each user's login name, display name, admin status, and the time they last signed in through the web app.
+
+#### Add a user
+
+```
+idtrack user --add <username>:<password> [--name <display name>] [--admin true|false] [--database <path>]
+```
+
+Creates a new user. The display name defaults to the username if `--name` is not given. Admin defaults to false. Re-running `--add` for an existing username updates the display name, password, and admin status.
+
+#### Update a user
+
+```
+idtrack user --update <username> [--name <display name>] [--password <new password>] [--admin true|false] [--database <path>]
+```
+
+Updates one or more attributes of an existing user. Only the flags you provide are changed; omitted flags leave the current values untouched. At least one of `--name`, `--password`, or `--admin` must be supplied. The user must already exist — `--update` cannot create new users.
+
+#### Delete a user
+
+```
+idtrack user --delete <username> [--database <path>]
+```
+
+Permanently removes the user account. Existing issues and comments that reference the username are not affected.
+
+---
+
+## Runtime Files
+
+All runtime state is stored in `~/.idtrack/`:
+
+| File | Description |
+|------|-------------|
+| `defaults.json` | Saved default port and database path |
+| `idtrack.pid` | PID of the running server (removed on `stop`) |
+| `idtrack.log` | Server log output (appended across restarts) |
+
+---
+
+## Using the Web App
+
+Navigate to `https://<host>:<port>/idtrack` and sign in with any registered username and password.
+
+### Issue List
+
+The main view shows all issues in a sortable table. Click any column header to sort. Use the status buttons (Open / Resolved / All) and priority buttons to filter, or type in the search box to match against titles, descriptions, reporters, and assignees.
+
+Click **+ New Issue** to open the creation form. Fill in the title (required), priority, assignee, and an optional description, then click **Create Issue**.
+
+### Issue Detail
+
+Click any row to open the detail panel on the right. From there you can:
+
+- Edit the title, status, priority, assignee, and description
+- Click **Save Changes** to commit edits
+- Add a comment using the text area at the bottom (Ctrl+Enter or Cmd+Enter submits)
+
+Click the **← Back** button or anywhere in the issue list to close the panel. If you have unsaved changes, you will be asked to confirm before discarding them.
+
+### Admin Actions
+
+Users with admin privileges see additional controls:
+
+- A **Delete** button in the issue detail header — permanently deletes the issue and all its comments
+- A trash icon next to each comment — deletes that individual comment
+
+Both actions require confirmation before proceeding and cannot be undone.
+
+### Settings
+
+Click the hamburger menu (☰) in the top-right corner to access Settings (dark mode toggle) or to sign out.
+
+---
+
+## Architecture Notes
+
+For developers who want to extend or self-host `idtrack`:
+
+- The server speaks HTTPS only. The TLS certificate and key are embedded in the binary at build time from `resources/https-server.crt` and `resources/https-server.key`. To use your own certificate, replace those files and rebuild.
+- Passwords are hashed with SHA-256 in the browser before transmission. The hash — not the plaintext — is stored in the database.
+- The SQLite database uses a single connection (`MaxOpenConns(1)`) to avoid write contention. This is intentional and appropriate for the expected scale of an internal issue tracker.
+- New database columns are added automatically on startup via `ALTER TABLE ... ADD COLUMN` migrations, so upgrading the binary against an existing database is safe.
