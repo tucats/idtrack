@@ -14,6 +14,7 @@ const APP_VERSION = '2.0';
 
 let _credentials = null;   // 'Basic base64(username:sha256hash)'
 let _currentUser = null;   // { username, display_name }
+let _userMap     = {};     // username -> display_name
 let _allIssues   = [];
 let _currentId   = null;
 let _sortCol     = 'id';
@@ -63,6 +64,10 @@ function priorityBadge(p) {
 function statusBadge(s) {
     const cls = s === 'Open' ? 'badge-open' : 'badge-resolved';
     return `<span class="badge ${cls}">${esc(s)}</span>`;
+}
+
+function displayName(username) {
+    return _userMap[username] || username;
 }
 
 // =====================================================================
@@ -360,8 +365,8 @@ function renderIssues(issues) {
             <td class="col-title issue-title-cell">${esc(issue.title)}</td>
             <td class="col-priority">${priorityBadge(issue.priority)}</td>
             <td class="col-status">${statusBadge(issue.status)}</td>
-            <td class="col-reporter">${esc(issue.reporter)}</td>
-            <td class="col-assignee">${esc(issue.assignee || '—')}</td>
+            <td class="col-reporter">${esc(displayName(issue.reporter))}</td>
+            <td class="col-assignee">${esc(issue.assignee ? displayName(issue.assignee) : '—')}</td>
             <td class="col-date">${fmtDate(issue.created_at)}</td>
         </tr>`;
     }).join('');
@@ -391,7 +396,7 @@ async function selectIssue(id) {
         document.getElementById('detail-status').value   = issue.status      || 'Open';
         document.getElementById('detail-priority').value = issue.priority    || 'Medium';
         document.getElementById('detail-desc').value     = issue.description || '';
-        document.getElementById('detail-reporter').textContent = issue.reporter || '';
+        document.getElementById('detail-reporter').textContent = issue.reporter ? displayName(issue.reporter) : '';
         document.getElementById('detail-created').textContent  = fmtDateTime(issue.created_at);
         document.getElementById('detail-updated').textContent  = fmtDateTime(issue.updated_at);
         document.getElementById('detail-error').textContent    = '';
@@ -557,6 +562,9 @@ async function submitNewIssue() {
 async function populateAssigneeDropdowns() {
     let users = [];
     try { users = await fetchUsers(); } catch {}
+
+    _userMap = {};
+    users.forEach(u => { _userMap[u.username] = u.display_name || u.username; });
 
     const options = ['<option value="">(unassigned)</option>']
         .concat(users.map(u => `<option value="${esc(u.username)}">${esc(u.display_name || u.username)}</option>`))

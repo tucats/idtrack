@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -10,6 +12,7 @@ type User struct {
 	DisplayName  string `json:"display_name"`
 	PasswordHash string `json:"password_hash,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
+	LastLoginAt  string `json:"last_login_at,omitempty"`
 }
 
 func AddUser(database *sql.DB, username, displayName, passwordHash string) error {
@@ -40,8 +43,46 @@ func FindUser(database *sql.DB, username string) (*User, error) {
 	return &u, nil
 }
 
+func UpdateUser(database *sql.DB, username, displayName, passwordHash string) error {
+	u, err := FindUser(database, username)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return fmt.Errorf("user %q not found", username)
+	}
+
+	var setClauses []string
+	var args []any
+	if displayName != "" {
+		setClauses = append(setClauses, "display_name = ?")
+		args = append(args, displayName)
+	}
+	if passwordHash != "" {
+		setClauses = append(setClauses, "password_hash = ?")
+		args = append(args, passwordHash)
+	}
+	if len(setClauses) == 0 {
+		return nil
+	}
+	args = append(args, username)
+	_, err = database.Exec(
+		fmt.Sprintf("UPDATE users SET %s WHERE username = ?", strings.Join(setClauses, ", ")),
+		args...,
+	)
+	return err
+}
+
+func RecordLogin(database *sql.DB, username string) error {
+	_, err := database.Exec(
+		`UPDATE users SET last_login_at = ? WHERE username = ?`,
+		time.Now().UTC().Format(time.RFC3339), username,
+	)
+	return err
+}
+
 func ListUsers(database *sql.DB) ([]User, error) {
-	rows, err := database.Query(`SELECT username, display_name FROM users ORDER BY username`)
+	rows, err := database.Query(`SELECT username, display_name, last_login_at FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +91,7 @@ func ListUsers(database *sql.DB) ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.Username, &u.DisplayName); err != nil {
+		if err := rows.Scan(&u.Username, &u.DisplayName, &u.LastLoginAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
