@@ -194,3 +194,17 @@ to the user data.
 "Edit User" allows a user to change the password, display name,
 and admin status for an existing user. There should also be a 
 "Delete User" button that deletes the entry.
+
+## Prompt 12
+
+For the "Add Components..." menu item in the web app, let's
+allow the user to create multiple components in one interaction
+with the webapp.
+
+Allow button to say "Add component", and when the user types
+in a component name, it is added to the list. Each list item
+will have a "delete" icon next to it that says to remove it
+from the list being built. Ensure that no component is
+created that already exists (case-insensitive checking). When
+the user clicks the "Save" button, all components are added
+ to the selected project.

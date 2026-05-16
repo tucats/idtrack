@@ -210,21 +210,28 @@
 <!-- ==================== ADD COMPONENT OVERLAY (admin) ==================== -->
 <div id="add-component-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-component-overlay',hideAddComponent)">
   <div class="sheet manage-projects-sheet">
-    <h3>Add Component</h3>
+    <h3>Add Components</h3>
     <div class="form-group">
       <label for="ac-project">Project <span class="required">*</span></label>
-      <select id="ac-project">
+      <select id="ac-project" onchange="onAcProjectChange()">
         <option value="">Choose project…</option>
       </select>
     </div>
     <div class="form-group">
-      <label for="ac-name">Component Name <span class="required">*</span></label>
-      <input id="ac-name" type="text" placeholder="e.g. API" maxlength="100"
-             onkeydown="if(event.key==='Enter') submitAddComponent()">
+      <label for="ac-name">Component Name</label>
+      <div class="ac-input-row">
+        <input id="ac-name" type="text" placeholder="e.g. API" maxlength="100"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();addPendingComponent();}">
+        <button class="btn btn-secondary btn-sm" onclick="addPendingComponent()">Add</button>
+      </div>
     </div>
     <div id="ac-error" class="error-text"></div>
+    <div id="ac-pending-list" style="display:none">
+      <div class="ac-pending-heading">To be added:</div>
+      <div id="ac-pending-items"></div>
+    </div>
     <div class="button-row">
-      <button id="ac-submit-btn" class="btn btn-primary" onclick="submitAddComponent()">Add Component</button>
+      <button id="ac-submit-btn" class="btn btn-primary" onclick="submitAddComponent()" disabled>Save</button>
       <button class="btn btn-secondary" onclick="hideAddComponent()">Cancel</button>
     </div>
   </div>

@@ -12,13 +12,14 @@ const APP_VERSION = '2.0';
 // STATE
 // =====================================================================
 
-let _credentials  = null;   // 'Basic base64(username:sha256hash)'
-let _currentUser  = null;   // { username, display_name }
-let _userMap      = {};     // username -> display_name
-let _userList     = [];     // full user objects from GET /api/users
-let _projectData  = [];     // [{name, components: [...]}]
-let _allIssues    = [];
-let _currentId    = null;
+let _credentials       = null;   // 'Basic base64(username:sha256hash)'
+let _currentUser       = null;   // { username, display_name }
+let _userMap           = {};     // username -> display_name
+let _userList          = [];     // full user objects from GET /api/users
+let _projectData       = [];     // [{name, components: [...]}]
+let _pendingComponents = [];     // component names staged in the Add Components overlay
+let _allIssues         = [];
+let _currentId         = null;
 let _sortCol     = 'id';
 let _sortAsc     = false;
 let _statusFilter   = 'open';
@@ -859,6 +860,7 @@ async function submitAddProject() {
 
 function openAddComponent() {
     _closeMenuOnOutside();
+    _pendingComponents = [];
     document.getElementById('ac-name').value = '';
     document.getElementById('ac-error').textContent = '';
     const sel = document.getElementById('ac-project');
@@ -866,35 +868,105 @@ function openAddComponent() {
         .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
         .join('');
     sel.value = '';
+    renderPendingComponents();
     document.getElementById('add-component-overlay').style.display = 'flex';
-    document.getElementById('ac-name').focus();
 }
 
 function hideAddComponent() {
     document.getElementById('add-component-overlay').style.display = 'none';
 }
 
+function onAcProjectChange() {
+    _pendingComponents = [];
+    document.getElementById('ac-error').textContent = '';
+    renderPendingComponents();
+    document.getElementById('ac-name').focus();
+}
+
+function addPendingComponent() {
+    const name = document.getElementById('ac-name').value.trim();
+    const err  = document.getElementById('ac-error');
+    err.textContent = '';
+
+    const projectName = document.getElementById('ac-project').value;
+    if (!projectName) { err.textContent = 'Select a project first.'; return; }
+    if (!name)        { err.textContent = 'Enter a component name.'; return; }
+
+    const nameLower = name.toLowerCase();
+
+    const project = _projectData.find(p => p.name === projectName);
+    if (project && project.components.some(c => c.toLowerCase() === nameLower)) {
+        err.textContent = `"${name}" already exists in this project.`;
+        return;
+    }
+    if (_pendingComponents.some(c => c.toLowerCase() === nameLower)) {
+        err.textContent = `"${name}" is already in the list.`;
+        return;
+    }
+
+    _pendingComponents.push(name);
+    document.getElementById('ac-name').value = '';
+    document.getElementById('ac-name').focus();
+    renderPendingComponents();
+}
+
+function removePendingComponent(index) {
+    _pendingComponents.splice(index, 1);
+    renderPendingComponents();
+}
+
+function renderPendingComponents() {
+    const listDiv = document.getElementById('ac-pending-list');
+    const itemsDiv = document.getElementById('ac-pending-items');
+    const btn = document.getElementById('ac-submit-btn');
+
+    if (_pendingComponents.length === 0) {
+        listDiv.style.display = 'none';
+        btn.disabled = true;
+        return;
+    }
+    listDiv.style.display = '';
+    btn.disabled = false;
+    itemsDiv.innerHTML = _pendingComponents.map((name, i) => `
+        <div class="ac-pending-item">
+            <span class="ac-pending-name">${esc(name)}</span>
+            <button class="btn-trash" onclick="removePendingComponent(${i})" title="Remove">&#x1F5D1;</button>
+        </div>`).join('');
+}
+
 async function submitAddComponent() {
     const project = document.getElementById('ac-project').value;
-    const name    = document.getElementById('ac-name').value.trim();
     const err     = document.getElementById('ac-error');
     const btn     = document.getElementById('ac-submit-btn');
 
     err.textContent = '';
-    if (!project) { err.textContent = 'Select a project.'; return; }
-    if (!name)    { err.textContent = 'Component name is required.'; return; }
+    if (!project)                    { err.textContent = 'Select a project.'; return; }
+    if (_pendingComponents.length === 0) { err.textContent = 'Add at least one component.'; return; }
 
     btn.disabled = true;
-    btn.textContent = 'Adding…';
-    try {
-        await apiPost(`/api/projects/${encodeURIComponent(project)}/components`, { name });
-        await populateProjectDropdowns();
-        hideAddComponent();
-    } catch (e) {
-        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add component.';
-    } finally {
+    btn.textContent = 'Saving…';
+
+    const failures = {};
+    for (const name of [..._pendingComponents]) {
+        try {
+            await apiPost(`/api/projects/${encodeURIComponent(project)}/components`, { name });
+        } catch (e) {
+            if (e.message === 'Unauthorized') { btn.textContent = 'Save'; return; }
+            failures[name] = e.message || 'failed';
+        }
+    }
+
+    await populateProjectDropdowns();
+
+    if (Object.keys(failures).length > 0) {
+        _pendingComponents = Object.keys(failures);
+        renderPendingComponents();
+        err.textContent = 'Some components could not be added: ' +
+            Object.entries(failures).map(([n, m]) => `${n} (${m})`).join('; ');
         btn.disabled = false;
-        btn.textContent = 'Add Component';
+        btn.textContent = 'Save';
+    } else {
+        hideAddComponent();
     }
 }
 
