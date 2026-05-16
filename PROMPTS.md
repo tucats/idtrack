@@ -217,3 +217,9 @@ For symmetry in the user interface, make the filter on project status work the s
 
 Let's make the same change to the filter for priority; use a
 dropdown menu with "All...", followed by High, Medium, and Low.
+
+## Prompt 14
+
+Write a comprehensive user manual for using idtrack. This should include how the webapp works for regular users, additional features for admin users, and the cli which should include how to boostrap the system (create an iniitial admin user, start the server).
+
+Put this in MANUAL.md in the resources directory. Add an endpoint that serves the Markdown as HTML, and add it as a button in the "About" window, which opens a new page with the served manual in the page.
