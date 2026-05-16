@@ -14,12 +14,14 @@ type Issue struct {
 	Assignee    string `json:"assignee"`
 	Priority    string `json:"priority"`
 	Status      string `json:"status"`
+	Project     string `json:"project"`
+	Component   string `json:"component"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 }
 
 func ListIssues(database *sql.DB, status, priority, search, sortCol, sortDir string) ([]Issue, error) {
-	query := `SELECT id, title, description, reporter, assignee, priority, status, created_at, updated_at FROM issues WHERE 1=1`
+	query := `SELECT id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at FROM issues WHERE 1=1`
 	var args []interface{}
 
 	switch status {
@@ -35,14 +37,15 @@ func ListIssues(database *sql.DB, status, priority, search, sortCol, sortDir str
 	}
 
 	if search != "" {
-		query += ` AND (title LIKE ? OR description LIKE ? OR reporter LIKE ? OR assignee LIKE ?)`
+		query += ` AND (title LIKE ? OR description LIKE ? OR reporter LIKE ? OR assignee LIKE ? OR project LIKE ? OR component LIKE ?)`
 		s := "%" + search + "%"
-		args = append(args, s, s, s, s)
+		args = append(args, s, s, s, s, s, s)
 	}
 
 	validCols := map[string]bool{
 		"id": true, "title": true, "priority": true, "status": true,
 		"reporter": true, "assignee": true, "created_at": true, "updated_at": true,
+		"project": true, "component": true,
 	}
 	if !validCols[sortCol] {
 		sortCol = "id"
@@ -61,7 +64,7 @@ func ListIssues(database *sql.DB, status, priority, search, sortCol, sortDir str
 	var issues []Issue
 	for rows.Next() {
 		var i Issue
-		if err := rows.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.CreatedAt, &i.UpdatedAt); err != nil {
+		if err := rows.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.Project, &i.Component, &i.CreatedAt, &i.UpdatedAt); err != nil {
 			return nil, err
 		}
 		issues = append(issues, i)
@@ -74,10 +77,10 @@ func ListIssues(database *sql.DB, status, priority, search, sortCol, sortDir str
 
 func GetIssue(database *sql.DB, id int64) (*Issue, error) {
 	row := database.QueryRow(
-		`SELECT id, title, description, reporter, assignee, priority, status, created_at, updated_at FROM issues WHERE id = ?`, id,
+		`SELECT id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at FROM issues WHERE id = ?`, id,
 	)
 	var i Issue
-	if err := row.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.CreatedAt, &i.UpdatedAt); err != nil {
+	if err := row.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.Project, &i.Component, &i.CreatedAt, &i.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -86,15 +89,15 @@ func GetIssue(database *sql.DB, id int64) (*Issue, error) {
 	return &i, nil
 }
 
-func CreateIssue(database *sql.DB, title, description, reporter, assignee, priority string) (*Issue, error) {
+func CreateIssue(database *sql.DB, title, description, reporter, assignee, priority, project, component string) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if priority == "" {
 		priority = "Medium"
 	}
 	result, err := database.Exec(
-		`INSERT INTO issues (title, description, reporter, assignee, priority, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, 'Open', ?, ?)`,
-		title, description, reporter, assignee, priority, now, now,
+		`INSERT INTO issues (title, description, reporter, assignee, priority, status, project, component, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)`,
+		title, description, reporter, assignee, priority, project, component, now, now,
 	)
 	if err != nil {
 		return nil, err
@@ -103,11 +106,11 @@ func CreateIssue(database *sql.DB, title, description, reporter, assignee, prior
 	return GetIssue(database, id)
 }
 
-func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee string) (*Issue, error) {
+func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := database.Exec(
-		`UPDATE issues SET title=?, description=?, priority=?, status=?, assignee=?, updated_at=? WHERE id=?`,
-		title, description, priority, status, assignee, now, id,
+		`UPDATE issues SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?, updated_at=? WHERE id=?`,
+		title, description, priority, status, assignee, project, component, now, id,
 	)
 	if err != nil {
 		return nil, err

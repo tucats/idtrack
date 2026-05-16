@@ -41,6 +41,7 @@ func Start(database *sql.DB, port int, static fs.FS) error {
 
 	// Authenticated API endpoints
 	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
+	mux.Handle("GET /api/projects", s.auth(http.HandlerFunc(s.handleListProjects)))
 
 	mux.Handle("GET /api/issues", s.auth(http.HandlerFunc(s.handleListIssues)))
 	mux.Handle("POST /api/issues", s.auth(http.HandlerFunc(s.handleCreateIssue)))
@@ -173,6 +174,15 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // ── Users ─────────────────────────────────────────────────────────────────────
 
+func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	projects, err := db.ListProjects(s.database)
+	if err != nil {
+		jsonError(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"projects": projects})
+}
+
 func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := db.ListUsers(s.database)
 	if err != nil {
@@ -210,6 +220,8 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Description string `json:"description"`
 		Priority    string `json:"priority"`
 		Assignee    string `json:"assignee"`
+		Project     string `json:"project"`
+		Component   string `json:"component"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -221,7 +233,7 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	reporter := currentUser(r).Username
-	issue, err := db.CreateIssue(s.database, body.Title, body.Description, reporter, body.Assignee, body.Priority)
+	issue, err := db.CreateIssue(s.database, body.Title, body.Description, reporter, body.Assignee, body.Priority, body.Project, body.Component)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 		return
@@ -271,6 +283,8 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		Priority    string `json:"priority"`
 		Status      string `json:"status"`
 		Assignee    string `json:"assignee"`
+		Project     string `json:"project"`
+		Component   string `json:"component"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
@@ -281,7 +295,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issue, err := db.UpdateIssue(s.database, id, body.Title, body.Description, body.Priority, body.Status, body.Assignee)
+	issue, err := db.UpdateIssue(s.database, id, body.Title, body.Description, body.Priority, body.Status, body.Assignee, body.Project, body.Component)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 		return

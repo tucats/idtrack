@@ -344,13 +344,15 @@ html, body {
 .issues-table tr.issue-row:hover  { background: #f0f4ff; }
 .issues-table tr.issue-row.selected { background: #e8eeff; }
 
-.col-id       { width: 4rem; font-family: monospace; color: var(--text-muted); }
-.col-title    { min-width: 200px; }
-.col-priority { width: 90px; }
-.col-status   { width: 95px; }
-.col-reporter { width: 110px; }
-.col-assignee { width: 110px; }
-.col-date     { width: 110px; white-space: nowrap; }
+.col-id        { width: 4rem; font-family: monospace; color: var(--text-muted); }
+.col-title     { min-width: 160px; }
+.col-project   { width: 110px; }
+.col-component { width: 110px; }
+.col-priority  { width: 90px; }
+.col-status    { width: 95px; }
+.col-reporter  { width: 110px; }
+.col-assignee  { width: 110px; }
+.col-date      { width: 110px; white-space: nowrap; }
 
 .issue-title-cell { font-weight: 500; }
 
