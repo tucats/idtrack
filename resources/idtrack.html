@@ -40,6 +40,20 @@
     </div>
     <div class="form-row">
       <div class="form-group">
+        <label for="ni-project">Project <span class="required">*</span></label>
+        <select id="ni-project" onchange="onNiProjectChange()">
+          <option value="">Choose project…</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="ni-component">Component <span class="required">*</span></label>
+        <select id="ni-component" disabled>
+          <option value="">Choose component…</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
         <label for="ni-priority">Priority</label>
         <select id="ni-priority">
           <option value="High">High</option>
@@ -56,7 +70,7 @@
     </div>
     <div class="form-group">
       <label for="ni-desc">Description</label>
-      <textarea id="ni-desc" rows="6" placeholder="Describe the issue in detail…"></textarea>
+      <textarea id="ni-desc" rows="5" placeholder="Describe the issue in detail…"></textarea>
     </div>
     <div id="ni-error" class="error-text"></div>
     <div class="button-row">
@@ -133,9 +147,10 @@
           <tr>
             <th class="col-id sortable" onclick="toggleSort('id')" title="Sort by ID">#</th>
             <th class="col-title sortable" onclick="toggleSort('title')" title="Sort by title">Title</th>
+            <th class="col-project sortable" onclick="toggleSort('project')" title="Sort by project">Project</th>
+            <th class="col-component sortable" onclick="toggleSort('component')" title="Sort by component">Component</th>
             <th class="col-priority sortable" onclick="toggleSort('priority')" title="Sort by priority">Priority</th>
             <th class="col-status sortable" onclick="toggleSort('status')" title="Sort by status">Status</th>
-            <th class="col-reporter sortable" onclick="toggleSort('reporter')" title="Sort by reporter">Reporter</th>
             <th class="col-assignee sortable" onclick="toggleSort('assignee')" title="Sort by assignee">Assignee</th>
             <th class="col-date sortable" onclick="toggleSort('created_at')" title="Sort by date">Created</th>
           </tr>
@@ -180,6 +195,20 @@
             <label>Assignee</label>
             <select id="detail-assignee" class="detail-select" onchange="markDetailDirty()">
               <option value="">(unassigned)</option>
+            </select>
+          </div>
+        </div>
+        <div class="detail-fields-row">
+          <div class="detail-field">
+            <label>Project</label>
+            <select id="detail-project" class="detail-select" onchange="onDetailProjectChange()">
+              <option value="">Choose project…</option>
+            </select>
+          </div>
+          <div class="detail-field">
+            <label>Component</label>
+            <select id="detail-component" class="detail-select" onchange="markDetailDirty()">
+              <option value="">Choose component…</option>
             </select>
           </div>
         </div>

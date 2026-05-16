@@ -14,7 +14,8 @@ idtrack/
 │   ├── db.go             # Open(), schema init, migration helper
 │   ├── users.go          # User CRUD + RecordLogin + UpdateUser + ListUsers
 │   ├── issues.go         # Issue CRUD (list/get/create/update/delete)
-│   └── comments.go       # Comment CRUD + DeleteComment
+│   ├── comments.go       # Comment CRUD + DeleteComment
+│   └── projects.go       # Project/Component CRUD
 ├── server/
 │   └── server.go         # HTTP mux, middleware, all handlers
 └── resources/            # Embedded at build time via //go:embed
@@ -55,7 +56,10 @@ CREATE TABLE issues (
     priority    TEXT NOT NULL DEFAULT 'Medium',  -- High/Medium/Low
     status      TEXT NOT NULL DEFAULT 'Open',    -- Open/Resolved
     created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    updated_at  TEXT NOT NULL,
+    -- added via migration:
+    project     TEXT NOT NULL DEFAULT '',
+    component   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE comments (
@@ -65,11 +69,22 @@ CREATE TABLE comments (
     body       TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE projects (
+    name TEXT PRIMARY KEY
+);
+
+CREATE TABLE components (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    project TEXT NOT NULL,
+    name    TEXT NOT NULL,
+    UNIQUE(project, name)
+);
 ```
 
 ### Schema Migrations
 
-The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added after the initial schema (like `last_login_at` and `is_admin`) are applied via `addColumnIfMissing()` in `db/db.go`, which runs `ALTER TABLE ... ADD COLUMN` and ignores "duplicate column name" errors. This means the binary upgrades existing databases automatically on startup with no migration tooling needed.
+The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added after the initial schema (like `last_login_at`, `is_admin`, `project`, `component`) are applied via `addColumnIfMissing()` in `db/db.go`, which runs `ALTER TABLE ... ADD COLUMN` and ignores "duplicate column name" errors. This means the binary upgrades existing databases automatically on startup with no migration tooling needed.
 
 ## Runtime Files (`~/.idtrack/`)
 
@@ -113,6 +128,14 @@ Tabular output: USERNAME, DISPLAY NAME, ADMIN, LAST LOGIN.
 ### `idtrack user --delete username [--database path]`
 Hard-deletes the user row. Does not cascade to issues/comments (those store the username as a string).
 
+### `idtrack define --project name [--component name] [--database path]`
+- Without `--component`: creates a new project (idempotent — uses `INSERT OR IGNORE`).
+- With `--component`: adds a component to an existing project. Errors if the project does not exist. Idempotent (`INSERT OR IGNORE`).
+
+### `idtrack delete --project name [--component name] [--database path]`
+- Without `--component`: deletes the project and all its components. Errors (with issue list) if any issues reference that project.
+- With `--component`: deletes a single component from a project. Errors (with issue list) if any issues reference that project+component combination.
+
 ## HTTP API
 
 All authenticated endpoints use Basic Auth where the password field carries the SHA-256 hex hash (not the plaintext password). The `auth` middleware validates on every request and stores the `*db.User` in the request context.
@@ -121,6 +144,7 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 |--------|------|------|----------------|
 | POST | `/api/login` | Basic (validates) | no |
 | GET | `/api/users` | yes | no |
+| GET | `/api/projects` | yes | no |
 | GET | `/api/issues` | yes | no |
 | POST | `/api/issues` | yes | no |
 | GET | `/api/issues/{id}` | yes | no |
@@ -147,6 +171,7 @@ Single-page app. All JS is in one `idtrack.js` file; no build step, no framework
 _credentials  // 'Basic base64(user:sha256hash)' — sent on every API call
 _currentUser  // { username, display_name, is_admin }
 _userMap      // { username: display_name } — built from /api/users at login
+_projectData  // [{name, components: [...]}] — built from /api/projects at login
 _allIssues    // full issue list, filtered/sorted client-side
 _currentId    // currently selected issue id
 ```
@@ -155,6 +180,14 @@ Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refr
 
 ### Display name resolution
 `reporter` and `assignee` in the issues table store the short **username** (login name). Display names are resolved client-side via `_userMap` using the `displayName(username)` helper. This map is populated (along with the assignee dropdowns) by `populateAssigneeDropdowns()` which calls `GET /api/users`. If a username isn't in the map, it falls back to the raw username.
+
+### Project/Component UI
+- Issues table shows **Project** and **Component** columns (reporter column removed from table; reporter remains visible as read-only in the issue detail panel).
+- Sorting by project and component is supported in both the table headers and client-side sort.
+- **New Issue** form: a "Project" dropdown must be selected first; selecting it enables a cascaded "Component" dropdown. Both are required — the form will not submit without a valid project and component.
+- **Issue Detail** panel: Project and Component are editable `<select>` elements. Changing the Project resets the Component to "Choose…" and refills the component dropdown. Both are required to save.
+- `populateProjectDropdowns()` fills both `ni-project` and `detail-project` from `_projectData`.
+- `populateComponentDropdown(selectId, projectName, selected)` cascades from a selected project.
 
 ### Admin UI
 - **Delete Issue** button appears in the detail panel header only when `_currentUser.is_admin` is true. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}`.

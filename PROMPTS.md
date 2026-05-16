@@ -129,3 +129,37 @@ endpoints you'll add to support deleting and issue or a comment.
 
 Add a "--admin true/false" flag to the "idtrack user" command set for adding a new user or updating a user to set
 or clear this attribute for a specifc user.
+
+## PROMPT 8
+
+Let's add a project and component to each issue. These must be selected from a list
+of values in the database.
+
+When creating a new issue, popup allow selecting a project from the list. Once the
+project is known, the components for that porject are offered in a second popup.
+
+Allow sorting the issue list by project and/or component. You can remove the column
+from the listing of who reported the issue, but that should still be available as a
+readonly value in the issue detail.
+
+The issue detail list should allow the user to change the project and component. If
+the project is changed, the UI should reset the component to "Choose..." or something
+similar to show no component chosen. You cannot create an issue without choosing
+an valid project and compoonent.
+
+Create new idtrack CLI subcommands:
+
+- idtrack define --project "Text"
+- idtrack define --project "text" --component "text"
+- idtrack delete --project "text" 
+- idtrack delete --project "text" --component "Text" 
+
+These commands create a new project, or add a component to a project in the
+database of allowed project and component names. IF the define command specifies
+a project that does not exist with a component, that is an error.
+
+The delete operations remove the project (and all it's components), or if a
+component is given, only that component. It is an error if there are any issues
+that reference the project or component being deleted; the list of affected
+projects should be displayed as part of the error information.
+

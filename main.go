@@ -41,6 +41,10 @@ func main() {
 		runDefault(args[1:])
 	case "user":
 		runUser(args[1:])
+	case "define":
+		runDefine(args[1:])
+	case "delete":
+		runDeleteProjectOrComponent(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb: %s\n", args[0])
 		usage()
@@ -57,6 +61,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  idtrack user --add username:password [--name text] [--admin true|false] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack user --update username [--name text] [--password text] [--admin true|false] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack user --delete username [--database path]")
+	fmt.Fprintln(os.Stderr, "  idtrack define --project name [--component name] [--database path]")
+	fmt.Fprintln(os.Stderr, "  idtrack delete --project name [--component name] [--database path]")
 }
 
 func runServe(args []string) {
@@ -357,6 +363,132 @@ func runUser(args []string) {
 			os.Exit(1)
 		}
 		fmt.Printf("user %q deleted\n", del)
+	}
+}
+
+func runDefine(args []string) {
+	var project, component, database string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				i++
+				project = args[i]
+			}
+		case "--component":
+			if i+1 < len(args) {
+				i++
+				component = args[i]
+			}
+		case "--database":
+			if i+1 < len(args) {
+				i++
+				database = args[i]
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
+			usage()
+			os.Exit(1)
+		}
+	}
+
+	if project == "" {
+		fmt.Fprintln(os.Stderr, "--project is required")
+		usage()
+		os.Exit(1)
+	}
+
+	if database == "" {
+		defs := loadDefaults()
+		database = defs.Database
+	}
+	if database == "" {
+		database = "idtrack.db"
+	}
+
+	d, err := db.Open(database)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", database, err)
+		os.Exit(1)
+	}
+	defer d.Close()
+
+	if component == "" {
+		if err := db.CreateProject(d, project); err != nil {
+			fmt.Fprintf(os.Stderr, "error creating project %q: %v\n", project, err)
+			os.Exit(1)
+		}
+		fmt.Printf("project %q defined\n", project)
+	} else {
+		if err := db.AddComponent(d, project, component); err != nil {
+			fmt.Fprintf(os.Stderr, "error adding component %q to project %q: %v\n", component, project, err)
+			os.Exit(1)
+		}
+		fmt.Printf("component %q added to project %q\n", component, project)
+	}
+}
+
+func runDeleteProjectOrComponent(args []string) {
+	var project, component, database string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				i++
+				project = args[i]
+			}
+		case "--component":
+			if i+1 < len(args) {
+				i++
+				component = args[i]
+			}
+		case "--database":
+			if i+1 < len(args) {
+				i++
+				database = args[i]
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
+			usage()
+			os.Exit(1)
+		}
+	}
+
+	if project == "" {
+		fmt.Fprintln(os.Stderr, "--project is required")
+		usage()
+		os.Exit(1)
+	}
+
+	if database == "" {
+		defs := loadDefaults()
+		database = defs.Database
+	}
+	if database == "" {
+		database = "idtrack.db"
+	}
+
+	d, err := db.Open(database)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", database, err)
+		os.Exit(1)
+	}
+	defer d.Close()
+
+	if component == "" {
+		if err := db.DeleteProject(d, project); err != nil {
+			fmt.Fprintf(os.Stderr, "error deleting project %q: %v\n", project, err)
+			os.Exit(1)
+		}
+		fmt.Printf("project %q deleted\n", project)
+	} else {
+		if err := db.DeleteComponent(d, project, component); err != nil {
+			fmt.Fprintf(os.Stderr, "error deleting component %q from project %q: %v\n", component, project, err)
+			os.Exit(1)
+		}
+		fmt.Printf("component %q deleted from project %q\n", component, project)
 	}
 }
 

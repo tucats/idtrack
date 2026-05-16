@@ -12,11 +12,12 @@ const APP_VERSION = '2.0';
 // STATE
 // =====================================================================
 
-let _credentials = null;   // 'Basic base64(username:sha256hash)'
-let _currentUser = null;   // { username, display_name }
-let _userMap     = {};     // username -> display_name
-let _allIssues   = [];
-let _currentId   = null;
+let _credentials  = null;   // 'Basic base64(username:sha256hash)'
+let _currentUser  = null;   // { username, display_name }
+let _userMap      = {};     // username -> display_name
+let _projectData  = [];     // [{name, components: [...]}]
+let _allIssues    = [];
+let _currentId    = null;
 let _sortCol     = 'id';
 let _sortAsc     = false;
 let _statusFilter   = 'open';
@@ -156,12 +157,17 @@ async function fetchIssue(id) {
     return apiGet(`/api/issues/${id}`);  // returns { issue, comments }
 }
 
-async function createIssue(title, description, priority, assignee) {
-    return apiPost('/api/issues', { title, description, priority, assignee });
+async function fetchProjects() {
+    const data = await apiGet('/api/projects');
+    return data.projects || [];
 }
 
-async function updateIssue(id, title, description, priority, status, assignee) {
-    return apiPut(`/api/issues/${id}`, { title, description, priority, status, assignee });
+async function createIssue(title, description, priority, assignee, project, component) {
+    return apiPost('/api/issues', { title, description, priority, assignee, project, component });
+}
+
+async function updateIssue(id, title, description, priority, status, assignee, project, component) {
+    return apiPut(`/api/issues/${id}`, { title, description, priority, status, assignee, project, component });
 }
 
 async function deleteIssue(id) {
@@ -236,6 +242,7 @@ async function launchApp() {
     document.getElementById('app').style.display = '';
     await refreshIssues();
     await populateAssigneeDropdowns();
+    await populateProjectDropdowns();
 }
 
 function doLogout() {
@@ -286,7 +293,7 @@ function updateSortUI() {
         const arr = th.querySelector('.sort-arrow');
         if (arr) arr.remove();
     });
-    const colMap = { id:'col-id', title:'col-title', priority:'col-priority', status:'col-status', reporter:'col-reporter', assignee:'col-assignee', created_at:'col-date' };
+    const colMap = { id:'col-id', title:'col-title', project:'col-project', component:'col-component', priority:'col-priority', status:'col-status', assignee:'col-assignee', created_at:'col-date' };
     const cls = colMap[_sortCol];
     if (cls) {
         const th = document.querySelector(`.issues-table th.${cls}`);
@@ -325,7 +332,7 @@ function filteredAndSorted(issues) {
         }
         if (_priorityFilter !== 'all' && issue.priority !== _priorityFilter) return false;
         if (q) {
-            const haystack = [issue.title, issue.description, issue.reporter, issue.assignee].join(' ').toLowerCase();
+            const haystack = [issue.title, issue.description, issue.reporter, issue.assignee, issue.project, issue.component].join(' ').toLowerCase();
             if (!haystack.includes(q)) return false;
         }
         return true;
@@ -363,9 +370,10 @@ function renderIssues(issues) {
         return `<tr class="issue-row${sel}" onclick="selectIssue(${issue.id})">
             <td class="col-id">#${esc(String(issue.id))}</td>
             <td class="col-title issue-title-cell">${esc(issue.title)}</td>
+            <td class="col-project">${esc(issue.project || '—')}</td>
+            <td class="col-component">${esc(issue.component || '—')}</td>
             <td class="col-priority">${priorityBadge(issue.priority)}</td>
             <td class="col-status">${statusBadge(issue.status)}</td>
-            <td class="col-reporter">${esc(displayName(issue.reporter))}</td>
             <td class="col-assignee">${esc(issue.assignee ? displayName(issue.assignee) : '—')}</td>
             <td class="col-date">${fmtDate(issue.created_at)}</td>
         </tr>`;
@@ -404,6 +412,9 @@ async function selectIssue(id) {
         const asnSel = document.getElementById('detail-assignee');
         asnSel.value = issue.assignee || '';
 
+        document.getElementById('detail-project').value = issue.project || '';
+        populateComponentDropdown('detail-component', issue.project || '', issue.component || '');
+
         document.getElementById('detail-save-btn').style.display = 'none';
         document.getElementById('detail-delete-btn').style.display = (_currentUser && _currentUser.is_admin) ? '' : 'none';
         _detailDirty = false;
@@ -436,22 +447,26 @@ function markDetailDirty() {
 
 async function saveIssueChanges() {
     if (!_currentId) return;
-    const title    = document.getElementById('detail-title').value.trim();
-    const status   = document.getElementById('detail-status').value;
-    const priority = document.getElementById('detail-priority').value;
-    const assignee = document.getElementById('detail-assignee').value;
-    const desc     = document.getElementById('detail-desc').value.trim();
-    const err      = document.getElementById('detail-error');
-    const btn      = document.getElementById('detail-save-btn');
+    const title     = document.getElementById('detail-title').value.trim();
+    const status    = document.getElementById('detail-status').value;
+    const priority  = document.getElementById('detail-priority').value;
+    const assignee  = document.getElementById('detail-assignee').value;
+    const desc      = document.getElementById('detail-desc').value.trim();
+    const project   = document.getElementById('detail-project').value;
+    const component = document.getElementById('detail-component').value;
+    const err       = document.getElementById('detail-error');
+    const btn       = document.getElementById('detail-save-btn');
 
     err.textContent = '';
-    if (!title) { err.textContent = 'Title is required.'; return; }
+    if (!title)     { err.textContent = 'Title is required.'; return; }
+    if (!project)   { err.textContent = 'Project is required.'; return; }
+    if (!component) { err.textContent = 'Component is required.'; return; }
 
     btn.disabled = true;
     btn.textContent = 'Saving…';
 
     try {
-        const { issue } = await updateIssue(_currentId, title, desc, priority, status, assignee);
+        const { issue } = await updateIssue(_currentId, title, desc, priority, status, assignee, project, component);
         _detailDirty = false;
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
@@ -544,7 +559,12 @@ async function showNewIssue() {
     document.getElementById('ni-priority').value = 'Medium';
     document.getElementById('ni-desc').value = '';
     document.getElementById('ni-error').textContent = '';
+    document.getElementById('ni-project').value = '';
+    const niComp = document.getElementById('ni-component');
+    niComp.innerHTML = '<option value="">Choose component…</option>';
+    niComp.disabled = true;
     await populateAssigneeDropdowns();
+    await populateProjectDropdowns();
     document.getElementById('new-issue-overlay').style.display = 'flex';
     document.getElementById('ni-title').focus();
 }
@@ -554,21 +574,25 @@ function hideNewIssue() {
 }
 
 async function submitNewIssue() {
-    const title    = document.getElementById('ni-title').value.trim();
-    const priority = document.getElementById('ni-priority').value;
-    const assignee = document.getElementById('ni-assignee').value;
-    const desc     = document.getElementById('ni-desc').value.trim();
-    const err      = document.getElementById('ni-error');
-    const btn      = document.getElementById('ni-submit-btn');
+    const title     = document.getElementById('ni-title').value.trim();
+    const priority  = document.getElementById('ni-priority').value;
+    const assignee  = document.getElementById('ni-assignee').value;
+    const desc      = document.getElementById('ni-desc').value.trim();
+    const project   = document.getElementById('ni-project').value;
+    const component = document.getElementById('ni-component').value;
+    const err       = document.getElementById('ni-error');
+    const btn       = document.getElementById('ni-submit-btn');
 
     err.textContent = '';
-    if (!title) { err.textContent = 'Title is required.'; return; }
+    if (!title)     { err.textContent = 'Title is required.'; return; }
+    if (!project)   { err.textContent = 'Project is required.'; return; }
+    if (!component) { err.textContent = 'Component is required.'; return; }
 
     btn.disabled = true;
     btn.textContent = 'Creating…';
 
     try {
-        await createIssue(title, desc, priority, assignee);
+        await createIssue(title, desc, priority, assignee, project, component);
         hideNewIssue();
         _allIssues = await fetchIssues();
         renderIssues(_allIssues);
@@ -607,6 +631,51 @@ async function populateAssigneeDropdowns() {
         sel.innerHTML = options;
         sel.value = prev;
     });
+}
+
+// =====================================================================
+// PROJECT / COMPONENT DROPDOWNS
+// =====================================================================
+
+async function populateProjectDropdowns() {
+    try { _projectData = await fetchProjects(); } catch { _projectData = []; }
+
+    const options = ['<option value="">Choose project…</option>']
+        .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
+        .join('');
+
+    ['ni-project', 'detail-project'].forEach(id => {
+        const sel = document.getElementById(id);
+        if (!sel) return;
+        const prev = sel.value;
+        sel.innerHTML = options;
+        sel.value = prev;
+    });
+}
+
+function populateComponentDropdown(selectId, projectName, selectedComponent) {
+    const sel = document.getElementById(selectId);
+    if (!sel) return;
+    const project = _projectData.find(p => p.name === projectName);
+    if (!project || !projectName) {
+        sel.innerHTML = '<option value="">Choose component…</option>';
+        sel.disabled = true;
+        return;
+    }
+    sel.innerHTML = ['<option value="">Choose component…</option>']
+        .concat(project.components.map(c => `<option value="${esc(c)}">${esc(c)}</option>`))
+        .join('');
+    sel.disabled = false;
+    sel.value = selectedComponent || '';
+}
+
+function onNiProjectChange() {
+    populateComponentDropdown('ni-component', document.getElementById('ni-project').value, '');
+}
+
+function onDetailProjectChange() {
+    populateComponentDropdown('detail-component', document.getElementById('detail-project').value, '');
+    markDetailDirty();
 }
 
 // =====================================================================

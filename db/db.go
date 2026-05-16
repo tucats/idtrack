@@ -47,6 +47,15 @@ func initSchema(database *sql.DB) error {
 			body       TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS projects (
+			name TEXT PRIMARY KEY
+		);
+		CREATE TABLE IF NOT EXISTS components (
+			id      INTEGER PRIMARY KEY AUTOINCREMENT,
+			project TEXT NOT NULL,
+			name    TEXT NOT NULL,
+			UNIQUE(project, name)
+		);
 	`)
 	if err != nil {
 		return err
@@ -54,7 +63,13 @@ func initSchema(database *sql.DB) error {
 	if err := addColumnIfMissing(database, "users", "last_login_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
-	return addColumnIfMissing(database, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0")
+	if err := addColumnIfMissing(database, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := addColumnIfMissing(database, "issues", "project", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return addColumnIfMissing(database, "issues", "component", "TEXT NOT NULL DEFAULT ''")
 }
 
 func addColumnIfMissing(database *sql.DB, table, column, definition string) error {
