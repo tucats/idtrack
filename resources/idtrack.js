@@ -15,6 +15,7 @@ const APP_VERSION = '2.0';
 let _credentials  = null;   // 'Basic base64(username:sha256hash)'
 let _currentUser  = null;   // { username, display_name }
 let _userMap      = {};     // username -> display_name
+let _userList     = [];     // full user objects from GET /api/users
 let _projectData  = [];     // [{name, components: [...]}]
 let _allIssues    = [];
 let _currentId    = null;
@@ -240,6 +241,8 @@ async function submitLogin() {
 async function launchApp() {
     document.getElementById('user-badge').textContent = _currentUser.display_name || _currentUser.username;
     const adminDisplay = _currentUser.is_admin ? '' : 'none';
+    document.getElementById('menu-add-user').style.display         = adminDisplay;
+    document.getElementById('menu-edit-user').style.display        = adminDisplay;
     document.getElementById('menu-add-project').style.display      = adminDisplay;
     document.getElementById('menu-add-component').style.display    = adminDisplay;
     document.getElementById('menu-manage-projects').style.display  = adminDisplay;
@@ -621,6 +624,7 @@ async function populateAssigneeDropdowns() {
     let users = [];
     try { users = await fetchUsers(); } catch {}
 
+    _userList = users;
     _userMap = {};
     users.forEach(u => { _userMap[u.username] = u.display_name || u.username; });
 
@@ -635,6 +639,143 @@ async function populateAssigneeDropdowns() {
         sel.innerHTML = options;
         sel.value = prev;
     });
+}
+
+// =====================================================================
+// UI — USER MANAGEMENT (admin)
+// =====================================================================
+
+function openAddUser() {
+    _closeMenuOnOutside();
+    document.getElementById('au-username').value      = '';
+    document.getElementById('au-display-name').value  = '';
+    document.getElementById('au-password').value      = '';
+    document.getElementById('au-confirm').value        = '';
+    document.getElementById('au-admin').checked        = false;
+    document.getElementById('au-error').textContent   = '';
+    document.getElementById('add-user-overlay').style.display = 'flex';
+    document.getElementById('au-username').focus();
+}
+
+function hideAddUser() {
+    document.getElementById('add-user-overlay').style.display = 'none';
+}
+
+async function submitAddUser() {
+    const username     = document.getElementById('au-username').value.trim();
+    const displayName  = document.getElementById('au-display-name').value.trim();
+    const password     = document.getElementById('au-password').value;
+    const confirm      = document.getElementById('au-confirm').value;
+    const isAdmin      = document.getElementById('au-admin').checked;
+    const err          = document.getElementById('au-error');
+    const btn          = document.getElementById('au-submit-btn');
+
+    err.textContent = '';
+    if (!username)  { err.textContent = 'Username is required.'; return; }
+    if (!password)  { err.textContent = 'Password is required.'; return; }
+    if (password !== confirm) { err.textContent = 'Passwords do not match.'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    try {
+        const passwordHash = await sha256(password);
+        await apiPost('/api/users', { username, display_name: displayName, password_hash: passwordHash, is_admin: isAdmin });
+        await populateAssigneeDropdowns();
+        hideAddUser();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add user.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Add User';
+    }
+}
+
+function openEditUser() {
+    _closeMenuOnOutside();
+    const sel = document.getElementById('eu-username');
+    sel.innerHTML = ['<option value="">Choose user…</option>']
+        .concat(_userList.map(u => `<option value="${esc(u.username)}">${esc(u.display_name || u.username)} (${esc(u.username)})</option>`))
+        .join('');
+    sel.value = '';
+    document.getElementById('eu-display-name').value  = '';
+    document.getElementById('eu-password').value       = '';
+    document.getElementById('eu-confirm').value         = '';
+    document.getElementById('eu-admin').checked         = false;
+    document.getElementById('eu-error').textContent    = '';
+    document.getElementById('eu-delete-btn').style.display = 'none';
+    document.getElementById('edit-user-overlay').style.display = 'flex';
+}
+
+function hideEditUser() {
+    document.getElementById('edit-user-overlay').style.display = 'none';
+}
+
+function onEditUserSelect() {
+    const username = document.getElementById('eu-username').value;
+    const user = _userList.find(u => u.username === username);
+    document.getElementById('eu-error').textContent = '';
+    if (!user) {
+        document.getElementById('eu-display-name').value  = '';
+        document.getElementById('eu-password').value       = '';
+        document.getElementById('eu-confirm').value         = '';
+        document.getElementById('eu-admin').checked         = false;
+        document.getElementById('eu-delete-btn').style.display = 'none';
+        return;
+    }
+    document.getElementById('eu-display-name').value = user.display_name || '';
+    document.getElementById('eu-password').value      = '';
+    document.getElementById('eu-confirm').value        = '';
+    document.getElementById('eu-admin').checked        = !!user.is_admin;
+    document.getElementById('eu-delete-btn').style.display =
+        (user.username === _currentUser.username) ? 'none' : '';
+}
+
+async function submitEditUser() {
+    const username    = document.getElementById('eu-username').value;
+    const displayName = document.getElementById('eu-display-name').value.trim();
+    const password    = document.getElementById('eu-password').value;
+    const confirm     = document.getElementById('eu-confirm').value;
+    const isAdmin     = document.getElementById('eu-admin').checked;
+    const err         = document.getElementById('eu-error');
+    const btn         = document.getElementById('eu-save-btn');
+
+    err.textContent = '';
+    if (!username)    { err.textContent = 'Select a user.'; return; }
+    if (password !== confirm) { err.textContent = 'Passwords do not match.'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+    try {
+        const passwordHash = password ? await sha256(password) : '';
+        await apiPut(`/api/users/${encodeURIComponent(username)}`, {
+            display_name: displayName, password_hash: passwordHash, is_admin: isAdmin,
+        });
+        await populateAssigneeDropdowns();
+        hideEditUser();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Save failed.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Save Changes';
+    }
+}
+
+async function confirmDeleteUser() {
+    const username = document.getElementById('eu-username').value;
+    if (!username) return;
+    if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+    const err = document.getElementById('eu-error');
+    const btn = document.getElementById('eu-delete-btn');
+    btn.disabled = true;
+    try {
+        await apiDelete(`/api/users/${encodeURIComponent(username)}`);
+        await populateAssigneeDropdowns();
+        hideEditUser();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // =====================================================================

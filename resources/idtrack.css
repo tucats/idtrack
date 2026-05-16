@@ -558,7 +558,9 @@ html, body {
 
 .settings-sheet         { max-width: 380px; }
 .manage-projects-sheet  { max-width: 420px; }
+.user-admin-sheet       { max-width: 480px; }
 
+.user-admin-sheet h3,
 .manage-projects-sheet h3 {
   font-size: 1.1rem;
   font-weight: 700;
