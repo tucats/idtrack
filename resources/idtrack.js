@@ -272,10 +272,8 @@ function setStatusFilter(val) {
     renderIssues(_allIssues);
 }
 
-function setPriorityFilter(val, btn) {
+function setPriorityFilter(val) {
     _priorityFilter = val;
-    document.querySelectorAll('.filter-btn[data-priority]').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
     renderIssues(_allIssues);
 }
 

@@ -214,3 +214,6 @@ the user clicks the "Save" button, all components are added
 Add a filter to the webapp by project. It should offer "All..." followed by an alphabetical list of projects. If a project other than "All..." is selected, the issue list should be filtered to only show those issues for that project.
 
 For symmetry in the user interface, make the filter on project status work the same way. "All..." is the default, but a popup allows selecting "Open" or "Resolved" as selectors.
+
+Let's make the same change to the filter for priority; use a
+dropdown menu with "All...", followed by High, Medium, and Low.
