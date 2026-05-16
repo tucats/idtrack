@@ -7,8 +7,6 @@
 *.dll
 *.so
 *.dylib
-*.key
-*.crt
 
 # Test binary, built with `go test -c`
 *.test
@@ -35,3 +33,7 @@ go.work.sum
 
 # Database files
 *.db
+
+# TLS stuff
+resources/https-server.crt
+resources/https-server.key
