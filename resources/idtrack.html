@@ -8,81 +8,24 @@
 </head>
 <body>
 
-<!-- ==================== SETUP OVERLAY ==================== -->
-<div id="setup-overlay" class="overlay" style="display:none">
-  <div class="sheet setup-sheet">
-    <h2>idtrack Setup</h2>
-    <p class="setup-intro">Connect idtrack to your Ego server. Enter the credentials of a user with admin privileges; idtrack will use these to manage its database.</p>
-    <div class="form-group">
-      <label for="setup-user">Ego Admin Username</label>
-      <input id="setup-user" type="text" autocomplete="username" placeholder="admin">
-    </div>
-    <div class="form-group">
-      <label for="setup-pass">Ego Admin Password</label>
-      <input id="setup-pass" type="password" autocomplete="current-password" placeholder="password">
-    </div>
-    <div class="form-group">
-      <label for="setup-dsn">Database Name</label>
-      <input id="setup-dsn" type="text" value="idtrack" placeholder="idtrack">
-      <span class="hint">A SQLite database will be created with this name.</span>
-    </div>
-    <div id="setup-error" class="error-text"></div>
-    <div class="button-row">
-      <button id="setup-submit-btn" class="btn btn-primary" onclick="submitSetup()">Connect &amp; Initialize</button>
-    </div>
-  </div>
-</div>
-
 <!-- ==================== LOGIN OVERLAY ==================== -->
 <div id="login-overlay" class="overlay" style="display:none">
   <div class="sheet login-sheet">
     <h2>idtrack</h2>
     <p class="login-subtitle">Issue Tracker</p>
-    <div id="login-form">
-      <div class="form-group">
-        <label for="login-user">Username</label>
-        <input id="login-user" type="text" autocomplete="username" placeholder="username"
-               onkeydown="if(event.key==='Enter') document.getElementById('login-pass').focus()">
-      </div>
-      <div class="form-group">
-        <label for="login-pass">Password</label>
-        <input id="login-pass" type="password" autocomplete="current-password" placeholder="password"
-               onkeydown="if(event.key==='Enter') submitLogin()">
-      </div>
-      <div id="login-error" class="error-text"></div>
-      <div class="button-row">
-        <button id="login-submit-btn" class="btn btn-primary" onclick="submitLogin()">Sign In</button>
-      </div>
-      <div class="login-footer">
-        <a href="#" onclick="showRegisterForm(); return false;">Create account</a>
-        &nbsp;·&nbsp;
-        <a href="#" onclick="showSetup(); return false;">Server settings</a>
-      </div>
+    <div class="form-group">
+      <label for="login-user">Username</label>
+      <input id="login-user" type="text" autocomplete="username" placeholder="username"
+             onkeydown="if(event.key==='Enter') document.getElementById('login-pass').focus()">
     </div>
-
-    <div id="register-form" style="display:none">
-      <div class="form-group">
-        <label for="reg-user">Username</label>
-        <input id="reg-user" type="text" autocomplete="username" placeholder="choose a username">
-      </div>
-      <div class="form-group">
-        <label for="reg-display">Display Name</label>
-        <input id="reg-display" type="text" autocomplete="name" placeholder="Your full name">
-      </div>
-      <div class="form-group">
-        <label for="reg-pass">Password</label>
-        <input id="reg-pass" type="password" autocomplete="new-password" placeholder="choose a password">
-      </div>
-      <div class="form-group">
-        <label for="reg-pass2">Confirm Password</label>
-        <input id="reg-pass2" type="password" autocomplete="new-password" placeholder="confirm password"
-               onkeydown="if(event.key==='Enter') submitRegister()">
-      </div>
-      <div id="reg-error" class="error-text"></div>
-      <div class="button-row">
-        <button id="reg-submit-btn" class="btn btn-primary" onclick="submitRegister()">Create Account</button>
-        <button class="btn btn-secondary" onclick="showLoginForm()">Back to Sign In</button>
-      </div>
+    <div class="form-group">
+      <label for="login-pass">Password</label>
+      <input id="login-pass" type="password" autocomplete="current-password" placeholder="password"
+             onkeydown="if(event.key==='Enter') submitLogin()">
+    </div>
+    <div id="login-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="login-submit-btn" class="btn btn-primary" onclick="submitLogin()">Sign In</button>
     </div>
   </div>
 </div>
