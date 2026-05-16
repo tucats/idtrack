@@ -97,6 +97,83 @@
   </div>
 </div>
 
+<!-- ==================== ADD USER OVERLAY (admin) ==================== -->
+<div id="add-user-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-user-overlay',hideAddUser)">
+  <div class="sheet user-admin-sheet">
+    <h3>Add User</h3>
+    <div class="form-group">
+      <label for="au-username">Username <span class="required">*</span></label>
+      <input id="au-username" type="text" autocomplete="off" placeholder="login name" maxlength="50">
+    </div>
+    <div class="form-group">
+      <label for="au-display-name">Display Name</label>
+      <input id="au-display-name" type="text" autocomplete="off" placeholder="(defaults to username)" maxlength="100">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="au-password">Password <span class="required">*</span></label>
+        <input id="au-password" type="password" autocomplete="new-password" placeholder="password">
+      </div>
+      <div class="form-group">
+        <label for="au-confirm">Confirm Password <span class="required">*</span></label>
+        <input id="au-confirm" type="password" autocomplete="new-password" placeholder="confirm">
+      </div>
+    </div>
+    <div class="settings-row">
+      <span class="settings-label">Admin privileges</span>
+      <label class="toggle">
+        <input type="checkbox" id="au-admin">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div id="au-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="au-submit-btn" class="btn btn-primary" onclick="submitAddUser()">Add User</button>
+      <button class="btn btn-secondary" onclick="hideAddUser()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== EDIT USER OVERLAY (admin) ==================== -->
+<div id="edit-user-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'edit-user-overlay',hideEditUser)">
+  <div class="sheet user-admin-sheet">
+    <h3>Edit User</h3>
+    <div class="form-group">
+      <label for="eu-username">User <span class="required">*</span></label>
+      <select id="eu-username" onchange="onEditUserSelect()">
+        <option value="">Choose user…</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label for="eu-display-name">Display Name</label>
+      <input id="eu-display-name" type="text" autocomplete="off" maxlength="100">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label for="eu-password">New Password</label>
+        <input id="eu-password" type="password" autocomplete="new-password" placeholder="(leave blank to keep)">
+      </div>
+      <div class="form-group">
+        <label for="eu-confirm">Confirm Password</label>
+        <input id="eu-confirm" type="password" autocomplete="new-password" placeholder="(leave blank to keep)">
+      </div>
+    </div>
+    <div class="settings-row">
+      <span class="settings-label">Admin privileges</span>
+      <label class="toggle">
+        <input type="checkbox" id="eu-admin">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div id="eu-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="eu-save-btn" class="btn btn-primary" onclick="submitEditUser()">Save Changes</button>
+      <button id="eu-delete-btn" class="btn btn-danger" onclick="confirmDeleteUser()" style="display:none">Delete User</button>
+      <button class="btn btn-secondary" onclick="hideEditUser()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== ADD PROJECT OVERLAY (admin) ==================== -->
 <div id="add-project-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-project-overlay',hideAddProject)">
   <div class="sheet manage-projects-sheet">
@@ -193,6 +270,8 @@
         <button class="btn btn-ghost btn-sm hamburger-btn" onclick="toggleMenu(event)" title="Menu" aria-label="Menu">&#9776;</button>
         <div id="app-menu" class="app-menu" style="display:none">
           <button class="menu-item" onclick="openSettings()">Settings</button>
+          <button id="menu-add-user" class="menu-item" onclick="openAddUser()" style="display:none">Add User</button>
+          <button id="menu-edit-user" class="menu-item" onclick="openEditUser()" style="display:none">Edit User</button>
           <button id="menu-add-project" class="menu-item" onclick="openAddProject()" style="display:none">Add Project</button>
           <button id="menu-add-component" class="menu-item" onclick="openAddComponent()" style="display:none">Add Component</button>
           <button id="menu-manage-projects" class="menu-item" onclick="openManageProjects()" style="display:none">Delete Project/Component</button>

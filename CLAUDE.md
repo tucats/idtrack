@@ -150,9 +150,12 @@ Hard-deletes the user row. Does not cascade to issues/comments (those store the 
 All authenticated endpoints use Basic Auth where the password field carries the SHA-256 hex hash (not the plaintext password). The `auth` middleware validates on every request and stores the `*db.User` in the request context.
 
 | Method | Path | Auth | Admin required |
-|--------|------|------|----------------|
+| ------ | ---- | ---- | -------------- |
 | POST | `/api/login` | Basic (validates) | no |
 | GET | `/api/users` | yes | no |
+| POST | `/api/users` | yes | **yes** |
+| PUT | `/api/users/{username}` | yes | **yes** |
+| DELETE | `/api/users/{username}` | yes | **yes** |
 | GET | `/api/projects` | yes | no |
 | POST | `/api/projects` | yes | **yes** |
 | POST | `/api/projects/{project}/components` | yes | **yes** |
@@ -196,6 +199,7 @@ _currentId    // currently selected issue id
 Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refresh doesn't require re-login. Dark mode preference is in `localStorage` (key: `idtrack_prefs`).
 
 ### Display name resolution
+
 `reporter` and `assignee` in the issues table store the short **username** (login name). Display names are resolved client-side via `_userMap` using the `displayName(username)` helper. This map is populated (along with the assignee dropdowns) by `populateAssigneeDropdowns()` which calls `GET /api/users`. If a username isn't in the map, it falls back to the raw username.
 
 ### Project/Component UI

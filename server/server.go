@@ -41,6 +41,9 @@ func Start(database *sql.DB, port int, static fs.FS) error {
 
 	// Authenticated API endpoints
 	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
+	mux.Handle("POST /api/users", s.auth(http.HandlerFunc(s.handleCreateUser)))
+	mux.Handle("PUT /api/users/{username}", s.auth(http.HandlerFunc(s.handleUpdateUser)))
+	mux.Handle("DELETE /api/users/{username}", s.auth(http.HandlerFunc(s.handleDeleteUser)))
 	mux.Handle("GET /api/projects", s.auth(http.HandlerFunc(s.handleListProjects)))
 	mux.Handle("POST /api/projects", s.auth(http.HandlerFunc(s.handleCreateProject)))
 	mux.Handle("POST /api/projects/{project}/components", s.auth(http.HandlerFunc(s.handleCreateComponent)))
@@ -256,6 +259,90 @@ func (s *srv) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
 	component := r.PathValue("component")
 	if err := db.DeleteComponent(s.database, project, component); err != nil {
 		jsonError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Username     string `json:"username"`
+		DisplayName  string `json:"display_name"`
+		PasswordHash string `json:"password_hash"`
+		IsAdmin      bool   `json:"is_admin"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	body.Username = strings.TrimSpace(body.Username)
+	if body.Username == "" {
+		jsonError(w, "username is required", http.StatusBadRequest)
+		return
+	}
+	if body.PasswordHash == "" {
+		jsonError(w, "password is required", http.StatusBadRequest)
+		return
+	}
+	existing, err := db.FindUser(s.database, body.Username)
+	if err != nil {
+		jsonError(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	if existing != nil {
+		jsonError(w, "username already exists", http.StatusConflict)
+		return
+	}
+	displayName := strings.TrimSpace(body.DisplayName)
+	if displayName == "" {
+		displayName = body.Username
+	}
+	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, body.IsAdmin); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	username := r.PathValue("username")
+	var body struct {
+		DisplayName  string `json:"display_name"`
+		PasswordHash string `json:"password_hash"`
+		IsAdmin      bool   `json:"is_admin"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	isAdmin := body.IsAdmin
+	if err := db.UpdateUser(s.database, username, body.DisplayName, body.PasswordHash, &isAdmin); err != nil {
+		jsonError(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	username := r.PathValue("username")
+	if username == currentUser(r).Username {
+		jsonError(w, "cannot delete your own account", http.StatusBadRequest)
+		return
+	}
+	if err := db.DeleteUser(s.database, username); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
