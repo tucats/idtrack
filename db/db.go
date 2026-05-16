@@ -2,6 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -45,5 +48,16 @@ func initSchema(database *sql.DB) error {
 			created_at TEXT NOT NULL
 		);
 	`)
+	if err != nil {
+		return err
+	}
+	return addColumnIfMissing(database, "users", "last_login_at", "TEXT NOT NULL DEFAULT ''")
+}
+
+func addColumnIfMissing(database *sql.DB, table, column, definition string) error {
+	_, err := database.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
+		return nil
+	}
 	return err
 }

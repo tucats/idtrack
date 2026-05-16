@@ -161,6 +161,8 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	db.RecordLogin(s.database, user.Username)
+
 	jsonResponse(w, http.StatusOK, map[string]string{
 		"username":     user.Username,
 		"display_name": user.DisplayName,
