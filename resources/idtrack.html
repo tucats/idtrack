@@ -272,15 +272,22 @@
     <div class="header-center">
       <div class="filter-bar">
         <label class="filter-label">Status:</label>
-        <button class="filter-btn active" data-status="open" onclick="setStatusFilter('open',this)">Open</button>
-        <button class="filter-btn" data-status="resolved" onclick="setStatusFilter('resolved',this)">Resolved</button>
-        <button class="filter-btn" data-status="all" onclick="setStatusFilter('all',this)">All</button>
+        <select id="status-filter" class="filter-select" onchange="setStatusFilter(this.value)">
+          <option value="all">All…</option>
+          <option value="open" selected>Open</option>
+          <option value="resolved">Resolved</option>
+        </select>
         &nbsp;&nbsp;
         <label class="filter-label">Priority:</label>
         <button class="filter-btn active" data-priority="all" onclick="setPriorityFilter('all',this)">All</button>
         <button class="filter-btn" data-priority="High" onclick="setPriorityFilter('High',this)">High</button>
         <button class="filter-btn" data-priority="Medium" onclick="setPriorityFilter('Medium',this)">Medium</button>
         <button class="filter-btn" data-priority="Low" onclick="setPriorityFilter('Low',this)">Low</button>
+        &nbsp;&nbsp;
+        <label class="filter-label">Project:</label>
+        <select id="project-filter" class="filter-select" onchange="setProjectFilter(this.value)">
+          <option value="all">All…</option>
+        </select>
         &nbsp;&nbsp;
         <input id="search-input" type="search" class="search-box" placeholder="Search…"
                oninput="applyFilters()" onkeydown="if(event.key==='Escape'){this.value='';applyFilters();}">
