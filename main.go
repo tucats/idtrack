@@ -17,6 +17,12 @@ import (
 	"github.com/tucats/idtrack/server"
 )
 
+// BuildVersion and BuildTime are injected at link time by the build script:
+//
+//	go build -ldflags "-X main.BuildVersion=1.0-8 -X main.BuildTime=20260516120000"
+var BuildVersion = "dev"
+var BuildTime = ""
+
 //go:embed resources
 var embedded embed.FS
 
@@ -45,6 +51,8 @@ func main() {
 		runDefine(args[1:])
 	case "delete":
 		runDeleteProjectOrComponent(args[1:])
+	case "version":
+		runVersion()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb: %s\n", args[0])
 		usage()
@@ -54,6 +62,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  idtrack version")
 	fmt.Fprintln(os.Stderr, "  idtrack default [--port n] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack serve [--port n] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack stop")
@@ -63,6 +72,14 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  idtrack user --delete username [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack define --project name [--component name] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack delete --project name [--component name] [--database path]")
+}
+
+func runVersion() {
+	if BuildTime != "" {
+		fmt.Printf("idtrack version %s (built %s)\n", BuildVersion, BuildTime)
+	} else {
+		fmt.Printf("idtrack version %s\n", BuildVersion)
+	}
 }
 
 func runServe(args []string) {
@@ -119,7 +136,7 @@ func runServe(args []string) {
 	}
 
 	static := fs.FS(embedded)
-	if err := server.Start(d, port, static); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}

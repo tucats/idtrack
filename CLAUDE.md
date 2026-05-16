@@ -10,6 +10,9 @@
 idtrack/
 ├── main.go               # CLI entry point — all verbs live here
 ├── go.mod                # module: github.com/tucats/idtrack
+├── build                 # Build script (see Versioning section)
+├── tools/
+│   └── buildvers.txt     # Current version string, e.g. "1.0-8"
 ├── db/
 │   ├── db.go             # Open(), schema init, migration helper
 │   ├── users.go          # User CRUD + RecordLogin + UpdateUser + ListUsers
@@ -25,6 +28,26 @@ idtrack/
     ├── https-server.crt  # Self-signed TLS certificate
     └── https-server.key  # TLS private key
 ```
+
+## Versioning
+
+The binary version is injected at link time via the `build` script (never hardcoded in source):
+
+```bash
+./build            # normal build, version from tools/buildvers.txt
+./build -i         # increment build number, then build
+./build --all      # cross-compile for all platforms into builds/
+./build --bin      # copy binary to ~/bin after build
+```
+
+`tools/buildvers.txt` holds the current version string (format: `MAJOR.MINOR-BUILD`, e.g. `1.0-8`). The `-i` flag increments the `BUILD` part and writes it back.
+
+Two linker variables are injected:
+
+- `main.BuildVersion` — the version string from `tools/buildvers.txt`
+- `main.BuildTime` — UTC timestamp (`YYYYMMDDHHmmSS`) of the build
+
+Both default to `"dev"` / `""` when built with plain `go build` (no flags).
 
 ## Technology Choices
 
@@ -98,6 +121,10 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 ## CLI Verbs
 
+### `idtrack version`
+
+Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
+
 ### `idtrack default [--port n] [--database path]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag.
@@ -151,6 +178,7 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 
 | Method | Path | Auth | Admin required |
 | ------ | ---- | ---- | -------------- |
+| GET | `/api/version` | no | no |
 | POST | `/api/login` | Basic (validates) | no |
 | GET | `/api/users` | yes | no |
 | POST | `/api/users` | yes | **yes** |

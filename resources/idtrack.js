@@ -988,6 +988,29 @@ function _closeMenuOnOutside() {
     if (menu) menu.style.display = 'none';
 }
 
+async function openAbout() {
+    _closeMenuOnOutside();
+    document.getElementById('about-overlay').style.display = 'flex';
+    try {
+        const data = await fetch('/api/version').then(r => r.json());
+        document.getElementById('about-version').textContent = 'version ' + (data.version || '—');
+        const bt = data.build_time || '';
+        if (bt.length === 14) {
+            const ts = `${bt.slice(0,4)}-${bt.slice(4,6)}-${bt.slice(6,8)} ${bt.slice(8,10)}:${bt.slice(10,12)}:${bt.slice(12,14)} UTC`;
+            document.getElementById('about-build').textContent = 'built ' + ts;
+        } else {
+            document.getElementById('about-build').textContent = bt ? 'built ' + bt : '';
+        }
+    } catch {
+        document.getElementById('about-version').textContent = 'version —';
+        document.getElementById('about-build').textContent = '';
+    }
+}
+
+function hideAbout() {
+    document.getElementById('about-overlay').style.display = 'none';
+}
+
 function openSettings() {
     _closeMenuOnOutside();
     document.getElementById('dark-mode-toggle').checked = _darkMode;

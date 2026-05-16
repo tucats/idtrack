@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(go build *)",
-      "Bash(go vet *)"
+      "Bash(go vet *)",
+      "Bash(go run *)",
+      "Bash(./idtrack version *)"
     ]
   }
 }
