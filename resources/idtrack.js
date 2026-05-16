@@ -239,6 +239,10 @@ async function submitLogin() {
 
 async function launchApp() {
     document.getElementById('user-badge').textContent = _currentUser.display_name || _currentUser.username;
+    const adminDisplay = _currentUser.is_admin ? '' : 'none';
+    document.getElementById('menu-add-project').style.display      = adminDisplay;
+    document.getElementById('menu-add-component').style.display    = adminDisplay;
+    document.getElementById('menu-manage-projects').style.display  = adminDisplay;
     document.getElementById('app').style.display = '';
     await refreshIssues();
     await populateAssigneeDropdowns();
@@ -676,6 +680,148 @@ function onNiProjectChange() {
 function onDetailProjectChange() {
     populateComponentDropdown('detail-component', document.getElementById('detail-project').value, '');
     markDetailDirty();
+}
+
+function openAddProject() {
+    _closeMenuOnOutside();
+    document.getElementById('ap-name').value = '';
+    document.getElementById('ap-error').textContent = '';
+    document.getElementById('add-project-overlay').style.display = 'flex';
+    document.getElementById('ap-name').focus();
+}
+
+function hideAddProject() {
+    document.getElementById('add-project-overlay').style.display = 'none';
+}
+
+async function submitAddProject() {
+    const name = document.getElementById('ap-name').value.trim();
+    const err  = document.getElementById('ap-error');
+    const btn  = document.getElementById('ap-submit-btn');
+
+    err.textContent = '';
+    if (!name) { err.textContent = 'Project name is required.'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    try {
+        await apiPost('/api/projects', { name });
+        await populateProjectDropdowns();
+        hideAddProject();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add project.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Add Project';
+    }
+}
+
+function openAddComponent() {
+    _closeMenuOnOutside();
+    document.getElementById('ac-name').value = '';
+    document.getElementById('ac-error').textContent = '';
+    const sel = document.getElementById('ac-project');
+    sel.innerHTML = ['<option value="">Choose project…</option>']
+        .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
+        .join('');
+    sel.value = '';
+    document.getElementById('add-component-overlay').style.display = 'flex';
+    document.getElementById('ac-name').focus();
+}
+
+function hideAddComponent() {
+    document.getElementById('add-component-overlay').style.display = 'none';
+}
+
+async function submitAddComponent() {
+    const project = document.getElementById('ac-project').value;
+    const name    = document.getElementById('ac-name').value.trim();
+    const err     = document.getElementById('ac-error');
+    const btn     = document.getElementById('ac-submit-btn');
+
+    err.textContent = '';
+    if (!project) { err.textContent = 'Select a project.'; return; }
+    if (!name)    { err.textContent = 'Component name is required.'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+    try {
+        await apiPost(`/api/projects/${encodeURIComponent(project)}/components`, { name });
+        await populateProjectDropdowns();
+        hideAddComponent();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add component.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Add Component';
+    }
+}
+
+function openManageProjects() {
+    _closeMenuOnOutside();
+    document.getElementById('mp-error').textContent = '';
+    const projSel = document.getElementById('mp-project');
+    projSel.innerHTML = ['<option value="">Choose project…</option>']
+        .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
+        .join('');
+    projSel.value = '';
+    const compSel = document.getElementById('mp-component');
+    compSel.innerHTML = '<option value="">Choose component…</option>';
+    compSel.disabled = true;
+    document.getElementById('manage-projects-overlay').style.display = 'flex';
+}
+
+function hideManageProjects() {
+    document.getElementById('manage-projects-overlay').style.display = 'none';
+}
+
+function onMpProjectChange() {
+    const projectName = document.getElementById('mp-project').value;
+    const sel = document.getElementById('mp-component');
+    document.getElementById('mp-error').textContent = '';
+    if (!projectName) {
+        sel.innerHTML = '<option value="">Choose component…</option>';
+        sel.disabled = true;
+        return;
+    }
+    const project = _projectData.find(p => p.name === projectName);
+    sel.innerHTML = ['<option value="">Choose component…</option>',
+        '<option value="__all__">All components (delete entire project)</option>']
+        .concat((project ? project.components : []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`))
+        .join('');
+    sel.disabled = false;
+}
+
+async function confirmDeleteProjectOrComponent() {
+    const project   = document.getElementById('mp-project').value;
+    const component = document.getElementById('mp-component').value;
+    const err       = document.getElementById('mp-error');
+    const btn       = document.getElementById('mp-delete-btn');
+
+    err.textContent = '';
+    if (!project)   { err.textContent = 'Select a project.'; return; }
+    if (!component) { err.textContent = 'Select a component (or "All components" to delete the project).'; return; }
+
+    const isAll = component === '__all__';
+    const msg = isAll
+        ? `Delete project "${project}" and all its components? This cannot be undone.`
+        : `Delete component "${component}" from project "${project}"? This cannot be undone.`;
+    if (!confirm(msg)) return;
+
+    btn.disabled = true;
+    try {
+        if (isAll) {
+            await apiDelete(`/api/projects/${encodeURIComponent(project)}`);
+        } else {
+            await apiDelete(`/api/projects/${encodeURIComponent(project)}/components/${encodeURIComponent(component)}`);
+        }
+        await populateProjectDropdowns();
+        hideManageProjects();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 // =====================================================================

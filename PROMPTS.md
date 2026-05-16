@@ -163,3 +163,34 @@ component is given, only that component. It is an error if there are any issues
 that reference the project or component being deleted; the list of affected
 projects should be displayed as part of the error information.
 
+## PROMPT 9
+
+For users with "Admin" privilege, add menu items to the hamburger
+menu in the webapp that lets them delete projects or delete components.
+
+The slideover lets them choose project and component, where 
+component can be "all" which deletes the entire project. Add an
+endpoint that supports this ONLY if the user has admin privileges.
+IF the project or component cannot be deleted because it is in use
+in an issue, that error should be reported back to the webapp user.
+
+## prompt 10
+
+For "admin" users, also add hamburger menu item for "Add Project"
+and "Add Component" that lets the web user add new projects, or new
+components in an existing project. Create new endpoints to support
+this that ONLY can be used by an admin user.
+
+## Prompt 11
+
+For "admin" users, allow them to "Add User" or "Edit User" via 
+new "hamburger" menu items. 
+
+The "Add User" function will allow the admin webuser to create a new
+user account using the web interface. This should allow specifying
+a new (unique) username, display name, admin status, and password (bullet-text entry, require matching second copy of password). This is added
+to the user data.
+
+"Edit User" allows a user to change the password, display name,
+and admin status for an existing user. There should also be a 
+"Delete User" button that deletes the entry.

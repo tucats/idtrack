@@ -42,6 +42,10 @@ func Start(database *sql.DB, port int, static fs.FS) error {
 	// Authenticated API endpoints
 	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
 	mux.Handle("GET /api/projects", s.auth(http.HandlerFunc(s.handleListProjects)))
+	mux.Handle("POST /api/projects", s.auth(http.HandlerFunc(s.handleCreateProject)))
+	mux.Handle("POST /api/projects/{project}/components", s.auth(http.HandlerFunc(s.handleCreateComponent)))
+	mux.Handle("DELETE /api/projects/{project}", s.auth(http.HandlerFunc(s.handleDeleteProject)))
+	mux.Handle("DELETE /api/projects/{project}/components/{component}", s.auth(http.HandlerFunc(s.handleDeleteComponent)))
 
 	mux.Handle("GET /api/issues", s.auth(http.HandlerFunc(s.handleListIssues)))
 	mux.Handle("POST /api/issues", s.auth(http.HandlerFunc(s.handleCreateIssue)))
@@ -181,6 +185,80 @@ func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"projects": projects})
+}
+
+func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		jsonError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if err := db.CreateProject(s.database, body.Name); err != nil {
+		jsonError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	project := r.PathValue("project")
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		jsonError(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if err := db.AddComponent(s.database, project, body.Name); err != nil {
+		jsonError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
+}
+
+func (s *srv) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	project := r.PathValue("project")
+	if err := db.DeleteProject(s.database, project); err != nil {
+		jsonError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *srv) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
+	if !currentUser(r).IsAdmin {
+		jsonError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	project := r.PathValue("project")
+	component := r.PathValue("component")
+	if err := db.DeleteComponent(s.database, project, component); err != nil {
+		jsonError(w, err.Error(), http.StatusConflict)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {

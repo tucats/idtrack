@@ -6,7 +6,7 @@
 
 ## Repository Layout
 
-```
+```text
 idtrack/
 ├── main.go               # CLI entry point — all verbs live here
 ├── go.mod                # module: github.com/tucats/idtrack
@@ -90,18 +90,20 @@ The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added aft
 
 All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
-| File             | Contents                                      |
-|------------------|-----------------------------------------------|
-| `defaults.json`  | `{"port": N, "database": "path"}` — persisted defaults |
-| `idtrack.pid`    | PID of the running server process             |
-| `idtrack.log`    | Stdout/stderr of the background server        |
+| File            | Contents                                               |
+|-----------------|--------------------------------------------------------|
+| `defaults.json` | `{"port": N, "database": "path"}` — persisted defaults |
+| `idtrack.pid`   | PID of the running server process                      |
+| `idtrack.log`   | Stdout/stderr of the background server                 |
 
 ## CLI Verbs
 
 ### `idtrack default [--port n] [--database path]`
+
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag.
 
 ### `idtrack serve [--port n] [--database path]`
+
 - **Does not block the terminal.** Re-execs itself with `--foreground` as a background process using `exec.Command` + `Setsid: true` (new session, survives terminal close).
 - Checks for a stale/live PID file before starting; errors if a server is already running.
 - Redirects child stdout/stderr to `~/.idtrack/idtrack.log` (append mode).
@@ -110,29 +112,36 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - The `--foreground` flag is **internal** — it tells the re-exec'd child to run the server directly. Do not expose it in docs.
 
 ### `idtrack stop`
+
 Reads `~/.idtrack/idtrack.pid`, sends `SIGTERM`, removes the PID file.
 
 ### `idtrack user --list [--database path]`
+
 Tabular output: USERNAME, DISPLAY NAME, ADMIN, LAST LOGIN.
 
 ### `idtrack user --add username:password [--name text] [--admin true|false] [--database path]`
+
 - Display name defaults to username if `--name` is omitted.
 - Admin defaults to false if `--admin` is omitted.
 - Uses an upsert (`ON CONFLICT DO UPDATE`) so re-adding a user updates their record.
 
 ### `idtrack user --update username [--name text] [--password text] [--admin true|false] [--database path]`
+
 - Only updates fields that are explicitly provided; others are left unchanged.
 - Fails with an error if the username does not already exist (cannot create via `--update`).
 - `--admin` accepts only `"true"` or `"false"` (validated at parse time).
 
 ### `idtrack user --delete username [--database path]`
+
 Hard-deletes the user row. Does not cascade to issues/comments (those store the username as a string).
 
 ### `idtrack define --project name [--component name] [--database path]`
+
 - Without `--component`: creates a new project (idempotent — uses `INSERT OR IGNORE`).
 - With `--component`: adds a component to an existing project. Errors if the project does not exist. Idempotent (`INSERT OR IGNORE`).
 
 ### `idtrack delete --project name [--component name] [--database path]`
+
 - Without `--component`: deletes the project and all its components. Errors (with issue list) if any issues reference that project.
 - With `--component`: deletes a single component from a project. Errors (with issue list) if any issues reference that project+component combination.
 
@@ -145,6 +154,10 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 | POST | `/api/login` | Basic (validates) | no |
 | GET | `/api/users` | yes | no |
 | GET | `/api/projects` | yes | no |
+| POST | `/api/projects` | yes | **yes** |
+| POST | `/api/projects/{project}/components` | yes | **yes** |
+| DELETE | `/api/projects/{project}` | yes | **yes** |
+| DELETE | `/api/projects/{project}/components/{component}` | yes | **yes** |
 | GET | `/api/issues` | yes | no |
 | POST | `/api/issues` | yes | no |
 | GET | `/api/issues/{id}` | yes | no |
@@ -154,12 +167,15 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 | DELETE | `/api/issues/{id}/comments/{cid}` | yes | **yes** |
 
 ### Login response
+
 ```json
 { "username": "...", "display_name": "...", "is_admin": true|false }
 ```
+
 `RecordLogin` is called on the `users` table after a successful `/api/login` — not on every authenticated request.
 
 ### Issue list query params
+
 `GET /api/issues?status=open|resolved&priority=High|Medium|Low&search=text&sort=col&order=asc|desc`
 
 ## Frontend Architecture
@@ -167,6 +183,7 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 Single-page app. All JS is in one `idtrack.js` file; no build step, no framework.
 
 ### Key state variables
+
 ```js
 _credentials  // 'Basic base64(user:sha256hash)' — sent on every API call
 _currentUser  // { username, display_name, is_admin }
@@ -182,6 +199,7 @@ Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refr
 `reporter` and `assignee` in the issues table store the short **username** (login name). Display names are resolved client-side via `_userMap` using the `displayName(username)` helper. This map is populated (along with the assignee dropdowns) by `populateAssigneeDropdowns()` which calls `GET /api/users`. If a username isn't in the map, it falls back to the raw username.
 
 ### Project/Component UI
+
 - Issues table shows **Project** and **Component** columns (reporter column removed from table; reporter remains visible as read-only in the issue detail panel).
 - Sorting by project and component is supported in both the table headers and client-side sort.
 - **New Issue** form: a "Project" dropdown must be selected first; selecting it enables a cascaded "Component" dropdown. Both are required — the form will not submit without a valid project and component.
@@ -190,9 +208,11 @@ Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refr
 - `populateComponentDropdown(selectId, projectName, selected)` cascades from a selected project.
 
 ### Admin UI
+
 - **Delete Issue** button appears in the detail panel header only when `_currentUser.is_admin` is true. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}`.
 - **Trash icon** (🗑) appears on each comment only for admins. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}/comments/{cid}`.
-- Non-admin users never see these controls. The server also enforces admin on both delete endpoints (returns 403 Forbidden), so the restriction is not purely UI-side.
+- Hamburger menu shows three additional admin-only items: **Add Project**, **Add Component**, **Delete Project/Component**. Each opens a modal overlay. The "Delete" overlay lets the admin pick a project and either a specific component or "All components" (which deletes the entire project). If the project/component is in use by issues, the server returns 409 Conflict with an error message listing the affected issue IDs, which is displayed in the overlay.
+- Non-admin users never see these controls. The server enforces admin on all project mutate endpoints (returns 403 Forbidden).
 
 ## Important Implementation Decisions
 
