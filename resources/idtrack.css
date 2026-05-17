@@ -563,7 +563,8 @@ html, body {
 
 .settings-sheet         { max-width: 380px; }
 .about-sheet            { max-width: 360px; text-align: center; }
-.manage-projects-sheet  { max-width: 420px; }
+.ep-list-sheet   { max-width: 480px; }
+.ep-detail-sheet { max-width: 480px; }
 .user-admin-sheet       { max-width: 480px; }
 
 .user-admin-sheet h3,
@@ -683,17 +684,91 @@ body.dark .mu-row:hover { background: #1a2040; }
 }
 .about-links a:hover { text-decoration: underline; }
 
-.manage-projects-sheet h3 {
+/* ==================== EDIT PROJECTS OVERLAY ==================== */
+
+.ep-list-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+.ep-list-hdr h3 {
   font-size: 1.1rem;
   font-weight: 700;
-  margin-bottom: .5rem;
   color: var(--text);
+  margin: 0;
 }
-.manage-projects-intro {
-  font-size: .875rem;
+.ep-list-body {
+  max-height: 340px;
+  overflow-y: auto;
+  margin-bottom: .75rem;
+}
+.ep-project-row {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .6rem .75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: .4rem;
+  cursor: pointer;
+  transition: background .1s;
+}
+.ep-project-row:hover { background: var(--bg); }
+body.dark .ep-project-row:hover { background: #1a2040; }
+.ep-project-name  { flex: 1; font-weight: 600; font-size: .9375rem; }
+.ep-project-count { font-size: .8125rem; color: var(--text-muted); }
+.ep-project-arrow { color: var(--text-light); font-size: 1.1rem; }
+
+.ep-empty {
+  text-align: center;
+  color: var(--text-light);
+  font-style: italic;
+  padding: 1.25rem 0;
+  font-size: .9rem;
+}
+
+.ep-detail-hdr {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+.ep-detail-hdr h3 {
+  flex: 1;
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+.ep-section-label {
+  font-size: .75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
   color: var(--text-muted);
-  margin-bottom: 1.25rem;
-  line-height: 1.5;
+  margin-bottom: .4rem;
+}
+.ep-comp-list {
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: .75rem;
+}
+.ep-comp-item {
+  display: flex;
+  align-items: center;
+  padding: .3rem .5rem;
+  margin-bottom: .25rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.ep-comp-name { flex: 1; font-size: .9rem; color: var(--text); }
+.ep-empty-comps {
+  color: var(--text-light);
+  font-style: italic;
+  font-size: .875rem;
+  padding: .4rem .5rem;
 }
 
 .settings-sheet h3 {

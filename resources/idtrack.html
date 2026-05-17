@@ -245,74 +245,54 @@
   </div>
 </div>
 
-<!-- ==================== ADD PROJECT OVERLAY (admin) ==================== -->
-<div id="add-project-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-project-overlay',hideAddProject)">
-  <div class="sheet manage-projects-sheet">
-    <h3>Add Project</h3>
-    <div class="form-group">
-      <label for="ap-name">Project Name <span class="required">*</span></label>
-      <input id="ap-name" type="text" placeholder="e.g. Backend" maxlength="100"
-             onkeydown="if(event.key==='Enter') submitAddProject()">
+<!-- ==================== EDIT PROJECTS LIST OVERLAY (admin) ==================== -->
+<div id="ep-list-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'ep-list-overlay',hideEditProjects)">
+  <div class="sheet ep-list-sheet">
+    <div class="ep-list-hdr">
+      <h3>Edit Projects</h3>
+      <button class="btn btn-primary btn-sm" onclick="openProjectDetail(null)">+ New Project</button>
     </div>
-    <div id="ap-error" class="error-text"></div>
+    <div id="ep-list-body" class="ep-list-body"></div>
+    <div id="ep-list-error" class="error-text"></div>
     <div class="button-row">
-      <button id="ap-submit-btn" class="btn btn-primary" onclick="submitAddProject()">Add Project</button>
-      <button class="btn btn-secondary" onclick="hideAddProject()">Cancel</button>
+      <button class="btn btn-secondary" onclick="hideEditProjects()">Done</button>
     </div>
   </div>
 </div>
 
-<!-- ==================== ADD COMPONENT OVERLAY (admin) ==================== -->
-<div id="add-component-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-component-overlay',hideAddComponent)">
-  <div class="sheet manage-projects-sheet">
-    <h3>Add Components</h3>
-    <div class="form-group">
-      <label for="ac-project">Project <span class="required">*</span></label>
-      <select id="ac-project" onchange="onAcProjectChange()">
-        <option value="">Choose project…</option>
-      </select>
+<!-- ==================== PROJECT DETAIL OVERLAY (admin) ==================== -->
+<div id="ep-detail-overlay" class="overlay" style="display:none">
+  <div class="sheet ep-detail-sheet">
+    <div class="ep-detail-hdr">
+      <button class="btn btn-ghost btn-sm" onclick="hideProjectDetail()">&#8592; Back</button>
+      <h3 id="ep-detail-title"></h3>
+      <button id="ep-delete-project-btn" class="btn btn-danger btn-sm" onclick="epDeleteProject()" style="display:none">Delete Project</button>
+    </div>
+    <div id="ep-name-group" class="form-group" style="display:none">
+      <label for="ep-project-name">Project Name <span class="required">*</span></label>
+      <input id="ep-project-name" type="text" placeholder="e.g. Backend" maxlength="100"
+             onkeydown="if(event.key==='Enter') document.getElementById('ep-comp-name').focus()">
+    </div>
+    <div id="ep-comp-section">
+      <div class="ep-section-label">Components</div>
+      <div id="ep-comp-list" class="ep-comp-list"></div>
     </div>
     <div class="form-group">
-      <label for="ac-name">Component Name</label>
+      <label for="ep-comp-name">Add Component</label>
       <div class="ac-input-row">
-        <input id="ac-name" type="text" placeholder="e.g. API" maxlength="100"
-               onkeydown="if(event.key==='Enter'){event.preventDefault();addPendingComponent();}">
-        <button class="btn btn-secondary btn-sm" onclick="addPendingComponent()">Add</button>
+        <input id="ep-comp-name" type="text" placeholder="Component name" maxlength="100"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();epAddComponent();}">
+        <button class="btn btn-secondary btn-sm" onclick="epAddComponent()">Add</button>
       </div>
     </div>
-    <div id="ac-error" class="error-text"></div>
-    <div id="ac-pending-list" style="display:none">
+    <div id="ep-pending-list" style="display:none">
       <div class="ac-pending-heading">To be added:</div>
-      <div id="ac-pending-items"></div>
+      <div id="ep-pending-items"></div>
     </div>
+    <div id="ep-detail-error" class="error-text"></div>
     <div class="button-row">
-      <button id="ac-submit-btn" class="btn btn-primary" onclick="submitAddComponent()" disabled>Save</button>
-      <button class="btn btn-secondary" onclick="hideAddComponent()">Cancel</button>
-    </div>
-  </div>
-</div>
-
-<!-- ==================== MANAGE PROJECTS OVERLAY (admin) ==================== -->
-<div id="manage-projects-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'manage-projects-overlay',hideManageProjects)">
-  <div class="sheet manage-projects-sheet">
-    <h3>Manage Projects</h3>
-    <p class="manage-projects-intro">Select a project and component to delete. Choose <em>All components</em> to delete the entire project.</p>
-    <div class="form-group">
-      <label for="mp-project">Project</label>
-      <select id="mp-project" onchange="onMpProjectChange()">
-        <option value="">Choose project…</option>
-      </select>
-    </div>
-    <div class="form-group">
-      <label for="mp-component">Component</label>
-      <select id="mp-component" disabled>
-        <option value="">Choose component…</option>
-      </select>
-    </div>
-    <div id="mp-error" class="error-text"></div>
-    <div class="button-row">
-      <button id="mp-delete-btn" class="btn btn-danger" onclick="confirmDeleteProjectOrComponent()">Delete</button>
-      <button class="btn btn-secondary" onclick="hideManageProjects()">Cancel</button>
+      <button id="ep-create-btn" class="btn btn-primary" onclick="epSaveNewProject()" style="display:none">Create Project</button>
+      <button class="btn btn-secondary" onclick="hideProjectDetail()">Close</button>
     </div>
   </div>
 </div>
@@ -380,9 +360,7 @@
           <button class="menu-item" onclick="openSettings()">Settings</button>
           <button class="menu-item" onclick="openAbout()">About</button>
           <button id="menu-manage-users" class="menu-item" onclick="openManageUsers()" style="display:none">Edit Users…</button>
-          <button id="menu-add-project" class="menu-item" onclick="openAddProject()" style="display:none">Add Project</button>
-          <button id="menu-add-component" class="menu-item" onclick="openAddComponent()" style="display:none">Add Component</button>
-          <button id="menu-manage-projects" class="menu-item" onclick="openManageProjects()" style="display:none">Delete Project/Component</button>
+          <button id="menu-edit-projects" class="menu-item" onclick="openEditProjects()" style="display:none">Edit Projects…</button>
           <button class="menu-item menu-item-danger" onclick="doLogout()">Sign out</button>
         </div>
       </div>
