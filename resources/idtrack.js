@@ -27,6 +27,8 @@ let _statusFilter   = 'open';
 let _priorityFilter = 'all';
 let _projectFilter  = 'all';
 let _detailDirty    = false;
+let _originalStatus = 'Open'; // status when the issue was last loaded/saved
+let _pendingStatusData = null; // captured fields while status-change dialog is open
 let _darkMode       = false;
 let _keepLoggedIn   = false;
 let _idleTimeoutSecs = 0;    // 0 = disabled; set from /api/status
@@ -429,6 +431,7 @@ async function selectIssue(id) {
         document.getElementById('detail-issue-id').textContent = `Issue #${issue.id}`;
         document.getElementById('detail-title').value    = issue.title       || '';
         document.getElementById('detail-status').value   = issue.status      || 'Open';
+        _originalStatus = issue.status || 'Open';
         document.getElementById('detail-priority').value = issue.priority    || 'Medium';
         document.getElementById('detail-desc').value     = issue.description || '';
         document.getElementById('detail-reporter').textContent = issue.reporter ? displayName(issue.reporter) : '';
@@ -482,31 +485,112 @@ async function saveIssueChanges() {
     const project   = document.getElementById('detail-project').value;
     const component = document.getElementById('detail-component').value;
     const err       = document.getElementById('detail-error');
-    const btn       = document.getElementById('detail-save-btn');
 
     err.textContent = '';
     if (!title)     { err.textContent = 'Title is required.'; return; }
     if (!project)   { err.textContent = 'Project is required.'; return; }
     if (!component) { err.textContent = 'Component is required.'; return; }
 
+    if (_originalStatus === 'Open' && status === 'Resolved') {
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        showResolveDialog();
+        return;
+    }
+    if (_originalStatus === 'Resolved' && status === 'Open') {
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        showReopenDialog();
+        return;
+    }
+
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, null);
+}
+
+async function doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody) {
+    const err = document.getElementById('detail-error');
+    const btn = document.getElementById('detail-save-btn');
+    err.textContent = '';
     btn.disabled = true;
     btn.textContent = 'Saving…';
-
     try {
         const { issue } = await updateIssue(_currentId, title, desc, priority, status, assignee, project, component);
+        if (commentBody) await addComment(_currentId, commentBody);
+        _originalStatus = status;
         _detailDirty = false;
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
-
         _allIssues = await fetchIssues();
         renderIssues(_allIssues);
-
+        if (commentBody) {
+            const { comments } = await fetchIssue(_currentId);
+            renderComments(comments);
+        }
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Save failed.';
     } finally {
         btn.disabled = false;
         btn.textContent = 'Save Changes';
     }
+}
+
+function showResolveDialog() {
+    document.getElementById('sc-title').textContent          = 'Resolve Issue';
+    document.getElementById('sc-intro').textContent          = 'Optionally document the resolution before marking this issue Resolved.';
+    document.getElementById('sc-version-group').style.display = '';
+    document.getElementById('sc-comment-label').textContent  = 'Comment (optional)';
+    document.getElementById('sc-version').value              = '';
+    document.getElementById('sc-comment').value              = '';
+    document.getElementById('sc-error').textContent          = '';
+    document.getElementById('status-change-overlay').style.display = 'flex';
+    document.getElementById('sc-version').focus();
+}
+
+function showReopenDialog() {
+    document.getElementById('sc-title').textContent          = 'Reopen Issue';
+    document.getElementById('sc-intro').textContent          = 'A reason is required to reopen a resolved issue.';
+    document.getElementById('sc-version-group').style.display = 'none';
+    document.getElementById('sc-comment-label').textContent  = 'Reason (required)';
+    document.getElementById('sc-version').value              = '';
+    document.getElementById('sc-comment').value              = '';
+    document.getElementById('sc-error').textContent          = '';
+    document.getElementById('status-change-overlay').style.display = 'flex';
+    document.getElementById('sc-comment').focus();
+}
+
+async function confirmStatusChange() {
+    if (!_pendingStatusData) return;
+    const version = document.getElementById('sc-version').value.trim();
+    const comment = document.getElementById('sc-comment').value.trim();
+    const err     = document.getElementById('sc-error');
+    err.textContent = '';
+
+    const isReopen = _pendingStatusData.status === 'Open';
+    if (isReopen && !comment) {
+        err.textContent = 'A reason is required to reopen an issue.';
+        return;
+    }
+
+    let commentBody = null;
+    if (_pendingStatusData.status === 'Resolved') {
+        let parts = [];
+        if (version) parts.push(`Fixed in ${version}`);
+        if (comment) parts.push(comment);
+        if (parts.length > 0) commentBody = parts.join('\n\n');
+    } else {
+        commentBody = comment || null;
+    }
+
+    document.getElementById('status-change-overlay').style.display = 'none';
+    const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
+    _pendingStatusData = null;
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody);
+}
+
+function cancelStatusChange() {
+    if (_pendingStatusData) {
+        document.getElementById('detail-status').value = _originalStatus;
+        _pendingStatusData = null;
+    }
+    document.getElementById('status-change-overlay').style.display = 'none';
 }
 
 // =====================================================================
