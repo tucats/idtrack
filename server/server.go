@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
+	"github.com/google/uuid"
 	"github.com/tucats/idtrack/db"
 	"github.com/yuin/goldmark"
 )
@@ -23,10 +25,12 @@ type contextKey string
 const ctxUser contextKey = "user"
 
 type srv struct {
-	database  *sql.DB
-	static    fs.FS
-	version   string
-	buildTime string
+	database        *sql.DB
+	static          fs.FS
+	version         string
+	buildTime       string
+	mu              sync.Mutex
+	onboardingToken string
 }
 
 func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) error {
@@ -42,10 +46,12 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) 
 
 	// Public informational endpoints — no auth required
 	mux.HandleFunc("GET /api/version", s.handleVersion)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /manual", s.handleManual)
 
 	// Auth endpoint (uses Basic auth to validate, no separate middleware wrapping)
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/onboarding", s.handleOnboarding)
 
 	// Authenticated API endpoints
 	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
@@ -157,6 +163,102 @@ func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Write(data)
+}
+
+// ── Status / Onboarding ───────────────────────────────────────────────────────
+
+func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
+	hasUsers, err := db.HasUsers(s.database)
+	if err != nil {
+		jsonError(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	if hasUsers {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{"onboarding": false})
+		return
+	}
+
+	s.mu.Lock()
+	if s.onboardingToken == "" {
+		s.onboardingToken = uuid.New().String()
+	}
+	token := s.onboardingToken
+	s.mu.Unlock()
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"onboarding": true,
+		"token":      token,
+	})
+}
+
+func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
+	marker, token, ok := r.BasicAuth()
+	if !ok || marker != "onboarding" {
+		jsonError(w, "invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	s.mu.Lock()
+	valid := s.onboardingToken != "" && s.onboardingToken == token
+	s.mu.Unlock()
+
+	if !valid {
+		jsonError(w, "invalid or expired onboarding token", http.StatusUnauthorized)
+		return
+	}
+
+	hasUsers, err := db.HasUsers(s.database)
+	if err != nil {
+		jsonError(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	if hasUsers {
+		s.mu.Lock()
+		s.onboardingToken = ""
+		s.mu.Unlock()
+		jsonError(w, "onboarding already complete", http.StatusConflict)
+		return
+	}
+
+	var body struct {
+		Username     string `json:"username"`
+		DisplayName  string `json:"display_name"`
+		PasswordHash string `json:"password_hash"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+	body.Username = strings.TrimSpace(body.Username)
+	if body.Username == "" {
+		jsonError(w, "username is required", http.StatusBadRequest)
+		return
+	}
+	if body.PasswordHash == "" {
+		jsonError(w, "password is required", http.StatusBadRequest)
+		return
+	}
+	displayName := strings.TrimSpace(body.DisplayName)
+	if displayName == "" {
+		displayName = body.Username
+	}
+
+	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, true); err != nil {
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.Lock()
+	s.onboardingToken = ""
+	s.mu.Unlock()
+
+	db.RecordLogin(s.database, body.Username)
+
+	jsonResponse(w, http.StatusCreated, map[string]interface{}{
+		"username":     body.Username,
+		"display_name": displayName,
+		"is_admin":     true,
+	})
 }
 
 // ── Version ───────────────────────────────────────────────────────────────────

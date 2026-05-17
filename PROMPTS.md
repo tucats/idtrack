@@ -223,3 +223,31 @@ dropdown menu with "All...", followed by High, Medium, and Low.
 Write a comprehensive user manual for using idtrack. This should include how the webapp works for regular users, additional features for admin users, and the cli which should include how to boostrap the system (create an iniitial admin user, start the server).
 
 Put this in MANUAL.md in the resources directory. Add an endpoint that serves the Markdown as HTML, and add it as a button in the "About" window, which opens a new page with the served manual in the page.
+
+## Prompt 15
+
+Let's improve the onboarding experience. On startup, the webapp should
+probe the server for startup status. IF the server sees that the
+database is not initialized, or there are no rows in the users table,
+then an onboarding dialog will appear in the browser. The server should generate a one-time-use UUID to return with the probe result when the
+onboarding is needed, and this UUID can server as a Basic token exactly
+once to create an "admin" user to put the first entry in the user database.
+
+The webapp, getting the message that onboarding is required, should put
+up a dialog asking for the credentials to create the first user, which
+is by definition an Admin user. This is sent to the server as an 
+"add a new user" operation, using the one-time-use UUID as the token to
+authorize this use case -- once this is done, the server discards the
+UUID and never uses it again.
+
+The webapp, having created the new user, should assume the username
+and password entered (and hashed by the webapp) are then the login credentials, and proceed to the issues list page.
+
+# Prompt 16
+
+Let's add a new setting to the "Settings" dialog, for "Keep me logged in". When true, the username and hashed password should be stored in secure local storage in the browser, and used as the username/password the next time the user opens the webapp. Choosing "logout" will clear these stored tokens, forcing a login the next time the webapp is used.
+
+Also, create a default "inactive logout" default settings, managed using the idtrack default command. If a timeout is specified (ro non-blank), then this becasue the idle time logout setting. When the webapp does the "first run" probe, it should also receive this default timeout value. If present and non-empty, update the webapp to automatically log the user out after this amount of time spent with the webapp open but idle. If there is no timeout value, then do not enforce any idle timeout.
+
+The idea is that the server admin can specify an idle timeout enforced 
+by the webapp but this is not the default behavior.

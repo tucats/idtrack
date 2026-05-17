@@ -16,21 +16,9 @@
 
 ## 1. Bootstrapping the System {#bootstrapping}
 
-A fresh idtrack installation requires a few steps before the web app is usable.
+A fresh idtrack installation is up and running in three steps.
 
-### Step 1 — Create an admin user
-
-The database is created automatically on first run, but you need at least one user to log in. Create an initial admin account using the CLI:
-
-```
-idtrack user --add alice:s3cr3tpass --name "Alice Smith" --admin true
-```
-
-- Replace `alice` with your chosen username and `s3cr3tpass` with a strong password.
-- `--name` sets the display name shown in the web UI.
-- `--admin true` grants full administrative access.
-
-### Step 2 — Set defaults (optional)
+### Step 1 — Set defaults (optional)
 
 Save your preferred port and database path so you don't need to specify them every time:
 
@@ -40,22 +28,7 @@ idtrack default --port 8443 --database /var/data/idtrack.db
 
 These values are written to `~/.idtrack/defaults.json` and used as fallbacks by all commands.
 
-### Step 3 — Define at least one project
-
-Issues must belong to a project and component. Create your first project:
-
-```
-idtrack define --project "My Project"
-```
-
-Then add one or more components to it:
-
-```
-idtrack define --project "My Project" --component "Backend"
-idtrack define --project "My Project" --component "Frontend"
-```
-
-### Step 4 — Start the server
+### Step 2 — Start the server
 
 ```
 idtrack serve
@@ -64,6 +37,28 @@ idtrack serve
 The server starts in the background, listening on HTTPS port 8443 by default. Open your browser to `https://localhost:8443`.
 
 > **Note:** idtrack uses a self-signed TLS certificate. Your browser will show a security warning on first visit. Accept the exception to proceed — this is expected for an internal tool.
+
+### Step 3 — Create the first admin account
+
+When no users exist in the database, the web app detects this automatically and shows an **onboarding dialog** instead of the normal login screen. Fill in:
+
+- **Username** — the login name for the first admin account
+- **Display Name** — how the name appears in the UI (defaults to username if left blank)
+- **Password** / **Confirm Password** — must match
+
+Click **Create Account**. The account is created with full admin privileges and you are logged in immediately.
+
+> **Alternative:** If you prefer to create the first user from the command line rather than the browser, you can run `idtrack user --add username:password --admin true` before starting the server. The onboarding dialog only appears when the database has no users.
+
+### Step 4 — Define at least one project
+
+Issues must belong to a project and component. You can define them from the web UI (via the admin hamburger menu) or the CLI:
+
+```
+idtrack define --project "My Project"
+idtrack define --project "My Project" --component "Backend"
+idtrack define --project "My Project" --component "Frontend"
+```
 
 ---
 
