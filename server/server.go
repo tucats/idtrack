@@ -23,6 +23,8 @@ type srv struct {
 	version         string
 	buildTime       string
 	idleTimeout     int
+	appName         string
+	appDescription  string
 	mu              sync.Mutex
 	onboardingToken string
 }
@@ -35,8 +37,8 @@ type srv struct {
 // Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int) error {
-	s := &srv{database: database, static: static, version: version, buildTime: buildTime, idleTimeout: idleTimeout}
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string) error {
+	s := &srv{database: database, static: static, version: version, buildTime: buildTime, idleTimeout: idleTimeout, appName: appName, appDescription: appDescription}
 
 	mux := http.NewServeMux()
 

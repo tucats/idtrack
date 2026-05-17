@@ -32,8 +32,25 @@ let _originalStatus = 'Open'; // status when the issue was last loaded/saved
 let _pendingStatusData = null; // captured fields while status-change dialog is open
 let _darkMode       = false;
 let _keepLoggedIn   = false;
-let _idleTimeoutSecs = 0;    // 0 = disabled; set from /api/status
-let _idleTimer       = null; // setTimeout handle for idle logout
+let _idleTimeoutSecs = 0;          // 0 = disabled; set from /api/status
+let _idleTimer       = null;       // setTimeout handle for idle logout
+let _appName         = 'idtrack';  // custom branding name; set from /api/status
+let _appDesc         = 'Issue Tracker'; // custom branding tagline; set from /api/status
+
+// =====================================================================
+// BRANDING
+// =====================================================================
+
+function applyBranding() {
+    document.title = _appName + ' — ' + _appDesc;
+    const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+    setText('header-app-name', _appName);
+    setText('login-app-name', _appName);
+    setText('login-app-desc', _appDesc);
+    setText('ob-app-name', 'Welcome to ' + _appName);
+    setText('about-app-name', _appName);
+    setText('about-app-desc', _appDesc);
+}
 
 // =====================================================================
 // UTILITY
@@ -1409,9 +1426,12 @@ async function init() {
         const res = await fetch('/api/status');
         if (res.ok) statusData = await res.json();
     } catch {}
-    if (statusData && statusData.idle_timeout) {
-        _idleTimeoutSecs = statusData.idle_timeout;
+    if (statusData) {
+        if (statusData.idle_timeout)    _idleTimeoutSecs = statusData.idle_timeout;
+        if (statusData.app_name)        _appName = statusData.app_name;
+        if (statusData.app_description) _appDesc = statusData.app_description;
     }
+    applyBranding();
 
     // Session storage: live in-tab session survives page refresh.
     const saved = sessionStorage.getItem(SESSION_KEY);

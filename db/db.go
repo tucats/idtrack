@@ -28,7 +28,7 @@ func Open(path string) (*sql.DB, error) {
 	}
 
 	// SQLite only supports one writer at a time. Setting the pool to a single
-	// connection serialises all queries through one connection and prevents
+	// connection serializes all queries through one connection and prevents
 	// "SQLITE_BUSY: database is locked" errors under concurrent HTTP requests.
 	database.SetMaxOpenConns(1)
 
@@ -116,6 +116,6 @@ func addColumnIfMissing(database *sql.DB, table, column, definition string) erro
 	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
 		return nil // column already exists — nothing to do
 	}
-	
+
 	return err
 }

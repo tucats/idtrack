@@ -20,7 +20,15 @@ idtrack/
 │   ├── comments.go       # Comment CRUD + DeleteComment
 │   └── projects.go       # Project/Component CRUD
 ├── server/
-│   └── server.go         # HTTP mux, middleware, all handlers
+│   ├── server.go         # srv struct + Start() — route wiring and TLS setup
+│   ├── middleware.go     # contextKey, auth(), currentUser()
+│   ├── helpers.go        # issueID(), jsonResponse(), jsonError()
+│   ├── static.go         # static file handlers + handleManual()
+│   ├── auth_handlers.go  # handleVersion, handleStatus, handleOnboarding, handleLogin
+│   ├── users.go          # user CRUD handlers
+│   ├── projects.go       # project/component CRUD handlers
+│   ├── issues.go         # issue CRUD handlers
+│   └── comments.go       # handleCreateComment, handleDeleteComment
 └── resources/            # Embedded at build time via //go:embed
     ├── idtrack.html
     ├── idtrack.css
@@ -116,7 +124,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N}` — persisted defaults (idle_timeout in seconds, omitted when 0) |
+| `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N, "app_name": "...", "app_description": "..."}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -126,11 +134,14 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--idle-timeout duration]`
+### `idtrack default [--port n] [--database path] [--idle-timeout duration] [--app-name text] [--app-description text]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag.
 
 - `--idle-timeout` accepts any Go duration string (`30m`, `1h`, `90s`). Use `0` to disable. The server returns this value from `GET /api/status`; the frontend enforces it as an idle-logout timer.
+- `--app-name` sets a custom application name shown in the header, login screen, onboarding screen, and About dialog (default: `idtrack`).
+- `--app-description` sets a custom tagline shown under the name on the login screen and About dialog (default: `Issue Tracker`).
+- Both branding values are returned by `GET /api/status` as `app_name` and `app_description` (omitted when not set). The frontend applies them immediately after the status probe via `applyBranding()`.
 
 ### `idtrack serve [--port n] [--database path]`
 
@@ -299,7 +310,7 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 
 **Onboarding uses a one-time in-memory UUID.** When `GET /api/status` detects an empty users table it generates a UUID, stores it on the `srv` struct behind a `sync.Mutex`, and returns it in the response. `POST /api/onboarding` validates `Authorization: Basic base64("onboarding:<uuid>")`, creates the first admin user, then clears the token. Because the token lives only in process memory it is lost on server restart — in that case the client simply receives a fresh UUID on the next status probe.
 
-**`server.Start()` takes `idleTimeout int` (seconds).** This is read from `defaults.IdleTimeout` in `runServe` and threaded into the `srv` struct. When adding new server-wide configuration, follow this pattern: add the field to the `defaults` struct in `main.go`, accept it via `idtrack default --flag`, pass it through `server.Start()`, and expose it in `GET /api/status` or a similar probe endpoint.
+**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, and `appDescription` are all examples of the same pattern: add the field to the `defaults` struct in `main.go` (with `omitempty`), accept it via `idtrack default --flag`, pass it through `server.Start()`, store it on the `srv` struct, and expose it in `GET /api/status`. Follow this pattern for any future server-wide configuration values.
 
 **"Keep me logged in" stores the raw SHA-256 hash.** Since the hash *is* the credential (it's what Basic Auth transmits), storing `{ username, hash }` in `localStorage` is equivalent to storing a session token. Clearing it on sign-out is the correct revocation mechanism. Do not store the plaintext password — `sha256()` is called in the browser before anything is stored or transmitted.
 
