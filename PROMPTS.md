@@ -224,7 +224,7 @@ Write a comprehensive user manual for using idtrack. This should include how the
 
 Put this in MANUAL.md in the resources directory. Add an endpoint that serves the Markdown as HTML, and add it as a button in the "About" window, which opens a new page with the served manual in the page.
 
-## Prompt 15
+## Prompt 15 *** Resolved 1.0-13 ***
 
 Let's improve the onboarding experience. On startup, the webapp should
 probe the server for startup status. IF the server sees that the
@@ -251,3 +251,21 @@ Also, create a default "inactive logout" default settings, managed using the idt
 
 The idea is that the server admin can specify an idle timeout enforced 
 by the webapp but this is not the default behavior.
+
+## Prompt 17
+
+Let's improve the admin functions that allows editing users. Currently,
+adding, editing, and deleting users are spread across several menu
+items. Lets consolidae into  a single "Edit Users..." menu item for
+the admin function.
+
+This brings up a dialog that lists the current users. The admin user
+can click on a button "Add User..." that bring sup the current new
+user overlay. Additionally, the admin user can click on a row in the
+existing user list to bring up the current user editing function. This
+overlay should also have a  "Delete User" button added, with the usual
+confirmation dialog if selected.
+
+The intent of this is to consolidate user managemnt into a single menu
+item for Admin users, and make all the operations (add, edit, delete)
+done from the same UX area.

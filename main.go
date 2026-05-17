@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/tucats/idtrack/db"
 	"github.com/tucats/idtrack/server"
@@ -39,8 +40,9 @@ var embedded embed.FS
 // The `json:"..."` struct tags control how each field is serialised: "port"
 // becomes the JSON key for Port, and "database" for Database.
 type defaults struct {
-	Port     int    `json:"port"`
-	Database string `json:"database"`
+	Port        int    `json:"port"`
+	Database    string `json:"database"`
+	IdleTimeout int    `json:"idle_timeout,omitempty"` // seconds; 0 means disabled
 }
 
 // main is the program entry point. os.Args[0] is the program name, so we skip
@@ -81,7 +83,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  idtrack version")
-	fmt.Fprintln(os.Stderr, "  idtrack default [--port n] [--database path]")
+	fmt.Fprintln(os.Stderr, "  idtrack default [--port n] [--database path] [--idle-timeout duration]")
 	fmt.Fprintln(os.Stderr, "  idtrack serve [--port n] [--database path]")
 	fmt.Fprintln(os.Stderr, "  idtrack stop")
 	fmt.Fprintln(os.Stderr, "  idtrack user --list [--database path]")
@@ -170,7 +172,7 @@ func runServe(args []string) {
 	// fs.FS(embedded) converts our embed.FS to the standard fs.FS interface
 	// that server.Start expects, allowing it to read static files.
 	static := fs.FS(embedded)
-	if err := server.Start(d, port, static, BuildVersion, BuildTime); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
@@ -595,6 +597,8 @@ func runDeleteProjectOrComponent(args []string) {
 func runDefault(args []string) {
 	var port int
 	var database string
+	var idleTimeout int
+	var idleTimeoutSet bool
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -613,6 +617,22 @@ func runDefault(args []string) {
 				i++
 				database = args[i]
 			}
+		case "--idle-timeout":
+			if i+1 < len(args) {
+				i++
+				val := args[i]
+				if val == "0" || val == "0s" || val == "0m" || val == "0h" {
+					idleTimeout = 0
+				} else {
+					d, err := time.ParseDuration(val)
+					if err != nil || d <= 0 {
+						fmt.Fprintf(os.Stderr, "invalid idle-timeout %q: use a Go duration like 30m, 1h, 90s\n", val)
+						os.Exit(1)
+					}
+					idleTimeout = int(d.Seconds())
+				}
+				idleTimeoutSet = true
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			usage()
@@ -620,8 +640,8 @@ func runDefault(args []string) {
 		}
 	}
 
-	if port == 0 && database == "" {
-		fmt.Fprintln(os.Stderr, "must specify at least --port or --database")
+	if port == 0 && database == "" && !idleTimeoutSet {
+		fmt.Fprintln(os.Stderr, "must specify at least --port, --database, or --idle-timeout")
 		usage()
 		os.Exit(1)
 	}
@@ -633,6 +653,9 @@ func runDefault(args []string) {
 	}
 	if database != "" {
 		defs.Database = database
+	}
+	if idleTimeoutSet {
+		defs.IdleTimeout = idleTimeout
 	}
 
 	home, err := os.UserHomeDir()
@@ -646,14 +669,11 @@ func runDefault(args []string) {
 		os.Exit(1)
 	}
 	path := filepath.Join(dir, "defaults.json")
-	// MarshalIndent produces pretty-printed JSON (two-space indent), which is
-	// easier to read and edit by hand than a single-line encoding.
 	data, err := json.MarshalIndent(defs, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot encode defaults: %v\n", err)
 		os.Exit(1)
 	}
-	// Append a trailing newline so the file ends cleanly (POSIX convention).
 	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "cannot write %s: %v\n", path, err)
 		os.Exit(1)
@@ -661,10 +681,15 @@ func runDefault(args []string) {
 
 	fmt.Printf("defaults written to %s\n", path)
 	if defs.Port != 0 {
-		fmt.Printf("  port:     %d\n", defs.Port)
+		fmt.Printf("  port:         %d\n", defs.Port)
 	}
 	if defs.Database != "" {
-		fmt.Printf("  database: %s\n", defs.Database)
+		fmt.Printf("  database:     %s\n", defs.Database)
+	}
+	if defs.IdleTimeout > 0 {
+		fmt.Printf("  idle-timeout: %s\n", time.Duration(defs.IdleTimeout)*time.Second)
+	} else if idleTimeoutSet {
+		fmt.Printf("  idle-timeout: disabled\n")
 	}
 }
 

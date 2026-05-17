@@ -40,6 +40,7 @@ type srv struct {
 	static          fs.FS
 	version         string
 	buildTime       string
+	idleTimeout     int
 	mu              sync.Mutex
 	onboardingToken string
 }
@@ -52,8 +53,8 @@ type srv struct {
 // Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string) error {
-	s := &srv{database: database, static: static, version: version, buildTime: buildTime}
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int) error {
+	s := &srv{database: database, static: static, version: version, buildTime: buildTime, idleTimeout: idleTimeout}
 
 	mux := http.NewServeMux()
 
@@ -227,7 +228,10 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if hasUsers {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{"onboarding": false})
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"onboarding":   false,
+			"idle_timeout": s.idleTimeout,
+		})
 		return
 	}
 
@@ -239,8 +243,9 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"onboarding": true,
-		"token":      token,
+		"onboarding":   true,
+		"token":        token,
+		"idle_timeout": s.idleTimeout,
 	})
 }
 
