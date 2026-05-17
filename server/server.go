@@ -148,6 +148,7 @@ func (s *srv) auth(next http.Handler) http.Handler {
 			jsonError(w, "authentication required", http.StatusUnauthorized)
 			return
 		}
+		username = strings.ToLower(username)
 
 		user, err := db.FindUser(s.database, username)
 		if err != nil || user == nil || user.PasswordHash != hash {
@@ -287,7 +288,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	body.Username = strings.TrimSpace(body.Username)
+	body.Username = strings.ToLower(strings.TrimSpace(body.Username))
 	if body.Username == "" {
 		jsonError(w, "username is required", http.StatusBadRequest)
 		return
@@ -342,6 +343,7 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "authentication required", http.StatusUnauthorized)
 		return
 	}
+	username = strings.ToLower(username)
 
 	user, err := db.FindUser(s.database, username)
 	if err != nil {
@@ -479,7 +481,7 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
 		return
 	}
-	body.Username = strings.TrimSpace(body.Username)
+	body.Username = strings.ToLower(strings.TrimSpace(body.Username))
 	if body.Username == "" {
 		jsonError(w, "username is required", http.StatusBadRequest)
 		return
@@ -519,7 +521,7 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	username := r.PathValue("username")
+	username := strings.ToLower(r.PathValue("username"))
 	var body struct {
 		DisplayName  string `json:"display_name"`
 		PasswordHash string `json:"password_hash"`
@@ -544,7 +546,7 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	username := r.PathValue("username")
+	username := strings.ToLower(r.PathValue("username"))
 	if username == currentUser(r).Username {
 		jsonError(w, "cannot delete your own account", http.StatusBadRequest)
 		return

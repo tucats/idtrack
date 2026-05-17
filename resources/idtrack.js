@@ -201,7 +201,7 @@ function showLogin(msg) {
 }
 
 async function submitLogin() {
-    const username = document.getElementById('login-user').value.trim();
+    const username = document.getElementById('login-user').value.trim().toLowerCase();
     const password = document.getElementById('login-pass').value;
     const err      = document.getElementById('login-error');
     const btn      = document.getElementById('login-submit-btn');
@@ -809,7 +809,7 @@ function hideAddUser() {
 }
 
 async function submitAddUser() {
-    const username     = document.getElementById('au-username').value.trim();
+    const username     = document.getElementById('au-username').value.trim().toLowerCase();
     const displayName  = document.getElementById('au-display-name').value.trim();
     const password     = document.getElementById('au-password').value;
     const confirm      = document.getElementById('au-confirm').value;
@@ -1348,7 +1348,7 @@ function showOnboarding(token) {
 }
 
 async function submitOnboarding() {
-    const username    = document.getElementById('ob-username').value.trim();
+    const username    = document.getElementById('ob-username').value.trim().toLowerCase();
     const displayName = document.getElementById('ob-display-name').value.trim();
     const password    = document.getElementById('ob-pass').value;
     const confirm     = document.getElementById('ob-confirm').value;
