@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // srv holds the shared dependencies that all handler methods need. Attaching
@@ -25,6 +26,7 @@ type srv struct {
 	idleTimeout     int
 	appName         string
 	appDescription  string
+	loginLimiter    *rateLimiter
 	mu              sync.Mutex
 	onboardingToken string
 }
@@ -38,7 +40,16 @@ type srv struct {
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
 func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string) error {
-	s := &srv{database: database, static: static, version: version, buildTime: buildTime, idleTimeout: idleTimeout, appName: appName, appDescription: appDescription}
+	s := &srv{
+		database:       database,
+		static:         static,
+		version:        version,
+		buildTime:      buildTime,
+		idleTimeout:    idleTimeout,
+		appName:        appName,
+		appDescription: appDescription,
+		loginLimiter:   newRateLimiter(),
+	}
 
 	mux := http.NewServeMux()
 
@@ -117,5 +128,18 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	log.Printf("idtrack listening on https://localhost%s", addr)
 
-	return http.Serve(tlsLn, mux)
+	// secureHeaders and limitBody wrap the entire mux so every response gets
+	// security headers and every request body is capped before any handler runs.
+	handler := secureHeaders(limitBody(mux))
+
+	// Use an explicit http.Server so we can set read/write/idle timeouts.
+	// Without timeouts, slow-loris clients can hold goroutines open indefinitely.
+	httpSrv := &http.Server{
+		Handler:      handler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	return httpSrv.Serve(tlsLn)
 }

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -21,7 +22,7 @@ func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	hasUsers, err := db.HasUsers(s.database)
 	if err != nil {
-		jsonError(w, "server error", http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
@@ -77,7 +78,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	hasUsers, err := db.HasUsers(s.database)
 	if err != nil {
-		jsonError(w, "server error", http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
@@ -122,7 +123,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, true); err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
@@ -144,6 +145,11 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 // and returns the user's display name and admin flag so the browser can
 // personalise the UI. It is the only endpoint that calls db.RecordLogin — we
 // do not update last_login_at on every authenticated request to keep overhead low.
+//
+// Login attempts are rate-limited per client IP: after loginRateLimit consecutive
+// failures within loginRateWindow the endpoint returns 429 until the window expires.
+// Credentials are compared with crypto/subtle.ConstantTimeCompare to avoid
+// leaking timing information about partial hash matches.
 func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 	username, hash, ok := r.BasicAuth()
 	if !ok {
@@ -152,21 +158,31 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username = strings.ToLower(username)
-
-	user, err := db.FindUser(s.database, username)
-	if err != nil {
-		jsonError(w, "server error", http.StatusInternalServerError)
+	ip := clientIP(r)
+	if !s.loginLimiter.allow(ip) {
+		w.Header().Set("Retry-After", "60")
+		jsonError(w, "too many failed login attempts — try again later", http.StatusTooManyRequests)
 
 		return
 	}
 
-	if user == nil || user.PasswordHash != hash {
+	username = strings.ToLower(username)
+
+	user, err := db.FindUser(s.database, username)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if user == nil || subtle.ConstantTimeCompare([]byte(user.PasswordHash), []byte(hash)) != 1 {
+		s.loginLimiter.recordFailure(ip)
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
 
 		return
 	}
 
+	s.loginLimiter.clear(ip)
 	db.RecordLogin(s.database, user.Username)
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{

@@ -64,7 +64,7 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, body.IsAdmin); err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
@@ -124,7 +124,7 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := db.DeleteUser(s.database, username); err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
