@@ -30,6 +30,38 @@
   </div>
 </div>
 
+<!-- ==================== ONBOARDING OVERLAY ==================== -->
+<div id="onboarding-overlay" class="overlay" style="display:none">
+  <div class="sheet login-sheet">
+    <h2>Welcome to idtrack</h2>
+    <p class="login-subtitle">Create the first admin account to get started.</p>
+    <div class="form-group">
+      <label for="ob-username">Username <span class="required">*</span></label>
+      <input id="ob-username" type="text" autocomplete="username" placeholder="login name"
+             onkeydown="if(event.key==='Enter') document.getElementById('ob-display-name').focus()">
+    </div>
+    <div class="form-group">
+      <label for="ob-display-name">Display Name</label>
+      <input id="ob-display-name" type="text" autocomplete="off" placeholder="(defaults to username)"
+             onkeydown="if(event.key==='Enter') document.getElementById('ob-pass').focus()">
+    </div>
+    <div class="form-group">
+      <label for="ob-pass">Password <span class="required">*</span></label>
+      <input id="ob-pass" type="password" autocomplete="new-password" placeholder="password"
+             onkeydown="if(event.key==='Enter') document.getElementById('ob-confirm').focus()">
+    </div>
+    <div class="form-group">
+      <label for="ob-confirm">Confirm Password <span class="required">*</span></label>
+      <input id="ob-confirm" type="password" autocomplete="new-password" placeholder="confirm password"
+             onkeydown="if(event.key==='Enter') submitOnboarding()">
+    </div>
+    <div id="onboarding-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="ob-submit-btn" class="btn btn-primary" onclick="submitOnboarding()">Create Account</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== NEW ISSUE OVERLAY ==================== -->
 <div id="new-issue-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'new-issue-overlay',hideNewIssue)">
   <div class="sheet issue-sheet">

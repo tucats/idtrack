@@ -1139,6 +1139,77 @@ function mainLayoutClick(event) {
 }
 
 // =====================================================================
+// UI — ONBOARDING
+// =====================================================================
+
+let _onboardingToken = null;
+
+function showOnboarding(token) {
+    _onboardingToken = token;
+    document.getElementById('ob-username').value      = '';
+    document.getElementById('ob-display-name').value  = '';
+    document.getElementById('ob-pass').value           = '';
+    document.getElementById('ob-confirm').value        = '';
+    document.getElementById('onboarding-error').textContent = '';
+    document.getElementById('onboarding-overlay').style.display = 'flex';
+    document.getElementById('ob-username').focus();
+}
+
+async function submitOnboarding() {
+    const username    = document.getElementById('ob-username').value.trim();
+    const displayName = document.getElementById('ob-display-name').value.trim();
+    const password    = document.getElementById('ob-pass').value;
+    const confirm     = document.getElementById('ob-confirm').value;
+    const err         = document.getElementById('onboarding-error');
+    const btn         = document.getElementById('ob-submit-btn');
+
+    err.textContent = '';
+    if (!username)              { err.textContent = 'Username is required.'; return; }
+    if (!password)              { err.textContent = 'Password is required.'; return; }
+    if (password !== confirm)   { err.textContent = 'Passwords do not match.'; return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Creating…';
+
+    try {
+        const passwordHash = await sha256(password);
+        const tokenCreds   = 'Basic ' + btoa('onboarding:' + _onboardingToken);
+
+        const res = await fetch('/api/onboarding', {
+            method: 'POST',
+            headers: {
+                'Authorization': tokenCreds,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ username, display_name: displayName, password_hash: passwordHash }),
+        });
+
+        if (!res.ok) {
+            let msg = 'Failed to create account.';
+            try { const d = await res.json(); msg = d.error || msg; } catch {}
+            err.textContent = msg;
+            return;
+        }
+
+        const user = await res.json();
+        _onboardingToken = null;
+        document.getElementById('onboarding-overlay').style.display = 'none';
+
+        _credentials = 'Basic ' + btoa(username + ':' + passwordHash);
+        _currentUser = { username: user.username, display_name: user.display_name || username, is_admin: true };
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
+
+        await launchApp();
+
+    } catch (e) {
+        err.textContent = e.message || 'Failed to create account.';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Account';
+    }
+}
+
+// =====================================================================
 // INITIALIZATION
 // =====================================================================
 
@@ -1157,6 +1228,17 @@ async function init() {
             }
         } catch {}
     }
+
+    try {
+        const res = await fetch('/api/status');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.onboarding) {
+                showOnboarding(data.token);
+                return;
+            }
+        }
+    } catch {}
 
     showLogin();
 }

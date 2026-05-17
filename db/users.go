@@ -96,6 +96,12 @@ func RecordLogin(database *sql.DB, username string) error {
 	return err
 }
 
+func HasUsers(database *sql.DB) (bool, error) {
+	var count int
+	err := database.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	return count > 0, err
+}
+
 func ListUsers(database *sql.DB) ([]User, error) {
 	rows, err := database.Query(`SELECT username, display_name, last_login_at, is_admin FROM users ORDER BY username`)
 	if err != nil {
