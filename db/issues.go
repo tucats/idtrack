@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Issue represents a row in the issues table plus its JSON serialisation.
+// Issue represents a row in the issues table plus its JSON serialization.
 // All timestamps are stored and returned as RFC3339 strings (e.g.
 // "2026-05-16T12:00:00Z") rather than time.Time, which keeps the DB schema
 // and the JSON API consistent without any conversion layer.
@@ -81,7 +81,7 @@ func ListIssues(database *sql.DB, status, priority, search, sortCol, sortDir str
 	if err != nil {
 		return nil, err
 	}
-	
+
 	defer rows.Close()
 
 	for rows.Next() {

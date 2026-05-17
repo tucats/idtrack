@@ -558,6 +558,7 @@ html, body {
 .menu-item:hover { background: var(--bg); }
 .menu-item-danger { color: var(--danger); }
 .menu-item-danger:hover { background: var(--high-bg); }
+.menu-divider { height: 1px; background: var(--border); margin: .25rem 0; }
 
 /* ==================== SETTINGS OVERLAY ==================== */
 

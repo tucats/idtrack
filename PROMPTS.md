@@ -365,3 +365,22 @@ ensure that the user fills it in before allowing the save of the status.
 Revise the command line grammar. Actions are described by command verbs and
 subcommand verbs, not options. The option syntax is only used for adding
 data to a command. Update the help and manual accordingly.
+
+## Prompt 23 ***Resolved 1.0-21***
+
+Refactor the serve/ package. All the server code is in a single large file. Break it into files based on endpoint functionality, or authentication, etc. functions.
+
+## Prompt 24 ***Resolved 1.0-22***
+
+Allow minimal customization of the webapp name by allowing the user to create a
+default application name string and description string. Expand the default command
+to support this. These would be stored in the same default json file.
+
+When the webapp does it's status probe at launch, if these values are available
+they should be sent to the webapp. The application name can be used in place of
+the name "idtrack" on the top row left edge, and in the About display. The description,
+if present, becomes the second line in the About display under the name (where the
+default value "Issue Tracker" is currently shown).
+
+The intent is to give the administrator the opportunity to customize the tracker name
+and description to represent their team or organization.

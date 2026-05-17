@@ -75,10 +75,13 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--port N` | Default HTTPS port (default: 8443) |
 | `--database PATH` | Default path to the SQLite database file |
 | `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`, `1h`, `90s`. Use `0` to disable. |
+| `--app-name TEXT` | Custom application name shown in the header and About dialog |
+| `--app-description TEXT` | Custom tagline shown under the name on the login screen and About dialog |
 
 ```sh
 idtrack default --port 9000 --database ~/myproject/issues.db
 idtrack default --idle-timeout 30m
+idtrack default --app-name "ACME Tracker" --app-description "ACME Engineering Issues"
 ```
 
 ---

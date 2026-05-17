@@ -43,12 +43,14 @@ var BuildTime = ""
 var embedded embed.FS
 
 // defaults holds the persisted user preferences stored in ~/.idtrack/defaults.json.
-// The `json:"..."` struct tags control how each field is serialised: "port"
+// The `json:"..."` struct tags control how each field is serialized: "port"
 // becomes the JSON key for Port, and "database" for Database.
 type defaults struct {
-	Port        int    `json:"port"`
-	Database    string `json:"database"`
-	IdleTimeout int    `json:"idle_timeout,omitempty"` // seconds; 0 means disabled
+	Port           int    `json:"port"`
+	Database       string `json:"database"`
+	IdleTimeout    int    `json:"idle_timeout,omitempty"`    // seconds; 0 means disabled
+	AppName        string `json:"app_name,omitempty"`        // custom branding name
+	AppDescription string `json:"app_description,omitempty"` // custom branding tagline
 }
 
 // main is the program entry point. os.Args[0] is the program name, so we skip
@@ -63,6 +65,10 @@ func main() {
 	}
 
 	switch args[0] {
+	case "help", "--help", "-h":
+		usage()
+		os.Exit(0)
+
 	case "serve", "start":
 		runServe(args[1:])
 	case "stop":
@@ -75,7 +81,7 @@ func main() {
 		runDefine(args[1:])
 	case "delete":
 		runDeleteProjectOrComponent(args[1:])
-	case "version":
+	case "version", "-v", "--version":
 		runVersion()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown verb: %s\n", args[0])
@@ -85,7 +91,7 @@ func main() {
 }
 
 // usage prints a summary of available sub-commands to stderr. It is called
-// when the user provides no arguments or an unrecognised verb.
+// when the user provides no arguments or an unrecognized verb.
 func usage() {
 	text := `
 idtrack is a self-hosted issue tracker for small teams. It provides a web UI 
@@ -97,14 +103,26 @@ Usage:
 
 Commands: 
 
-	version
-		Print the idtrack version.
-
 	default [options]
 		Set default values for options which are used if not overridden.
 		 --port <n>
 		 --database <path>
 		 --idle-timeout <duration>
+		 --app-name <name>
+		 --app-description <text>
+
+	define [subcommand] [options]
+		Create projects and components.
+
+		project   <name>
+		component <project-name> <component-name>
+
+	delete [subcommand] [options]
+		Remove projects and components.
+
+		project   <name>
+		component <project-name> <component-name>
+
 
 	serve
 		Start the idtrack server. By default it runs in the background and listens
@@ -123,17 +141,8 @@ Commands:
 		update <username>          [--name "Display Name"] [--admin true|false] [--password <password>]
 		delete <username>
 
-	define [subcommand] [options]
-		Create projects and components.
-
-		project   <name>
-		component <project-name> <component-name>
-
-	delete [subcommand] [options]
-		Remove projects and components.
-
-		project   <name>
-		component <project-name> <component-name>
+	version
+		Print the idtrack version.
 
 `
 
@@ -228,7 +237,7 @@ func runServe(args []string) {
 	// fs.FS(embedded) converts our embed.FS to the standard fs.FS interface
 	// that server.Start expects, allowing it to read static files.
 	static := fs.FS(embedded)
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
@@ -735,6 +744,8 @@ func runDefault(args []string) {
 		database       string
 		idleTimeout    int
 		idleTimeoutSet bool
+		appName        string
+		appDescription string
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -775,6 +786,16 @@ func runDefault(args []string) {
 
 				idleTimeoutSet = true
 			}
+		case "--app-name":
+			if i+1 < len(args) {
+				i++
+				appName = args[i]
+			}
+		case "--app-description":
+			if i+1 < len(args) {
+				i++
+				appDescription = args[i]
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			usage()
@@ -782,8 +803,8 @@ func runDefault(args []string) {
 		}
 	}
 
-	if port == 0 && database == "" && !idleTimeoutSet {
-		fmt.Fprintln(os.Stderr, "must specify at least --port, --database, or --idle-timeout")
+	if port == 0 && database == "" && !idleTimeoutSet && appName == "" && appDescription == "" {
+		fmt.Fprintln(os.Stderr, "must specify at least --port, --database, --idle-timeout, --app-name, or --app-description")
 		usage()
 		os.Exit(1)
 	}
@@ -800,6 +821,14 @@ func runDefault(args []string) {
 
 	if idleTimeoutSet {
 		defs.IdleTimeout = idleTimeout
+	}
+
+	if appName != "" {
+		defs.AppName = appName
+	}
+
+	if appDescription != "" {
+		defs.AppDescription = appDescription
 	}
 
 	home, err := os.UserHomeDir()
@@ -841,6 +870,14 @@ func runDefault(args []string) {
 		fmt.Printf("  idle-timeout: %s\n", time.Duration(defs.IdleTimeout)*time.Second)
 	} else if idleTimeoutSet {
 		fmt.Printf("  idle-timeout: disabled\n")
+	}
+
+	if defs.AppName != "" {
+		fmt.Printf("  app-name:     %s\n", defs.AppName)
+	}
+
+	if defs.AppDescription != "" {
+		fmt.Printf("  app-desc:     %s\n", defs.AppDescription)
 	}
 }
 

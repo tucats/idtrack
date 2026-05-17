@@ -26,11 +26,20 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := map[string]interface{}{
+		"idle_timeout": s.idleTimeout,
+	}
+	if s.appName != "" {
+		resp["app_name"] = s.appName
+	}
+
+	if s.appDescription != "" {
+		resp["app_description"] = s.appDescription
+	}
+
 	if hasUsers {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"onboarding":   false,
-			"idle_timeout": s.idleTimeout,
-		})
+		resp["onboarding"] = false
+		jsonResponse(w, http.StatusOK, resp)
 
 		return
 	}
@@ -43,11 +52,9 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	token := s.onboardingToken
 	s.mu.Unlock()
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"onboarding":   true,
-		"token":        token,
-		"idle_timeout": s.idleTimeout,
-	})
+	resp["onboarding"] = true
+	resp["token"] = token
+	jsonResponse(w, http.StatusOK, resp)
 }
 
 func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {

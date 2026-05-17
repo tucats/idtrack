@@ -11,8 +11,8 @@
 <!-- ==================== LOGIN OVERLAY ==================== -->
 <div id="login-overlay" class="overlay" style="display:none">
   <div class="sheet login-sheet">
-    <h2>idtrack</h2>
-    <p class="login-subtitle">Issue Tracker</p>
+    <h2 id="login-app-name">idtrack</h2>
+    <p class="login-subtitle" id="login-app-desc">Issue Tracker</p>
     <div class="form-group">
       <label for="login-user">Username</label>
       <input id="login-user" type="text" autocomplete="username" placeholder="username"
@@ -34,7 +34,7 @@
 <!-- ==================== ONBOARDING OVERLAY ==================== -->
 <div id="onboarding-overlay" class="overlay" style="display:none">
   <div class="sheet login-sheet">
-    <h2>Welcome to idtrack</h2>
+    <h2 id="ob-app-name">Welcome to idtrack</h2>
     <p class="login-subtitle">Create the first admin account to get started.</p>
     <div class="form-group">
       <label for="ob-username">Username <span class="required">*</span></label>
@@ -141,8 +141,8 @@
 <!-- ==================== ABOUT OVERLAY ==================== -->
 <div id="about-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'about-overlay',hideAbout)">
   <div class="sheet about-sheet">
-    <div class="about-logo">idtrack</div>
-    <p class="about-subtitle">Issue Tracker</p>
+    <div class="about-logo" id="about-app-name">idtrack</div>
+    <p class="about-subtitle" id="about-app-desc">Issue Tracker</p>
     <div class="about-version" id="about-version">version —</div>
     <div class="about-build" id="about-build"></div>
     <div class="about-links">
@@ -323,7 +323,7 @@
 
   <header class="app-header">
     <div class="header-left">
-      <span class="app-title">idtrack</span>
+      <span class="app-title" id="header-app-name">idtrack</span>
     </div>
     <div class="header-center">
       <div class="filter-bar">
@@ -357,8 +357,9 @@
       <div class="menu-wrap">
         <button class="btn btn-ghost btn-sm hamburger-btn" onclick="toggleMenu(event)" title="Menu" aria-label="Menu">&#9776;</button>
         <div id="app-menu" class="app-menu" style="display:none">
-          <button class="menu-item" onclick="openSettings()">Settings</button>
           <button class="menu-item" onclick="openAbout()">About</button>
+          <div class="menu-divider"></div>
+          <button class="menu-item" onclick="openSettings()">Settings</button>
           <button id="menu-manage-users" class="menu-item" onclick="openManageUsers()" style="display:none">Edit Users…</button>
           <button id="menu-edit-projects" class="menu-item" onclick="openEditProjects()" style="display:none">Edit Projects…</button>
           <button class="menu-item menu-item-danger" onclick="doLogout()">Sign out</button>
