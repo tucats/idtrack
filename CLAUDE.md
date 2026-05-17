@@ -8,11 +8,18 @@
 
 ```text
 idtrack/
-├── main.go               # CLI entry point — all verbs live here
+├── main.go               # Entry point: sets build vars, dispatches to commands.*
 ├── go.mod                # module: github.com/tucats/idtrack
 ├── build                 # Build script (see Versioning section)
 ├── tools/
 │   └── buildvers.txt     # Current version string, e.g. "1.0-8"
+├── commands/             # One exported function per CLI verb; main.go dispatches here
+│   ├── common.go         # Shared: defaults struct, loadDefaults(), Usage(), package vars
+│   ├── serve.go          # Serve(), Stop(), Restart(), launchBackground(), pid helpers
+│   ├── defaults.go       # Default() — read/write defaults.json; showDefaults() table
+│   ├── users.go          # User() — list/add/update/delete user accounts
+│   ├── projects.go       # Define(), Delete() — project and component management
+│   └── version.go        # Version() — print build version and timestamp
 ├── db/
 │   ├── db.go             # Open(), schema init, migration helper
 │   ├── users.go          # User CRUD + RecordLogin + UpdateUser + ListUsers
@@ -144,7 +151,7 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--app-name` sets a custom application name shown in the header, login screen, onboarding screen, and About dialog (default: `idtrack`).
 - `--app-description` sets a custom tagline shown under the name on the login screen and About dialog (default: `Issue Tracker`).
 - Both branding values are returned by `GET /api/status` as `app_name` and `app_description` (omitted when not set). The frontend applies them immediately after the status probe via `applyBranding()`.
-- `--backup-interval` accepts any Go duration string (`1h`, `30m`). Use `0` to disable backups. Stored as a string in `defaults.json` and parsed to `time.Duration` in `runServe`.
+- `--backup-interval` accepts any Go duration string (`1h`, `30m`). Use `0` to disable backups. Stored as a string in `defaults.json` and parsed to `time.Duration` in `commands.Serve`.
 - `--backup-count` is a non-negative integer. `0` means no count limit.
 - `--backup-age` accepts any Go duration string. Use `0` to disable age-based pruning. Stored as a string in `defaults.json`.
 
@@ -305,7 +312,7 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 
 **No comment–issue foreign key constraint in SQLite.** SQLite doesn't enforce foreign keys by default (requires `PRAGMA foreign_keys = ON`). The code instead manually deletes associated comments before deleting an issue in `db.DeleteIssue()`. The same manual cleanup is not needed for `DeleteUser` — orphaned reporter/assignee strings are acceptable.
 
-**`serve` re-execs itself rather than forking.** Go doesn't have a clean `fork()` equivalent. The approach is: parent validates args, spawns `exec.Command(os.Executable(), "serve", "--foreground", ...)`, writes the child PID, exits. The child runs the actual blocking server. `Setsid: true` detaches the child from the parent's process group so it survives terminal close.
+**`serve` re-execs itself rather than forking.** Go doesn't have a clean `fork()` equivalent. The approach is: `commands.Serve` validates args, calls `launchBackground` which spawns `exec.Command(os.Executable(), "serve", "--foreground", ...)`, writes the child PID, and exits. The child runs `commands.Serve` again with `--foreground` set and blocks in the HTTP server loop. `Setsid: true` detaches the child from the parent's process group so it survives terminal close. All of this logic lives in `commands/serve.go`.
 
 **`UpdateUser` requires `*bool` for `isAdmin`.** An empty string signals "not specified" for string fields, but a `bool` has no natural sentinel. Using `*bool` (nil = leave unchanged, non-nil = set) keeps the logic explicit and avoids accidentally clearing admin status when only updating a display name.
 
@@ -313,9 +320,11 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 
 **Static assets are embedded.** The TLS cert/key and all web assets are compiled into the binary with `//go:embed resources`. Deployment is a single file copy.
 
+**`main.go` owns the two things that cannot move.** `BuildVersion` and `BuildTime` must live in `package main` because the build script injects them via `-ldflags "-X main.BuildVersion=..."`. The embedded filesystem must also stay in `main` because `//go:embed resources` requires the `resources/` directory to be a sibling of the source file. `main()` copies the build vars into `commands.BuildVersion` / `commands.BuildTime` before dispatching, and passes `fs.FS(embedded)` directly to `commands.Serve`. Everything else lives in the `commands` package.
+
 **Onboarding uses a one-time in-memory UUID.** When `GET /api/status` detects an empty users table it generates a UUID, stores it on the `srv` struct behind a `sync.Mutex`, and returns it in the response. `POST /api/onboarding` validates `Authorization: Basic base64("onboarding:<uuid>")`, creates the first admin user, then clears the token. Because the token lives only in process memory it is lost on server restart — in that case the client simply receives a fresh UUID on the next status probe.
 
-**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, `appDescription`, and the backup params (`dbPath`, `backupInterval`, `backupCount`, `backupAge`) are all examples of the same pattern: add the field to the `defaults` struct in `main.go` (with `omitempty`), accept it via `idtrack default --flag`, pass it through `server.Start()`, and store it on the `srv` struct. Duration-type flags are stored as strings in `defaults.json` and parsed to `time.Duration` in `runServe`. Follow this pattern for any future server-wide configuration values.
+**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, `appDescription`, and the backup params (`dbPath`, `backupInterval`, `backupCount`, `backupAge`) are all examples of the same pattern: add the field to the `defaults` struct in `commands/common.go` (with `omitempty`), add the flag to `commands.Default`, parse and pass the value through `server.Start()` from `commands.Serve`, and store it on the `srv` struct. Duration-type flags are stored as strings in `defaults.json` and parsed to `time.Duration` in `commands.Serve`. Follow this pattern for any future server-wide configuration values.
 
 **"Keep me logged in" issues a 30-day session cookie.** When `keep_logged_in: true` is sent in the login body, the server creates a session with a 30-day TTL and sets `Max-Age=2592000` on the `idtrack_session` cookie. `localStorage` (under `PERSIST_KEY`) stores only the non-sensitive user display object `{ user }` — no credentials. On the next browser session `init()` restores `_currentUser` from this object and calls `launchApp()`; the browser sends the long-lived cookie automatically. If the session has expired or been invalidated, the first API call returns 401 and the user sees the login screen.
 

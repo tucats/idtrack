@@ -1,0 +1,130 @@
+// Package commands implements each idtrack CLI sub-command as an exported
+// function. main.go sets BuildVersion and BuildTime from the link-time
+// injected variables, then dispatches to these functions based on os.Args.
+package commands
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+const (
+	databaseFlag = "--database"
+	defaultDB    = "idtrack.db"
+	trueValue    = "true"
+)
+
+// BuildVersion and BuildTime are set by main.go from the link-time injected
+// variables before any command function is called.
+var (
+	BuildVersion string
+	BuildTime    string
+)
+
+// defaults holds the persisted user preferences stored in
+// ~/.idtrack/defaults.json. Fields tagged omitempty are omitted from the file
+// when they hold their zero value so the JSON stays minimal.
+type defaults struct {
+	Port           int    `json:"port"`
+	Database       string `json:"database"`
+	IdleTimeout    int    `json:"idle_timeout,omitempty"`    // seconds; 0 means disabled
+	AppName        string `json:"app_name,omitempty"`        // custom branding name
+	AppDescription string `json:"app_description,omitempty"` // custom branding tagline
+	BackupInterval string `json:"backup_interval,omitempty"` // Go duration string; empty = disabled
+	BackupCount    int    `json:"backup_count,omitempty"`    // max backups to retain; 0 = no limit
+	BackupAge      string `json:"backup_age,omitempty"`      // Go duration string; empty = no limit
+}
+
+// loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
+// file does not exist or cannot be read, a zero-value struct is returned so
+// callers can apply their own fallback values.
+func loadDefaults() defaults {
+	var d defaults
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return defaults{}
+	}
+
+	data, err := os.ReadFile(filepath.Join(home, ".idtrack", "defaults.json"))
+	if err != nil {
+		return defaults{} // file not yet created — silently use zero values
+	}
+
+	json.Unmarshal(data, &d) // ignore parse error; zero struct is a safe fallback
+
+	return d
+}
+
+// Usage prints a summary of available sub-commands to stderr. Called from
+// main.go when no arguments are given or an unknown verb is used, and from
+// within individual command functions when argument validation fails.
+func Usage() {
+	text := `
+idtrack is a self-hosted issue tracker for small teams. It provides a web UI
+for managing projects, components, and issues.
+
+Usage:
+
+	idtrack [command] [options]
+
+Commands:
+
+	default [options]
+		Set default values for options which are used if not overridden.
+		With no options, lists the current defaults.
+		 --port <n>
+		 --database <path>
+		 --idle-timeout <duration>
+		 --app-name <name>
+		 --app-description <text>
+		 --backup-interval <duration>  (e.g. 1h, 30m; 0 to disable)
+		 --backup-count <n>            (max backups to keep; 0 = no limit)
+		 --backup-age <duration>       (e.g. 168h for 7 days; 0 to disable)
+
+	define [subcommand] [options]
+		Create projects and components.
+
+		project   <name>
+		component <project-name> <component-name>
+
+	delete [subcommand] [options]
+		Remove projects and components.
+
+		project   <name>
+		component <project-name> <component-name>
+
+
+	serve
+		Start the idtrack server. By default it runs in the background and listens
+		on port 8443, but you can override these with options on the command.
+		 --port <n>
+		 --database <path>
+
+	stop
+		Stop the running idtrack server.
+
+	restart
+		Stop the running server and immediately restart it using the same
+		command-line arguments it was originally started with. Useful after
+		installing a new binary.
+
+	user [subcommand] [options]
+		Manage user accounts.
+
+		list
+		add    <username:password> [--name "Display Name"] [--admin true|false] [--password <password>]
+		update <username>          [--name "Display Name"] [--admin true|false] [--password <password>]
+		delete <username>
+
+	version
+		Print the idtrack version.
+
+`
+
+	fmt.Fprintf(os.Stderr, "\nidtrack %s\n\n", strings.TrimSpace(BuildVersion))
+	fmt.Fprintf(os.Stderr, "%s\n\n", strings.TrimSpace(text))
+}
