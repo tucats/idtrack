@@ -34,8 +34,10 @@ func Open(path string) (*sql.DB, error) {
 
 	if err := initSchema(database); err != nil {
 		database.Close()
+
 		return nil, err
 	}
+
 	return database, nil
 }
 
@@ -93,12 +95,15 @@ func initSchema(database *sql.DB) error {
 	if err := addColumnIfMissing(database, "users", "last_login_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+
 	if err := addColumnIfMissing(database, "users", "is_admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+
 	if err := addColumnIfMissing(database, "issues", "project", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
+
 	return addColumnIfMissing(database, "issues", "component", "TEXT NOT NULL DEFAULT ''")
 }
 
@@ -111,5 +116,6 @@ func addColumnIfMissing(database *sql.DB, table, column, definition string) erro
 	if err != nil && strings.Contains(err.Error(), "duplicate column name") {
 		return nil // column already exists — nothing to do
 	}
+	
 	return err
 }

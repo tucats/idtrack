@@ -34,11 +34,13 @@ func AddUser(database *sql.DB, username, displayName, passwordHash string, isAdm
 	if isAdmin {
 		adminInt = 1
 	}
+
 	_, err := database.Exec(
 		`INSERT INTO users (username, display_name, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, password_hash=excluded.password_hash, is_admin=excluded.is_admin`,
 		username, displayName, passwordHash, time.Now().UTC().Format(time.RFC3339), adminInt,
 	)
+
 	return err
 }
 
@@ -48,6 +50,7 @@ func AddUser(database *sql.DB, username, displayName, passwordHash string, isAdm
 // tool where users are infrequently removed.
 func DeleteUser(database *sql.DB, username string) error {
 	_, err := database.Exec(`DELETE FROM users WHERE username = ?`, username)
+
 	return err
 }
 
@@ -59,18 +62,25 @@ func DeleteUser(database *sql.DB, username string) error {
 // row.Scan() when a QueryRow finds no matching record. We translate it to a
 // nil pointer so callers can write a simple "if user == nil" check.
 func FindUser(database *sql.DB, username string) (*User, error) {
+	var (
+		u        User
+		adminInt int
+	)
+
 	row := database.QueryRow(
 		`SELECT username, display_name, password_hash, created_at, last_login_at, is_admin FROM users WHERE username = ?`, username,
 	)
-	var u User
-	var adminInt int
+
 	if err := row.Scan(&u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt, &u.LastLoginAt, &adminInt); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil // not found — not an error
 		}
+
 		return nil, err
 	}
+
 	u.IsAdmin = adminInt != 0 // convert SQLite integer back to Go bool
+
 	return &u, nil
 }
 
@@ -86,12 +96,18 @@ func FindUser(database *sql.DB, username string) (*User, error) {
 // The function builds a SET clause dynamically by accumulating "col = ?"
 // fragments and matching argument values, then runs a single UPDATE statement.
 func UpdateUser(database *sql.DB, username, displayName, passwordHash string, isAdmin *bool) error {
+	var (
+		setClauses []string
+		args       []any
+	)
+
 	// Verify the user exists before attempting an update. UpdateUser must not
 	// silently create a new row — use AddUser for that.
 	u, err := FindUser(database, username)
 	if err != nil {
 		return err
 	}
+
 	if u == nil {
 		return fmt.Errorf("user %q not found", username)
 	}
@@ -99,24 +115,26 @@ func UpdateUser(database *sql.DB, username, displayName, passwordHash string, is
 	// Build a dynamic UPDATE statement from whichever fields were provided.
 	// setClauses collects fragments like "display_name = ?" and args holds the
 	// corresponding values in the same order.
-	var setClauses []string
-	var args []any
 	if displayName != "" {
 		setClauses = append(setClauses, "display_name = ?")
 		args = append(args, displayName)
 	}
+
 	if passwordHash != "" {
 		setClauses = append(setClauses, "password_hash = ?")
 		args = append(args, passwordHash)
 	}
+
 	if isAdmin != nil {
 		adminInt := 0
 		if *isAdmin {
 			adminInt = 1
 		}
+
 		setClauses = append(setClauses, "is_admin = ?")
 		args = append(args, adminInt)
 	}
+
 	if len(setClauses) == 0 {
 		return nil // nothing to do
 	}
@@ -127,6 +145,7 @@ func UpdateUser(database *sql.DB, username, displayName, passwordHash string, is
 		fmt.Sprintf("UPDATE users SET %s WHERE username = ?", strings.Join(setClauses, ", ")),
 		args..., // the ... unpacks the slice as individual arguments
 	)
+
 	return err
 }
 
@@ -138,39 +157,50 @@ func RecordLogin(database *sql.DB, username string) error {
 		`UPDATE users SET last_login_at = ? WHERE username = ?`,
 		time.Now().UTC().Format(time.RFC3339), username,
 	)
+
 	return err
 }
 
 func HasUsers(database *sql.DB) (bool, error) {
 	var count int
+
 	err := database.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+
 	return count > 0, err
 }
 
 func ListUsers(database *sql.DB) ([]User, error) {
+	var users []User
+
 	rows, err := database.Query(`SELECT username, display_name, last_login_at, is_admin FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
+
 	// defer rows.Close() ensures the result set is released even if we return
 	// early due to a Scan error. Always close rows when you are done with them.
 	defer rows.Close()
 
-	var users []User
 	for rows.Next() {
-		var u User
-		var adminInt int
+		var (
+			u        User
+			adminInt int
+		)
+
 		if err := rows.Scan(&u.Username, &u.DisplayName, &u.LastLoginAt, &adminInt); err != nil {
 			return nil, err
 		}
+
 		u.IsAdmin = adminInt != 0
 		users = append(users, u)
 	}
+
 	// Return an empty slice rather than nil so JSON encoding produces "[]"
 	// instead of "null", which is friendlier for frontend consumers.
 	if users == nil {
 		users = []User{}
 	}
+
 	// rows.Err() returns any error that occurred during iteration (e.g. a
 	// network blip mid-query). Always check it after the loop.
 	return users, rows.Err()

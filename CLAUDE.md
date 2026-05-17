@@ -114,11 +114,11 @@ The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added aft
 
 All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
-| File            | Contents                                               |
-|-----------------|--------------------------------------------------------|
+| File | Contents |
+| --- | --- |
 | `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N}` — persisted defaults (idle_timeout in seconds, omitted when 0) |
-| `idtrack.pid`   | PID of the running server process                      |
-| `idtrack.log`   | Stdout/stderr of the background server                 |
+| `idtrack.pid` | PID of the running server process |
+| `idtrack.log` | Stdout/stderr of the background server |
 
 ## CLI Verbs
 
@@ -145,35 +145,24 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 
 Reads `~/.idtrack/idtrack.pid`, sends `SIGTERM`, removes the PID file.
 
-### `idtrack user --list [--database path]`
+### `idtrack user <subcommand> [--database path]`
 
-Tabular output: USERNAME, DISPLAY NAME, ADMIN, LAST LOGIN.
+All `user` subcommands accept an optional `--database path` flag. Actions are positional subcommands (not flags):
 
-### `idtrack user --add username:password [--name text] [--admin true|false] [--database path]`
+- `idtrack user list` — tabular output: USERNAME, DISPLAY NAME, ADMIN, LAST LOGIN.
+- `idtrack user add username:password [--name text] [--admin true|false]` — display name defaults to username; admin defaults to false; upserts on existing username.
+- `idtrack user update username [--name text] [--password text] [--admin true|false]` — only updates fields explicitly provided; user must already exist; `--admin` validated as `"true"` or `"false"`.
+- `idtrack user delete username` — hard-deletes the row; does not cascade to issues/comments.
 
-- Display name defaults to username if `--name` is omitted.
-- Admin defaults to false if `--admin` is omitted.
-- Uses an upsert (`ON CONFLICT DO UPDATE`) so re-adding a user updates their record.
+### `idtrack define <subcommand> [--database path]`
 
-### `idtrack user --update username [--name text] [--password text] [--admin true|false] [--database path]`
+- `idtrack define project name` — creates a new project (idempotent — uses `INSERT OR IGNORE`).
+- `idtrack define component project-name component-name` — adds a component to an existing project. Errors if the project does not exist. Idempotent (`INSERT OR IGNORE`).
 
-- Only updates fields that are explicitly provided; others are left unchanged.
-- Fails with an error if the username does not already exist (cannot create via `--update`).
-- `--admin` accepts only `"true"` or `"false"` (validated at parse time).
+### `idtrack delete <subcommand> [--database path]`
 
-### `idtrack user --delete username [--database path]`
-
-Hard-deletes the user row. Does not cascade to issues/comments (those store the username as a string).
-
-### `idtrack define --project name [--component name] [--database path]`
-
-- Without `--component`: creates a new project (idempotent — uses `INSERT OR IGNORE`).
-- With `--component`: adds a component to an existing project. Errors if the project does not exist. Idempotent (`INSERT OR IGNORE`).
-
-### `idtrack delete --project name [--component name] [--database path]`
-
-- Without `--component`: deletes the project and all its components. Errors (with issue list) if any issues reference that project.
-- With `--component`: deletes a single component from a project. Errors (with issue list) if any issues reference that project+component combination.
+- `idtrack delete project name` — deletes the project and all its components. Errors (with issue list) if any issues reference that project.
+- `idtrack delete component project-name component-name` — deletes a single component. Errors (with issue list) if any issues reference that project+component pair.
 
 ## HTTP API
 
@@ -274,14 +263,23 @@ Preferences (dark mode, keep-me-logged-in) are in `localStorage` under `idtrack_
 
 - **Delete Issue** button appears in the detail panel header only when `_currentUser.is_admin` is true. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}`.
 - **Trash icon** (🗑) appears on each comment only for admins. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}/comments/{cid}`.
-- Hamburger menu shows four additional admin-only items: **Edit Users…**, **Add Project**, **Add Component**, **Delete Project/Component**.
+- Hamburger menu shows two additional admin-only items: **Edit Users…** and **Edit Projects…**.
 - **Edit Users…** opens `manage-users-overlay`, which lists all users and provides add/edit/delete in a single place. See "Overlay navigation pattern" below.
-- The project overlays each open a modal. The "Delete" overlay lets the admin pick a project and either a specific component or "All components". If in use, the server returns 409 Conflict with the affected issue IDs.
+- **Edit Projects…** opens a two-screen overlay (`ep-list-overlay` → `ep-detail-overlay`). The list screen shows all projects; clicking one opens the detail screen where components can be added/deleted inline and the project can be deleted. A **+ New Project** button on the list screen opens the detail screen in new-project mode (name as a text input, components staged before creation). Both screens handle duplicate name checks case-insensitively.
 - Non-admin users never see these controls. The server enforces admin on all mutate endpoints (returns 403 Forbidden).
+
+### Status-change dialogs
+
+Changing an issue's status triggers a dialog before the save completes:
+
+- **Open → Resolved**: optional dialog with **Fixed Version** (text) and **Comment** (textarea). If either is filled, a comment is posted atomically with the status update: `Fixed in <version>\n\n<comment>` (parts omitted when empty). An **Assignee** is required before this transition is allowed — `saveIssueChanges()` blocks with an error if the field is empty.
+- **Resolved → Open**: required dialog with a **Reason** textarea. The comment is mandatory; the dialog will not confirm until it is non-empty. The reason is posted as a comment atomically with the status change.
+
+State: `_originalStatus` is set when an issue loads and updated after each successful save. `_pendingStatusData` captures the form fields while the dialog is open.
 
 ### Overlay navigation pattern
 
-The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and `openEditUserFromManage(username)` hide it before opening the child overlay. `hideAddUser()` and `hideEditUser()` always call `openManageUsers()` when they close — so every exit path (success, cancel, backdrop click) refreshes and re-displays the user list. This pattern should be followed if similar consolidated-management overlays are added in future.
+The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and `openEditUserFromManage(username)` hide it before opening the child overlay. `hideAddUser()` and `hideEditUser()` always call `openManageUsers()` when they close — so every exit path (success, cancel, backdrop click) refreshes and re-displays the user list. The Edit Projects overlay follows the same pattern: `ep-list-overlay` is the parent, `ep-detail-overlay` is the child; `hideProjectDetail()` always re-opens the list. Follow this pattern for any future consolidated-management overlays.
 
 ## Important Implementation Decisions
 
@@ -306,3 +304,11 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 **"Keep me logged in" stores the raw SHA-256 hash.** Since the hash *is* the credential (it's what Basic Auth transmits), storing `{ username, hash }` in `localStorage` is equivalent to storing a session token. Clearing it on sign-out is the correct revocation mechanism. Do not store the plaintext password — `sha256()` is called in the browser before anything is stored or transmitted.
 
 **Idle timeout is enforced entirely client-side.** The server communicates the timeout value via `GET /api/status` but does not enforce it server-side. The frontend attaches passive event listeners for mouse, keyboard, touch, and scroll events and resets a `setTimeout` on each. If the timer fires, `doLogout()` is called. `startIdleTracking()` / `stopIdleTracking()` are called in `launchApp()` and `doLogout()` respectively; they are no-ops when `_idleTimeoutSecs` is 0.
+
+**Usernames are always lower-cased.** The browser lowercases the username value before building the Basic Auth header (login, onboarding, add-user forms). The server lowercases the username extracted from `r.BasicAuth()` in the `auth` middleware and `handleLogin`, and lowercases `body.Username` in `handleOnboarding` and `handleCreateUser`, and `r.PathValue("username")` in `handleUpdateUser` and `handleDeleteUser`. Username input fields carry `autocapitalize="none" autocorrect="off" spellcheck="false"` to suppress mobile keyboard transforms.
+
+**CLI commands use positional subcommands, not flags for actions.** The `user`, `define`, and `delete` top-level commands all take a positional subcommand word as their first argument (`user list`, `user add`, `define project`, `delete component`, etc.). Options (values like `--name`, `--database`) remain as named flags. This is consistent across all three commands.
+
+**Resolving an issue requires an assignee.** `saveIssueChanges()` blocks with an error if `status === 'Resolved'` and the assignee field is empty, before the resolve dialog is shown. This prevents issues from being closed without ownership.
+
+**Status transitions post comments atomically with the save.** `doSaveIssue(commentBody)` calls `updateIssue()` then `addComment()` in sequence. If the comment fails after the issue update succeeds the status is still changed (no rollback). For Open→Resolved this is acceptable since the comment is optional; for Resolved→Open the required comment failing would be a server error unlikely in practice.

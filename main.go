@@ -21,6 +21,12 @@ import (
 	"github.com/tucats/idtrack/server"
 )
 
+const (
+	databaseFlag = "--database"
+	defaultDB    = "idtrack.db"
+	trueValue    = "true"
+)
+
 // BuildVersion and BuildTime are set at link time by the build script with
 // -ldflags "-X main.BuildVersion=... -X main.BuildTime=...".
 // When you run a plain "go build" without those flags, they keep their default
@@ -57,13 +63,13 @@ func main() {
 	}
 
 	switch args[0] {
-	case "serve":
+	case "serve", "start":
 		runServe(args[1:])
 	case "stop":
 		runStop()
 	case "default":
 		runDefault(args[1:])
-	case "user":
+	case "user", "users":
 		runUser(args[1:])
 	case "define":
 		runDefine(args[1:])
@@ -81,17 +87,58 @@ func main() {
 // usage prints a summary of available sub-commands to stderr. It is called
 // when the user provides no arguments or an unrecognised verb.
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  idtrack version")
-	fmt.Fprintln(os.Stderr, "  idtrack default [--port n] [--database path] [--idle-timeout duration]")
-	fmt.Fprintln(os.Stderr, "  idtrack serve [--port n] [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack stop")
-	fmt.Fprintln(os.Stderr, "  idtrack user --list [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack user --add username:password [--name text] [--admin true|false] [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack user --update username [--name text] [--password text] [--admin true|false] [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack user --delete username [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack define --project name [--component name] [--database path]")
-	fmt.Fprintln(os.Stderr, "  idtrack delete --project name [--component name] [--database path]")
+	text := `
+idtrack is a self-hosted issue tracker for small teams. It provides a web UI 
+for managing projects, components, and issues.
+
+Usage:
+
+	idtrack [command] [options]
+
+Commands: 
+
+	version
+		Print the idtrack version.
+
+	default [options]
+		Set default values for options which are used if not overridden.
+		 --port <n>
+		 --database <path>
+		 --idle-timeout <duration>
+
+	serve
+		Start the idtrack server. By default it runs in the background and listens
+		on port 8443, but you can override these with options on the command.
+		 --port <n>
+		 --database <path>
+
+	stop
+		Stop the running idtrack server.
+
+	user [subcommand] [options]
+		Manage user accounts.
+
+		list
+		add    <username:password> [--name "Display Name"] [--admin true|false] [--password <password>]
+		update <username>          [--name "Display Name"] [--admin true|false] [--password <password>]
+		delete <username>
+
+	define [subcommand] [options]
+		Create projects and components.
+
+		project   <name>
+		component <project-name> <component-name>
+
+	delete [subcommand] [options]
+		Remove projects and components.
+
+		project   <name>
+		component <project-name> <component-name>
+
+`
+
+	fmt.Fprintf(os.Stderr, "\nidtrack %s\n\n", strings.TrimSpace(BuildVersion))
+	fmt.Fprintf(os.Stderr, "%s\n\n", strings.TrimSpace(text))
 }
 
 // runVersion prints the version string. When the build script injects
@@ -112,6 +159,8 @@ func runVersion() {
 // Instead the parent process re-executes itself with "--foreground" as a
 // background child, so the server outlives the terminal that launched it.
 func runServe(args []string) {
+	var passArgs []string
+
 	defs := loadDefaults()
 	port := defs.Port
 	database := defs.Database
@@ -119,28 +168,33 @@ func runServe(args []string) {
 
 	// passArgs collects flags that must be forwarded to the background child.
 	// We exclude --foreground because the child adds it itself.
-	var passArgs []string
+
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--foreground":
 			foreground = true
-		case "--port":
+		case "--port", "-p":
 			if i+1 < len(args) {
 				i++ // consume the next element as the flag value
+
 				n, err := strconv.Atoi(args[i])
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "invalid port: %s\n", args[i])
 					os.Exit(1)
 				}
+
 				port = n
+
 				passArgs = append(passArgs, "--port", args[i])
 			}
-		case "--database":
+
+		case databaseFlag:
 			if i+1 < len(args) {
 				i++
 				database = args[i]
-				passArgs = append(passArgs, "--database", args[i])
+				passArgs = append(passArgs, databaseFlag, args[i])
 			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			usage()
@@ -149,8 +203,9 @@ func runServe(args []string) {
 	}
 
 	if database == "" {
-		database = "idtrack.db"
+		database = defaultDB
 	}
+
 	if port == 0 {
 		port = 8443
 	}
@@ -159,6 +214,7 @@ func runServe(args []string) {
 	// and exit. The child will call runServe again with --foreground set.
 	if !foreground {
 		launchBackground(passArgs)
+
 		return
 	}
 
@@ -195,6 +251,7 @@ func launchBackground(serveArgs []string) {
 				}
 			}
 		}
+
 		os.Remove(pidFile) // PID file exists but process is gone — clean it up
 	}
 
@@ -236,6 +293,7 @@ func launchBackground(serveArgs []string) {
 		fmt.Fprintf(os.Stderr, "error starting server: %v\n", err)
 		os.Exit(1)
 	}
+
 	logFile.Close() // parent no longer needs the file; child inherited its own fd
 
 	// Record the child's PID so "idtrack stop" can find and terminate it later.
@@ -252,6 +310,7 @@ func launchBackground(serveArgs []string) {
 // "please shut down gracefully" signal on Unix systems.
 func runStop() {
 	pidFile := serverPidPath()
+
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "no server running (pid file not found)")
@@ -285,6 +344,7 @@ func runStop() {
 // running server process (~/.idtrack/idtrack.pid).
 func serverPidPath() string {
 	home, _ := os.UserHomeDir()
+
 	return filepath.Join(home, ".idtrack", "idtrack.pid")
 }
 
@@ -292,56 +352,65 @@ func serverPidPath() string {
 // (~/.idtrack/idtrack.log).
 func serverLogPath() string {
 	home, _ := os.UserHomeDir()
+
 	return filepath.Join(home, ".idtrack", "idtrack.log")
 }
 
 // runUser handles the "user" sub-command. A single invocation may perform
-// only one of --list, --add, --update, or --delete. The flags are parsed
+// only one of list, add, delete, ur update. The flags are parsed
 // first, validated, and only then is the database opened — this avoids
 // creating the DB file for a bad invocation.
 func runUser(args []string) {
-	var add, del, update, name, password, database, adminStr string
-	var list bool
+	var (
+		add, del, update, name, password, database, adminStr string
+		list                                                 bool
+	)
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--list":
+		case "list":
 			list = true
-		case "--add":
+		case "add":
 			if i+1 < len(args) {
 				i++
 				add = args[i]
 			}
-		case "--delete":
+		case "delete":
 			if i+1 < len(args) {
 				i++
 				del = args[i]
 			}
-		case "--update":
+		case "update":
 			if i+1 < len(args) {
 				i++
 				update = args[i]
 			}
-		case "--name":
+		case "--name", "-n":
 			if i+1 < len(args) {
 				i++
 				name = args[i]
 			}
-		case "--password":
+		case "--password", "-p":
 			if i+1 < len(args) {
 				i++
 				password = args[i]
 			}
-		case "--admin":
+		case "--admin", "-a":
 			if i+1 < len(args) {
 				i++
 				adminStr = args[i]
-				if adminStr != "true" && adminStr != "false" {
+
+				// If it's not a legit version of true/false, complain. Otherwise, use
+				// normalized "true"/"false" strings to avoid ambiguity in UpdateUser's
+				// *bool parameter.
+				if value, err := strconv.ParseBool(adminStr); err != nil {
 					fmt.Fprintln(os.Stderr, "--admin requires true or false")
 					os.Exit(1)
+				} else {
+					adminStr = strconv.FormatBool(value)
 				}
 			}
-		case "--database":
+		case databaseFlag, "-d":
 			if i+1 < len(args) {
 				i++
 				database = args[i]
@@ -354,7 +423,7 @@ func runUser(args []string) {
 	}
 
 	if !list && add == "" && del == "" && update == "" {
-		fmt.Fprintln(os.Stderr, "must specify --list, --add, --update, or --delete")
+		fmt.Fprintln(os.Stderr, "must specify list, add, update, or delete")
 		usage()
 		os.Exit(1)
 	}
@@ -364,8 +433,9 @@ func runUser(args []string) {
 		defs := loadDefaults()
 		database = defs.Database
 	}
+
 	if database == "" {
-		database = "idtrack.db"
+		database = defaultDB
 	}
 
 	d, err := db.Open(database)
@@ -373,6 +443,7 @@ func runUser(args []string) {
 		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", database, err)
 		os.Exit(1)
 	}
+
 	// defer ensures d.Close() is called when runUser returns, even if we exit
 	// via an error path. This releases the SQLite file lock cleanly.
 	defer d.Close()
@@ -383,18 +454,22 @@ func runUser(args []string) {
 			fmt.Fprintf(os.Stderr, "error listing users: %v\n", err)
 			os.Exit(1)
 		}
+
 		// %-20s left-aligns the string in a field 20 characters wide.
 		fmt.Printf("%-20s  %-30s  %-7s  %s\n", "USERNAME", "DISPLAY NAME", "ADMIN", "LAST LOGIN")
 		fmt.Printf("%-20s  %-30s  %-7s  %s\n", strings.Repeat("-", 20), strings.Repeat("-", 30), strings.Repeat("-", 7), strings.Repeat("-", 25))
+
 		for _, u := range users {
 			lastLogin := u.LastLoginAt
 			if lastLogin == "" {
 				lastLogin = "(never)"
 			}
+
 			admin := "no"
 			if u.IsAdmin {
 				admin = "yes"
 			}
+
 			fmt.Printf("%-20s  %-30s  %-7s  %s\n", u.Username, u.DisplayName, admin, lastLogin)
 		}
 	}
@@ -404,10 +479,12 @@ func runUser(args []string) {
 		// that a password containing ":" is not split further.
 		parts := strings.SplitN(add, ":", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			fmt.Fprintln(os.Stderr, "--add requires username:password")
+			fmt.Fprintln(os.Stderr, "add requires username:password")
 			os.Exit(1)
 		}
+
 		username, pwd := parts[0], parts[1]
+
 		displayName := username
 		if name != "" {
 			displayName = name
@@ -417,35 +494,42 @@ func runUser(args []string) {
 		// hash stored here is the credential that Basic Auth will compare.
 		// %x formats the [32]byte array as lowercase hex.
 		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(pwd)))
-		if err := db.AddUser(d, username, displayName, hash, adminStr == "true"); err != nil {
+		if err := db.AddUser(d, username, displayName, hash, adminStr == trueValue); err != nil {
 			fmt.Fprintf(os.Stderr, "error adding user %q: %v\n", username, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("user %q added\n", username)
 	}
 
 	if update != "" {
 		if name == "" && password == "" && adminStr == "" {
-			fmt.Fprintln(os.Stderr, "--update requires at least --name, --password, or --admin")
+			fmt.Fprintln(os.Stderr, "update requires at least --name, --password, or --admin")
 			usage()
 			os.Exit(1)
 		}
+
 		var hash string
+
 		if password != "" {
 			hash = fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
 		}
+
 		// db.UpdateUser uses *bool (a pointer to bool) for the admin flag so
 		// that nil means "not specified" — a plain bool has no way to represent
 		// "the caller did not pass this flag".
 		var adminPtr *bool
+
 		if adminStr != "" {
-			val := adminStr == "true"
+			val := adminStr == trueValue
 			adminPtr = &val
 		}
+
 		if err := db.UpdateUser(d, update, name, hash, adminPtr); err != nil {
 			fmt.Fprintf(os.Stderr, "error updating user %q: %v\n", update, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("user %q updated\n", update)
 	}
 
@@ -454,52 +538,75 @@ func runUser(args []string) {
 			fmt.Fprintf(os.Stderr, "error deleting user %q: %v\n", del, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("user %q deleted\n", del)
 	}
 }
 
-// runDefine handles the "define" sub-command. Without --component it creates a
-// new project; with --component it adds that component to an existing project.
-// Both operations are idempotent — running them again is harmless.
+// runDefine handles the "define" sub-command. The first positional argument is
+// a subcommand: "project" (creates a new project) or "component" (adds a
+// component to an existing project). Both operations are idempotent.
 func runDefine(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "define requires a subcommand: project or component")
+		usage()
+		os.Exit(1)
+	}
+
+	subcommand := args[0]
+	rest := args[1:]
+
 	var project, component, database string
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--project":
-			if i+1 < len(args) {
-				i++
-				project = args[i]
-			}
-		case "--component":
-			if i+1 < len(args) {
-				i++
-				component = args[i]
-			}
-		case "--database":
-			if i+1 < len(args) {
-				i++
-				database = args[i]
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
+	switch subcommand {
+	case "project":
+		if len(rest) == 0 || strings.HasPrefix(rest[0], "--") {
+			fmt.Fprintln(os.Stderr, "define project requires a project name")
 			usage()
 			os.Exit(1)
 		}
-	}
 
-	if project == "" {
-		fmt.Fprintln(os.Stderr, "--project is required")
+		project = rest[0]
+		rest = rest[1:]
+
+	case "component":
+		if len(rest) < 2 || strings.HasPrefix(rest[0], "--") || strings.HasPrefix(rest[1], "--") {
+			fmt.Fprintln(os.Stderr, "define component requires a project name and a component name")
+			usage()
+			os.Exit(1)
+		}
+
+		project = rest[0]
+		component = rest[1]
+		rest = rest[2:]
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", subcommand)
 		usage()
 		os.Exit(1)
+	}
+
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case databaseFlag:
+			if i+1 < len(rest) {
+				i++
+				database = rest[i]
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown option: %s\n", rest[i])
+			usage()
+			os.Exit(1)
+		}
 	}
 
 	if database == "" {
 		defs := loadDefaults()
 		database = defs.Database
 	}
+
 	if database == "" {
-		database = "idtrack.db"
+		database = defaultDB
 	}
 
 	d, err := db.Open(database)
@@ -507,6 +614,7 @@ func runDefine(args []string) {
 		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", database, err)
 		os.Exit(1)
 	}
+
 	defer d.Close()
 
 	if component == "" {
@@ -514,59 +622,83 @@ func runDefine(args []string) {
 			fmt.Fprintf(os.Stderr, "error creating project %q: %v\n", project, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("project %q defined\n", project)
 	} else {
 		if err := db.AddComponent(d, project, component); err != nil {
 			fmt.Fprintf(os.Stderr, "error adding component %q to project %q: %v\n", component, project, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("component %q added to project %q\n", component, project)
 	}
 }
 
-// runDeleteProjectOrComponent handles the "delete" sub-command. Without
-// --component it deletes the entire project (and all its components). With
-// --component it removes only that one component. Both refuse to delete if any
-// issues still reference the target, returning the blocking issue IDs.
+// runDeleteProjectOrComponent handles the "delete" sub-command. The first
+// positional argument is a subcommand: "project" (removes the whole project
+// and all its components) or "component" (removes one component). Both refuse
+// to delete if any issues reference the target, returning the blocking IDs.
 func runDeleteProjectOrComponent(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "delete requires a subcommand: project or component")
+		usage()
+		os.Exit(1)
+	}
+
+	subcommand := args[0]
+	rest := args[1:]
+
 	var project, component, database string
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--project":
-			if i+1 < len(args) {
-				i++
-				project = args[i]
-			}
-		case "--component":
-			if i+1 < len(args) {
-				i++
-				component = args[i]
-			}
-		case "--database":
-			if i+1 < len(args) {
-				i++
-				database = args[i]
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
+	switch subcommand {
+	case "project":
+		if len(rest) == 0 || strings.HasPrefix(rest[0], "--") {
+			fmt.Fprintln(os.Stderr, "delete project requires a project name")
 			usage()
 			os.Exit(1)
 		}
-	}
 
-	if project == "" {
-		fmt.Fprintln(os.Stderr, "--project is required")
+		project = rest[0]
+		rest = rest[1:]
+
+	case "component":
+		if len(rest) < 2 || strings.HasPrefix(rest[0], "--") || strings.HasPrefix(rest[1], "--") {
+			fmt.Fprintln(os.Stderr, "delete component requires a project name and a component name")
+			usage()
+			os.Exit(1)
+		}
+
+		project = rest[0]
+		component = rest[1]
+		rest = rest[2:]
+
+	default:
+		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n", subcommand)
 		usage()
 		os.Exit(1)
+	}
+
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case databaseFlag:
+			if i+1 < len(rest) {
+				i++
+				database = rest[i]
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown option: %s\n", rest[i])
+			usage()
+			os.Exit(1)
+		}
 	}
 
 	if database == "" {
 		defs := loadDefaults()
 		database = defs.Database
 	}
+
 	if database == "" {
-		database = "idtrack.db"
+		database = defaultDB
 	}
 
 	d, err := db.Open(database)
@@ -574,6 +706,7 @@ func runDeleteProjectOrComponent(args []string) {
 		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", database, err)
 		os.Exit(1)
 	}
+
 	defer d.Close()
 
 	if component == "" {
@@ -581,12 +714,14 @@ func runDeleteProjectOrComponent(args []string) {
 			fmt.Fprintf(os.Stderr, "error deleting project %q: %v\n", project, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("project %q deleted\n", project)
 	} else {
 		if err := db.DeleteComponent(d, project, component); err != nil {
 			fmt.Fprintf(os.Stderr, "error deleting component %q from project %q: %v\n", component, project, err)
 			os.Exit(1)
 		}
+
 		fmt.Printf("component %q deleted from project %q\n", component, project)
 	}
 }
@@ -595,31 +730,36 @@ func runDeleteProjectOrComponent(args []string) {
 // that subsequent commands do not need those flags. Unspecified values in the
 // file are left unchanged — we load existing values and merge on top of them.
 func runDefault(args []string) {
-	var port int
-	var database string
-	var idleTimeout int
-	var idleTimeoutSet bool
+	var (
+		port           int
+		database       string
+		idleTimeout    int
+		idleTimeoutSet bool
+	)
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--port":
+		case "--port", "-p":
 			if i+1 < len(args) {
 				i++
+
 				n, err := strconv.Atoi(args[i])
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "invalid port: %s\n", args[i])
 					os.Exit(1)
 				}
+
 				port = n
 			}
-		case "--database":
+		case databaseFlag, "-d":
 			if i+1 < len(args) {
 				i++
 				database = args[i]
 			}
-		case "--idle-timeout":
+		case "--idle-timeout", "-i":
 			if i+1 < len(args) {
 				i++
+
 				val := args[i]
 				if val == "0" || val == "0s" || val == "0m" || val == "0h" {
 					idleTimeout = 0
@@ -629,8 +769,10 @@ func runDefault(args []string) {
 						fmt.Fprintf(os.Stderr, "invalid idle-timeout %q: use a Go duration like 30m, 1h, 90s\n", val)
 						os.Exit(1)
 					}
+
 					idleTimeout = int(d.Seconds())
 				}
+
 				idleTimeoutSet = true
 			}
 		default:
@@ -651,9 +793,11 @@ func runDefault(args []string) {
 	if port != 0 {
 		defs.Port = port
 	}
+
 	if database != "" {
 		defs.Database = database
 	}
+
 	if idleTimeoutSet {
 		defs.IdleTimeout = idleTimeout
 	}
@@ -663,29 +807,36 @@ func runDefault(args []string) {
 		fmt.Fprintf(os.Stderr, "cannot determine home directory: %v\n", err)
 		os.Exit(1)
 	}
+
 	dir := filepath.Join(home, ".idtrack")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		fmt.Fprintf(os.Stderr, "cannot create %s: %v\n", dir, err)
 		os.Exit(1)
 	}
+
 	path := filepath.Join(dir, "defaults.json")
+
 	data, err := json.MarshalIndent(defs, "", "  ")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cannot encode defaults: %v\n", err)
 		os.Exit(1)
 	}
+
 	if err := os.WriteFile(path, append(data, '\n'), 0600); err != nil {
 		fmt.Fprintf(os.Stderr, "cannot write %s: %v\n", path, err)
 		os.Exit(1)
 	}
 
 	fmt.Printf("defaults written to %s\n", path)
+
 	if defs.Port != 0 {
 		fmt.Printf("  port:         %d\n", defs.Port)
 	}
+
 	if defs.Database != "" {
 		fmt.Printf("  database:     %s\n", defs.Database)
 	}
+
 	if defs.IdleTimeout > 0 {
 		fmt.Printf("  idle-timeout: %s\n", time.Duration(defs.IdleTimeout)*time.Second)
 	} else if idleTimeoutSet {
@@ -697,15 +848,19 @@ func runDefault(args []string) {
 // defaults struct. If the file does not exist or cannot be read, an empty
 // struct is returned so callers can apply their own fallback values.
 func loadDefaults() defaults {
+	var d defaults
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return defaults{}
 	}
+
 	data, err := os.ReadFile(filepath.Join(home, ".idtrack", "defaults.json"))
 	if err != nil {
 		return defaults{} // file not yet created — silently use zero values
 	}
-	var d defaults
+
 	json.Unmarshal(data, &d) // ignore parse error; zero struct is a safe fallback
+
 	return d
 }

@@ -20,6 +20,8 @@ type Comment struct {
 // (oldest first, by id). Displaying comments in creation order is the
 // conventional thread-style layout.
 func ListComments(database *sql.DB, issueID int64) ([]Comment, error) {
+	var comments []Comment
+
 	rows, err := database.Query(
 		`SELECT id, issue_id, author, body, created_at FROM comments WHERE issue_id = ? ORDER BY id ASC`, issueID,
 	)
@@ -28,12 +30,12 @@ func ListComments(database *sql.DB, issueID int64) ([]Comment, error) {
 	}
 	defer rows.Close()
 
-	var comments []Comment
 	for rows.Next() {
 		var c Comment
 		if err := rows.Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &c.CreatedAt); err != nil {
 			return nil, err
 		}
+
 		comments = append(comments, c)
 	}
 	// Return an empty slice rather than nil so JSON encoding produces "[]"
@@ -41,6 +43,7 @@ func ListComments(database *sql.DB, issueID int64) ([]Comment, error) {
 	if comments == nil {
 		comments = []Comment{}
 	}
+
 	return comments, rows.Err()
 }
 
@@ -48,6 +51,7 @@ func ListComments(database *sql.DB, issueID int64) ([]Comment, error) {
 // exposed to admin users via the HTTP API.
 func DeleteComment(database *sql.DB, commentID int64) error {
 	_, err := database.Exec(`DELETE FROM comments WHERE id = ?`, commentID)
+
 	return err
 }
 
@@ -56,14 +60,18 @@ func DeleteComment(database *sql.DB, commentID int64) error {
 // re-fetch it with QueryRow after the INSERT using the auto-assigned id from
 // LastInsertId.
 func CreateComment(database *sql.DB, issueID int64, author, body string) (*Comment, error) {
+	var c Comment
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := database.Exec(
 		`INSERT INTO comments (issue_id, author, body, created_at) VALUES (?, ?, ?, ?)`,
 		issueID, author, body, now,
 	)
+
 	if err != nil {
 		return nil, err
 	}
+
 	// LastInsertId is always populated after a successful INSERT in SQLite.
 	// The second return value (error) is ignored because we know the driver
 	// supports it.
@@ -72,9 +80,9 @@ func CreateComment(database *sql.DB, issueID int64, author, body string) (*Comme
 	row := database.QueryRow(
 		`SELECT id, issue_id, author, body, created_at FROM comments WHERE id = ?`, id,
 	)
-	var c Comment
 	if err := row.Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &c.CreatedAt); err != nil {
 		return nil, err
 	}
+
 	return &c, nil
 }

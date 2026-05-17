@@ -359,3 +359,9 @@ and deleting project names and components for a given project.
 
 When an issue is marked Resolved, if the "assign to" field is still unassigned,
 ensure that the user fills it in before allowing the save of the status.
+
+## Prompt 22 ***Resolved 1.0-20***
+
+Revise the command line grammar. Actions are described by command verbs and
+subcommand verbs, not options. The option syntax is only used for adding
+data to a command. Update the help and manual accordingly.
