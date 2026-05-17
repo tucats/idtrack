@@ -4,17 +4,16 @@
 // CONSTANTS
 // =====================================================================
 
-const SESSION_KEY = 'idtrack_session';  // sessionStorage: { user, creds }
+const SESSION_KEY = 'idtrack_session';  // sessionStorage: { user }
 const PREFS_KEY   = 'idtrack_prefs';   // localStorage:   { darkMode, keepLoggedIn }
-const PERSIST_KEY = 'idtrack_persist'; // localStorage:   { username, hash } when keepLoggedIn
+const PERSIST_KEY = 'idtrack_persist'; // localStorage:   { user } when keepLoggedIn (no credentials)
 const APP_VERSION = '2.0';
 
 // =====================================================================
 // STATE
 // =====================================================================
 
-let _credentials       = null;   // 'Basic base64(username:sha256hash)'
-let _currentUser       = null;   // { username, display_name }
+let _currentUser       = null;   // { username, display_name, is_admin }
 let _userMap           = {};     // username -> display_name
 let _userList          = [];     // full user objects from GET /api/users
 let _projectData       = [];     // [{name, components: [...]}]
@@ -79,11 +78,6 @@ function fmtDateTime(iso) {
     } catch { return iso; }
 }
 
-async function sha256(text) {
-    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
-}
-
 function priorityBadge(p) {
     const cls = {High:'badge-high', Medium:'badge-medium', Low:'badge-low'}[p] || 'badge-low';
     return `<span class="badge ${cls}">${esc(p)}</span>`;
@@ -103,15 +97,12 @@ function displayName(username) {
 // =====================================================================
 
 async function apiFetch(url, options = {}) {
-    if (!options.headers) options.headers = {};
-    if (_credentials) options.headers['Authorization'] = _credentials;
-
     const res = await fetch(url, options);
 
     if (res.status === 401) {
         _currentUser = null;
-        _credentials = null;
         sessionStorage.removeItem(SESSION_KEY);
+        localStorage.removeItem(PERSIST_KEY);
         showLogin('Session expired. Please sign in again.');
         throw new Error('Unauthorized');
     }
@@ -231,24 +222,24 @@ async function submitLogin() {
     btn.textContent = 'Signing in…';
 
     try {
-        const hash  = await sha256(password);
-        const creds = 'Basic ' + btoa(username + ':' + hash);
-
         const res = await fetch('/api/login', {
             method: 'POST',
-            headers: { 'Authorization': creds },
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password, keep_logged_in: _keepLoggedIn }),
         });
 
         if (!res.ok) {
-            err.textContent = 'Invalid username or password.';
+            const d = await res.json().catch(() => ({}));
+            err.textContent = d.error === 'too many failed login attempts — try again later'
+                ? 'Too many failed attempts. Please wait a minute before trying again.'
+                : 'Invalid username or password.';
             return;
         }
 
         const user = await res.json();
-        _credentials = creds;
         _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
-        if (_keepLoggedIn) _storePersistentCredentials();
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser }));
+        if (_keepLoggedIn) localStorage.setItem(PERSIST_KEY, JSON.stringify({ user: _currentUser }));
 
         document.getElementById('login-overlay').style.display = 'none';
         await launchApp();
@@ -278,12 +269,12 @@ async function launchApp() {
     await populateProjectDropdowns();
 }
 
-function doLogout() {
+async function doLogout() {
     stopIdleTracking();
+    // Ask the server to invalidate the session token and clear the cookie.
+    try { await fetch('/api/logout', { method: 'POST' }); } catch {}
     _currentUser = null;
-    _credentials = null;
     sessionStorage.removeItem(SESSION_KEY);
-    // Explicit logout clears persistent credentials so the next visit requires login.
     localStorage.removeItem(PERSIST_KEY);
     _keepLoggedIn = false;
     try {
@@ -842,8 +833,7 @@ async function submitAddUser() {
     btn.disabled = true;
     btn.textContent = 'Adding…';
     try {
-        const passwordHash = await sha256(password);
-        await apiPost('/api/users', { username, display_name: displayName, password_hash: passwordHash, is_admin: isAdmin });
+        await apiPost('/api/users', { username, display_name: displayName, password, is_admin: isAdmin });
         await populateAssigneeDropdowns();
         hideAddUser(); // hides overlay and returns to manage users (refreshed)
     } catch (e) {
@@ -908,9 +898,8 @@ async function submitEditUser() {
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
-        const passwordHash = password ? await sha256(password) : '';
         await apiPut(`/api/users/${encodeURIComponent(username)}`, {
-            display_name: displayName, password_hash: passwordHash, is_admin: isAdmin,
+            display_name: displayName, password, is_admin: isAdmin,
         });
         await populateAssigneeDropdowns();
         hideEditUser(); // hides overlay and returns to manage users (refreshed)
@@ -1281,21 +1270,13 @@ function toggleKeepLoggedIn(on) {
         p.keepLoggedIn = on;
         localStorage.setItem(PREFS_KEY, JSON.stringify(p));
     } catch {}
-    if (on && _credentials) {
-        _storePersistentCredentials();
+    if (on && _currentUser) {
+        // Store the non-sensitive user object so init() can restore the display
+        // state if the persistent session cookie is still valid on next visit.
+        localStorage.setItem(PERSIST_KEY, JSON.stringify({ user: _currentUser }));
     } else if (!on) {
         localStorage.removeItem(PERSIST_KEY);
     }
-}
-
-function _storePersistentCredentials() {
-    try {
-        const decoded = atob(_credentials.slice(6)); // strip 'Basic '
-        const colon   = decoded.indexOf(':');
-        const username = decoded.slice(0, colon);
-        const hash     = decoded.slice(colon + 1);
-        localStorage.setItem(PERSIST_KEY, JSON.stringify({ username, hash }));
-    } catch {}
 }
 
 // ── Idle timeout ──────────────────────────────────────────────────────────────
@@ -1376,8 +1357,7 @@ async function submitOnboarding() {
     btn.textContent = 'Creating…';
 
     try {
-        const passwordHash = await sha256(password);
-        const tokenCreds   = 'Basic ' + btoa('onboarding:' + _onboardingToken);
+        const tokenCreds = 'Basic ' + btoa('onboarding:' + _onboardingToken);
 
         const res = await fetch('/api/onboarding', {
             method: 'POST',
@@ -1385,7 +1365,7 @@ async function submitOnboarding() {
                 'Authorization': tokenCreds,
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ username, display_name: displayName, password_hash: passwordHash }),
+            body: JSON.stringify({ username, display_name: displayName, password }),
         });
 
         if (!res.ok) {
@@ -1399,9 +1379,9 @@ async function submitOnboarding() {
         _onboardingToken = null;
         document.getElementById('onboarding-overlay').style.display = 'none';
 
-        _credentials = 'Basic ' + btoa(username + ':' + passwordHash);
+        // The server set a session cookie; store the user object for display.
         _currentUser = { username: user.username, display_name: user.display_name || username, is_admin: true };
-        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser }));
 
         await launchApp();
 
@@ -1433,39 +1413,35 @@ async function init() {
     }
     applyBranding();
 
-    // Session storage: live in-tab session survives page refresh.
+    // Session storage: live in-tab session survives page refresh. The session
+    // cookie is HttpOnly so JS cannot read it, but the browser sends it
+    // automatically — the first authenticated API call in launchApp() will
+    // surface a 401 if it has expired, falling back to showLogin().
     const saved = sessionStorage.getItem(SESSION_KEY);
     if (saved) {
         try {
-            const { user, creds } = JSON.parse(saved);
-            if (user && creds) {
+            const { user } = JSON.parse(saved);
+            if (user && user.username) {
                 _currentUser = user;
-                _credentials = creds;
                 await launchApp();
                 return;
             }
         } catch {}
     }
 
-    // Persistent storage: "keep me logged in" across browser sessions.
+    // Persistent storage: "keep me logged in" across browser sessions. Only
+    // the non-sensitive user object is stored; the session cookie (set with
+    // MaxAge=30 days at login) carries the credential.
     const persist = localStorage.getItem(PERSIST_KEY);
     if (persist) {
         try {
-            const { username, hash } = JSON.parse(persist);
-            if (username && hash) {
-                const creds = 'Basic ' + btoa(username + ':' + hash);
-                const res   = await fetch('/api/login', { method: 'POST', headers: { 'Authorization': creds } });
-                if (res.ok) {
-                    const user = await res.json();
-                    _credentials = creds;
-                    _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
-                    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
-                    await launchApp();
-                    return;
-                } else {
-                    // Stored credentials are no longer valid — clear them.
-                    localStorage.removeItem(PERSIST_KEY);
-                }
+            const { user } = JSON.parse(persist);
+            if (user && user.username) {
+                _currentUser = user;
+                sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user }));
+                // launchApp() will hit 401 and show login if the cookie expired.
+                await launchApp();
+                return;
             }
         } catch {}
     }

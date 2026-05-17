@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -23,29 +22,46 @@ const ctxUser contextKey = "user"
 // memory exhaustion from oversized payloads.
 const maxRequestBodyBytes = 64 * 1024 // 64 KiB — plenty for any API call
 
+// sessionToken extracts the session token from the request. It prefers the
+// HttpOnly session cookie (set by handleLogin/handleOnboarding) over the
+// Authorization: Bearer header (provided for non-browser API clients).
+func sessionToken(r *http.Request) string {
+	if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
+		return c.Value
+	}
+
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ")
+	}
+
+	return ""
+}
+
 // auth is a middleware constructor. It returns a new http.Handler that:
-//  1. Reads Basic Auth credentials from the request.
-//  2. Looks up the user in the database and checks the password hash.
-//  3. On success, stores the *db.User in the request context and calls next.
-//  4. On failure, responds with 401 Unauthorized.
-//
-// The password stored in the database (and sent by the browser) is already a
-// SHA-256 hex hash — we compare hashes with crypto/subtle.ConstantTimeCompare
-// to avoid leaking timing information about partial hash matches.
+//  1. Extracts the session token from the request cookie (or Bearer header).
+//  2. Looks up the token in the in-memory session store.
+//  3. Loads the corresponding user from the database.
+//  4. On success, stores the *db.User in the request context and calls next.
+//  5. On failure, responds with 401 Unauthorized.
 func (s *srv) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		username, hash, ok := r.BasicAuth()
-		if !ok {
+		token := sessionToken(r)
+		if token == "" {
 			jsonError(w, "authentication required", http.StatusUnauthorized)
 
 			return
 		}
 
-		username = strings.ToLower(username)
+		username, ok := s.sessions.lookup(token)
+		if !ok {
+			jsonError(w, "session expired or invalid", http.StatusUnauthorized)
+
+			return
+		}
 
 		user, err := db.FindUser(s.database, username)
-		if err != nil || user == nil || subtle.ConstantTimeCompare([]byte(user.PasswordHash), []byte(hash)) != 1 {
-			jsonError(w, "invalid credentials", http.StatusUnauthorized)
+		if err != nil || user == nil {
+			jsonError(w, "authentication required", http.StatusUnauthorized)
 
 			return
 		}

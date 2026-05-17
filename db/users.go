@@ -1,10 +1,14 @@
 package db
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"fmt"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // User represents a row in the users table. The json struct tags control how
@@ -21,24 +25,72 @@ type User struct {
 	IsAdmin      bool   `json:"is_admin"`
 }
 
-// AddUser inserts a new user or updates an existing one (upsert). The
-// ON CONFLICT DO UPDATE clause means: if a row with this username already
-// exists, overwrite its display name, password hash, and admin flag instead of
-// returning an error. This lets the CLI "--add" command act as both create and
+// hashPassword hashes a plaintext password with bcrypt at the default cost.
+func hashPassword(plaintext string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
+	return string(hash), err
+}
+
+// IsLegacyHash reports whether storedHash is a raw SHA-256 hex digest from the
+// old client-side hashing scheme (64 lowercase hex characters). bcrypt hashes
+// always begin with "$2" and are 60 characters long, so the two formats are
+// unambiguous.
+func IsLegacyHash(storedHash string) bool {
+	return len(storedHash) == 64 && !strings.HasPrefix(storedHash, "$2")
+}
+
+// VerifyPassword checks whether plaintext matches storedHash. It handles both
+// current bcrypt hashes and legacy SHA-256 hex digests produced by the old
+// client-side hashing scheme, so existing accounts continue to work until
+// their hash is upgraded on next login.
+func VerifyPassword(storedHash, plaintext string) bool {
+	if strings.HasPrefix(storedHash, "$2") {
+		return bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(plaintext)) == nil
+	}
+	// Legacy path: compare SHA-256(plaintext) with the stored hex digest using
+	// constant-time comparison to avoid timing side-channels.
+	computed := fmt.Sprintf("%x", sha256.Sum256([]byte(plaintext)))
+	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(computed)) == 1
+}
+
+// UpgradePasswordHash replaces a user's stored hash in-place with a fresh
+// bcrypt hash. Called after a successful legacy-SHA-256 login so that the
+// stored credential is upgraded transparently without requiring a password
+// reset.
+func UpgradePasswordHash(database *sql.DB, username, plaintext string) error {
+	hash, err := hashPassword(plaintext)
+	if err != nil {
+		return err
+	}
+
+	_, err = database.Exec(`UPDATE users SET password_hash = ? WHERE username = ?`, hash, username)
+
+	return err
+}
+
+// AddUser inserts a new user or updates an existing one (upsert). The password
+// is hashed with bcrypt before storage; the caller passes the plaintext
+// password. ON CONFLICT DO UPDATE means an existing row is overwritten rather
+// than returning an error, letting the CLI "add" command act as both create and
 // update.
 //
 // isAdmin is stored as an integer (0/1) because SQLite has no native boolean
 // type — we convert it here rather than sprinkle the conversion everywhere.
-func AddUser(database *sql.DB, username, displayName, passwordHash string, isAdmin bool) error {
+func AddUser(database *sql.DB, username, displayName, password string, isAdmin bool) error {
+	hash, err := hashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+
 	adminInt := 0
 	if isAdmin {
 		adminInt = 1
 	}
 
-	_, err := database.Exec(
+	_, err = database.Exec(
 		`INSERT INTO users (username, display_name, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, password_hash=excluded.password_hash, is_admin=excluded.is_admin`,
-		username, displayName, passwordHash, time.Now().UTC().Format(time.RFC3339), adminInt,
+		username, displayName, hash, time.Now().UTC().Format(time.RFC3339), adminInt,
 	)
 
 	return err
@@ -87,7 +139,8 @@ func FindUser(database *sql.DB, username string) (*User, error) {
 // UpdateUser modifies one or more fields of an existing user. Only fields with
 // non-empty / non-nil values are updated; others are left unchanged. This
 // allows callers to update just the display name without touching the password,
-// for example.
+// for example. When a non-empty password is provided it is hashed with bcrypt
+// before storage; the caller passes the plaintext.
 //
 // isAdmin is a *bool (pointer to bool) rather than a plain bool so that nil
 // can represent "not specified". A plain false bool is ambiguous — it could
@@ -95,7 +148,7 @@ func FindUser(database *sql.DB, username string) (*User, error) {
 //
 // The function builds a SET clause dynamically by accumulating "col = ?"
 // fragments and matching argument values, then runs a single UPDATE statement.
-func UpdateUser(database *sql.DB, username, displayName, passwordHash string, isAdmin *bool) error {
+func UpdateUser(database *sql.DB, username, displayName, password string, isAdmin *bool) error {
 	var (
 		setClauses []string
 		args       []any
@@ -120,9 +173,14 @@ func UpdateUser(database *sql.DB, username, displayName, passwordHash string, is
 		args = append(args, displayName)
 	}
 
-	if passwordHash != "" {
+	if password != "" {
+		hash, err := hashPassword(password)
+		if err != nil {
+			return fmt.Errorf("hashing password: %w", err)
+		}
+
 		setClauses = append(setClauses, "password_hash = ?")
-		args = append(args, passwordHash)
+		args = append(args, hash)
 	}
 
 	if isAdmin != nil {

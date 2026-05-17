@@ -4,7 +4,6 @@
 package main
 
 import (
-	"crypto/sha256"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -579,12 +578,7 @@ func runUser(args []string) {
 		if name != "" {
 			displayName = name
 		}
-		// SHA-256 hash the password before storing it. The browser also hashes
-		// the password with SHA-256 before sending it over the wire, so the
-		// hash stored here is the credential that Basic Auth will compare.
-		// %x formats the [32]byte array as lowercase hex.
-		hash := fmt.Sprintf("%x", sha256.Sum256([]byte(pwd)))
-		if err := db.AddUser(d, username, displayName, hash, adminStr == trueValue); err != nil {
+		if err := db.AddUser(d, username, displayName, pwd, adminStr == trueValue); err != nil {
 			fmt.Fprintf(os.Stderr, "error adding user %q: %v\n", username, err)
 			os.Exit(1)
 		}
@@ -599,12 +593,6 @@ func runUser(args []string) {
 			os.Exit(1)
 		}
 
-		var hash string
-
-		if password != "" {
-			hash = fmt.Sprintf("%x", sha256.Sum256([]byte(password)))
-		}
-
 		// db.UpdateUser uses *bool (a pointer to bool) for the admin flag so
 		// that nil means "not specified" — a plain bool has no way to represent
 		// "the caller did not pass this flag".
@@ -615,7 +603,7 @@ func runUser(args []string) {
 			adminPtr = &val
 		}
 
-		if err := db.UpdateUser(d, update, name, hash, adminPtr); err != nil {
+		if err := db.UpdateUser(d, update, name, password, adminPtr); err != nil {
 			fmt.Fprintf(os.Stderr, "error updating user %q: %v\n", update, err)
 			os.Exit(1)
 		}

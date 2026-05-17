@@ -191,29 +191,46 @@ referential-integrity messages fall into this category.
 
 ## S-07 — Unsalted SHA-256 password storage
 
-**Severity:** Medium (acknowledged design trade-off)  
-**Files:** `resources/idtrack.js`, `db/users.go`, `server/auth_handlers.go`  
-**Status:** Not fixed — accepted trade-off
+**Severity:** Medium  
+**Files:** `resources/idtrack.js`, `db/users.go`, `server/auth_handlers.go`,
+`server/sessions.go` (new), `server/middleware.go`  
+**Fixed:** 2026-05-17
 
-Passwords are hashed client-side with plain SHA-256 (no salt) before being
-transmitted and stored. Consequences if the database is compromised:
+Passwords were hashed client-side with plain SHA-256 (no salt) before being
+transmitted and stored. The hash was the credential — stored in the database,
+sent verbatim in every `Authorization` header, and saved to `localStorage`
+when "Keep me logged in" was enabled.
 
-- Two users with the same password share identical `password_hash` values.
-- SHA-256 is a general-purpose hash function, not a password KDF. A GPU can
-  test billions of candidates per second against the stored hashes.
-- Precomputed SHA-256 rainbow tables for common passwords are publicly available.
+**Fix applied:** Full server-side hashing with session-token authentication:
 
-This is explicitly accepted as a trade-off for the current client-side-hash /
-Basic-Auth model.
+1. **bcrypt hashing in `db/users.go`:** `AddUser` and `UpdateUser` now hash the
+   plaintext password with `bcrypt.GenerateFromPassword` (default cost) before
+   storage. The client sends the plaintext password over TLS; the server never
+   sees the plaintext stored or forwarded anywhere.
 
-**Fix (partial, without changing the auth model):** Add a per-user salt stored
-alongside the hash. The browser would need to fetch the salt before computing
-the hash. This breaks the current stateless Basic Auth flow.
+2. **`golang.org/x/crypto/bcrypt`** added as a dependency.
 
-**Full fix:** Move hashing server-side using bcrypt or Argon2id. The browser
-sends the plaintext password over TLS; the server hashes it with a slow KDF
-and compares. This requires a session token (cookie or JWT) rather than
-per-request Basic Auth.
+3. **`VerifyPassword(storedHash, plaintext)` in `db/users.go`:** Handles both
+   current bcrypt hashes (detected by the `$2` prefix) and legacy SHA-256
+   digests (64 lowercase hex characters) so existing accounts continue to work
+   without a forced password reset. On next successful login, legacy hashes are
+   transparently upgraded to bcrypt via `UpgradePasswordHash` — no admin
+   action required.
+
+4. **In-memory session store (`server/sessions.go`):** Login now creates a
+   cryptographically random 32-byte (64 hex char) session token, stored in a
+   server-side `sessionStore` map with a TTL (24 h default; 30 days when
+   "Keep me logged in" is selected). The token is issued as an `HttpOnly;
+   Secure; SameSite=Strict` cookie — inaccessible to JavaScript.
+
+5. **`auth` middleware (`server/middleware.go`):** Replaced per-request
+   Basic Auth with session token lookup. The token is read from the
+   `idtrack_session` cookie (preferred) or an `Authorization: Bearer` header
+   (for non-browser API clients).
+
+6. **`POST /api/logout`** (`server/auth_handlers.go`): Deletes the server-side
+   session and clears the cookie. Server restart also invalidates all sessions
+   (in-memory store is not persisted).
 
 ---
 
@@ -221,23 +238,18 @@ per-request Basic Auth.
 
 **Severity:** Medium  
 **File:** `resources/idtrack.js`  
-**Status:** Not fixed
+**Fixed:** 2026-05-17 (resolved by S-07 fix)
 
-When "Keep me logged in" is enabled, `{ username, hash }` is written to
-`localStorage` with no expiration timestamp. The SHA-256 hash IS the credential
-(it is used directly in the `Authorization` header). Problems:
+**Fix applied:** `localStorage` no longer stores any credential. When "Keep me
+logged in" is enabled the server issues a 30-day `Max-Age` cookie (HttpOnly,
+Secure, SameSite=Strict) and `localStorage` stores only the non-sensitive user
+display object `{ user: {username, display_name, is_admin} }` so the UI can
+restore its state on the next visit without a credential. The cookie itself
+carries the session token; if it has expired the first authenticated API call
+returns 401 and the user is shown the login screen.
 
-1. The credential persists indefinitely on any shared or abandoned device.
-2. Any XSS vulnerability introduced in the future would allow the stored hash
-   to be exfiltrated and replayed.
-3. There is no server-side mechanism to invalidate a stolen stored credential
-   (the hash cannot be "rotated" without the user changing their password).
-
-**Fix (short term):** Store an expiry timestamp alongside the credential and
-clear it on load if expired (e.g. 30-day cap).
-
-**Fix (long term):** Replace long-lived localStorage credentials with a
-server-issued session token (short-lived, revocable).
+Server-side session invalidation (`POST /api/logout`) ensures stolen cookies can
+be revoked immediately by signing out on the compromised device.
 
 ---
 
@@ -371,8 +383,8 @@ descriptive error if they are the last admin.
 | S-04 | Non-constant-time credential comparison | Medium | **Fixed 2026-05-17** |
 | S-05 | Missing security response headers | Medium | **Fixed 2026-05-17** |
 | S-06 | Internal DB errors returned to clients | Medium | **Fixed 2026-05-17** |
-| S-07 | Unsalted SHA-256 password storage | Medium | Open — accepted trade-off |
-| S-08 | Long-lived localStorage credentials | Medium | Open |
+| S-07 | Unsalted SHA-256 password storage | Medium | **Fixed 2026-05-17** |
+| S-08 | Long-lived localStorage credentials | Medium | **Fixed 2026-05-17** |
 | S-09 | Unauthenticated status endpoint hits DB | Low | Open |
 | S-10 | Unbounded search parameter | Low | Open |
 | S-11 | No Content-Type validation | Low | Open |
