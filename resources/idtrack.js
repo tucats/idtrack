@@ -5,7 +5,8 @@
 // =====================================================================
 
 const SESSION_KEY = 'idtrack_session';  // sessionStorage: { user, creds }
-const PREFS_KEY   = 'idtrack_prefs';   // localStorage:   { darkMode: bool }
+const PREFS_KEY   = 'idtrack_prefs';   // localStorage:   { darkMode, keepLoggedIn }
+const PERSIST_KEY = 'idtrack_persist'; // localStorage:   { username, hash } when keepLoggedIn
 const APP_VERSION = '2.0';
 
 // =====================================================================
@@ -25,8 +26,11 @@ let _sortAsc     = false;
 let _statusFilter   = 'open';
 let _priorityFilter = 'all';
 let _projectFilter  = 'all';
-let _detailDirty = false;
-let _darkMode    = false;
+let _detailDirty    = false;
+let _darkMode       = false;
+let _keepLoggedIn   = false;
+let _idleTimeoutSecs = 0;    // 0 = disabled; set from /api/status
+let _idleTimer       = null; // setTimeout handle for idle logout
 
 // =====================================================================
 // UTILITY
@@ -224,6 +228,7 @@ async function submitLogin() {
         _credentials = creds;
         _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
         sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
+        if (_keepLoggedIn) _storePersistentCredentials();
 
         document.getElementById('login-overlay').style.display = 'none';
         await launchApp();
@@ -249,16 +254,28 @@ async function launchApp() {
     document.getElementById('menu-add-component').style.display    = adminDisplay;
     document.getElementById('menu-manage-projects').style.display  = adminDisplay;
     document.getElementById('app').style.display = '';
+    stopIdleTracking();
+    startIdleTracking();
     await refreshIssues();
     await populateAssigneeDropdowns();
     await populateProjectDropdowns();
 }
 
 function doLogout() {
+    stopIdleTracking();
     _currentUser = null;
     _credentials = null;
     sessionStorage.removeItem(SESSION_KEY);
+    // Explicit logout clears persistent credentials so the next visit requires login.
+    localStorage.removeItem(PERSIST_KEY);
+    _keepLoggedIn = false;
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.keepLoggedIn = false;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
     document.getElementById('app').style.display = 'none';
+    _detailDirty = false;
     closeDetail();
     showLogin();
 }
@@ -1103,6 +1120,7 @@ function hideAbout() {
 function openSettings() {
     _closeMenuOnOutside();
     document.getElementById('dark-mode-toggle').checked = _darkMode;
+    document.getElementById('keep-logged-in-toggle').checked = _keepLoggedIn;
     document.getElementById('settings-overlay').style.display = 'flex';
 }
 
@@ -1120,12 +1138,62 @@ function toggleDarkMode(on) {
     } catch {}
 }
 
+function toggleKeepLoggedIn(on) {
+    _keepLoggedIn = on;
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.keepLoggedIn = on;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
+    if (on && _credentials) {
+        _storePersistentCredentials();
+    } else if (!on) {
+        localStorage.removeItem(PERSIST_KEY);
+    }
+}
+
+function _storePersistentCredentials() {
+    try {
+        const decoded = atob(_credentials.slice(6)); // strip 'Basic '
+        const colon   = decoded.indexOf(':');
+        const username = decoded.slice(0, colon);
+        const hash     = decoded.slice(colon + 1);
+        localStorage.setItem(PERSIST_KEY, JSON.stringify({ username, hash }));
+    } catch {}
+}
+
+// ── Idle timeout ──────────────────────────────────────────────────────────────
+
+function _resetIdleTimer() {
+    if (!_idleTimeoutSecs) return;
+    if (_idleTimer) clearTimeout(_idleTimer);
+    _idleTimer = setTimeout(() => doLogout(), _idleTimeoutSecs * 1000);
+}
+
+function startIdleTracking() {
+    if (!_idleTimeoutSecs) return;
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    events.forEach(ev => document.addEventListener(ev, _resetIdleTimer, { passive: true }));
+    _resetIdleTimer();
+}
+
+function stopIdleTracking() {
+    if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
+    const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
+    events.forEach(ev => document.removeEventListener(ev, _resetIdleTimer));
+}
+
 function loadPrefs() {
     try {
         const p = JSON.parse(localStorage.getItem(PREFS_KEY));
-        if (p && p.darkMode) {
-            _darkMode = true;
-            document.body.classList.add('dark');
+        if (p) {
+            if (p.darkMode) {
+                _darkMode = true;
+                document.body.classList.add('dark');
+            }
+            if (p.keepLoggedIn) {
+                _keepLoggedIn = true;
+            }
         }
     } catch {}
 }
@@ -1216,6 +1284,17 @@ async function submitOnboarding() {
 async function init() {
     loadPrefs();
 
+    // Always fetch status first to get idle_timeout and onboarding state.
+    let statusData = null;
+    try {
+        const res = await fetch('/api/status');
+        if (res.ok) statusData = await res.json();
+    } catch {}
+    if (statusData && statusData.idle_timeout) {
+        _idleTimeoutSecs = statusData.idle_timeout;
+    }
+
+    // Session storage: live in-tab session survives page refresh.
     const saved = sessionStorage.getItem(SESSION_KEY);
     if (saved) {
         try {
@@ -1229,16 +1308,33 @@ async function init() {
         } catch {}
     }
 
-    try {
-        const res = await fetch('/api/status');
-        if (res.ok) {
-            const data = await res.json();
-            if (data.onboarding) {
-                showOnboarding(data.token);
-                return;
+    // Persistent storage: "keep me logged in" across browser sessions.
+    const persist = localStorage.getItem(PERSIST_KEY);
+    if (persist) {
+        try {
+            const { username, hash } = JSON.parse(persist);
+            if (username && hash) {
+                const creds = 'Basic ' + btoa(username + ':' + hash);
+                const res   = await fetch('/api/login', { method: 'POST', headers: { 'Authorization': creds } });
+                if (res.ok) {
+                    const user = await res.json();
+                    _credentials = creds;
+                    _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
+                    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser, creds: _credentials }));
+                    await launchApp();
+                    return;
+                } else {
+                    // Stored credentials are no longer valid — clear them.
+                    localStorage.removeItem(PERSIST_KEY);
+                }
             }
-        }
-    } catch {}
+        } catch {}
+    }
+
+    if (statusData && statusData.onboarding) {
+        showOnboarding(statusData.token);
+        return;
+    }
 
     showLogin();
 }
