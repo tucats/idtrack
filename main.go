@@ -107,7 +107,7 @@ func main() {
 		runStop()
 	case "restart":
 		runRestart()
-	case "default", "config":
+	case "default", "defaults", "config":
 		runDefault(args[1:])
 	case "user", "users":
 		runUser(args[1:])
@@ -288,6 +288,7 @@ func runServe(args []string) {
 	if defs.BackupInterval != "" {
 		backupInterval, _ = time.ParseDuration(defs.BackupInterval)
 	}
+
 	if defs.BackupAge != "" {
 		backupAge, _ = time.ParseDuration(defs.BackupAge)
 	}
@@ -600,6 +601,7 @@ func runUser(args []string) {
 		if name != "" {
 			displayName = name
 		}
+
 		if err := db.AddUser(d, username, displayName, pwd, adminStr == trueValue); err != nil {
 			fmt.Fprintf(os.Stderr, "error adding user %q: %v\n", username, err)
 			os.Exit(1)
@@ -831,16 +833,16 @@ func runDeleteProjectOrComponent(args []string) {
 // file are left unchanged — we load existing values and merge on top of them.
 func runDefault(args []string) {
 	var (
-		port            int
-		database        string
-		idleTimeout     int
-		idleTimeoutSet  bool
-		appName         string
-		appDescription  string
-		backupInterval  string
-		backupCount     int
-		backupCountSet  bool
-		backupAge       string
+		port           int
+		database       string
+		idleTimeout    int
+		idleTimeoutSet bool
+		appName        string
+		appDescription string
+		backupInterval string
+		backupCount    int
+		backupCountSet bool
+		backupAge      string
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -895,6 +897,7 @@ func runDefault(args []string) {
 			if i+1 < len(args) {
 				i++
 				val := args[i]
+
 				if val == "0" || val == "0s" {
 					backupInterval = "" // empty = disabled
 				} else {
@@ -902,23 +905,27 @@ func runDefault(args []string) {
 						fmt.Fprintf(os.Stderr, "invalid backup-interval %q: use a Go duration like 1h, 30m\n", val)
 						os.Exit(1)
 					}
+
 					backupInterval = val
 				}
 			}
 		case "--backup-count":
 			if i+1 < len(args) {
 				i++
+
 				n, err := strconv.Atoi(args[i])
 				if err != nil || n < 0 {
 					fmt.Fprintf(os.Stderr, "invalid backup-count %q: must be a non-negative integer\n", args[i])
 					os.Exit(1)
 				}
+
 				backupCount = n
 				backupCountSet = true
 			}
 		case "--backup-age":
 			if i+1 < len(args) {
 				i++
+
 				val := args[i]
 				if val == "0" || val == "0s" {
 					backupAge = "" // empty = disabled
@@ -927,6 +934,7 @@ func runDefault(args []string) {
 						fmt.Fprintf(os.Stderr, "invalid backup-age %q: use a Go duration like 168h, 720h\n", val)
 						os.Exit(1)
 					}
+
 					backupAge = val
 				}
 			}
@@ -940,9 +948,9 @@ func runDefault(args []string) {
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
 		backupInterval != "" || backupCountSet || backupAge != ""
 	if !anySet {
-		fmt.Fprintln(os.Stderr, "must specify at least one option")
-		usage()
-		os.Exit(1)
+		showDefaults()
+		
+		return
 	}
 
 	// Load current saved defaults so we preserve any keys we are not updating.
@@ -1038,6 +1046,68 @@ func runDefault(args []string) {
 
 	if defs.BackupAge != "" {
 		fmt.Printf("  backup-age:      %s\n", defs.BackupAge)
+	}
+}
+
+// showDefaults prints the current contents of ~/.idtrack/defaults.json as a
+// two-column table. Called when "idtrack default" is invoked with no flags.
+func showDefaults() {
+	defs := loadDefaults()
+
+	home, _ := os.UserHomeDir()
+	path := filepath.Join(home, ".idtrack", "defaults.json")
+	fmt.Printf("Current defaults (%s):\n\n", path)
+
+	row := func(setting, value string) {
+		fmt.Printf("  %-20s %s\n", setting, value)
+	}
+
+	if defs.Port != 0 {
+		row("port", fmt.Sprintf("%d", defs.Port))
+	} else {
+		row("port", "8443 (default)")
+	}
+
+	if defs.Database != "" {
+		row("database", defs.Database)
+	} else {
+		row("database", `"idtrack.db" in working directory (default)`)
+	}
+
+	if defs.IdleTimeout > 0 {
+		row("idle-timeout", (time.Duration(defs.IdleTimeout) * time.Second).String())
+	} else {
+		row("idle-timeout", "disabled")
+	}
+
+	if defs.AppName != "" {
+		row("app-name", defs.AppName)
+	} else {
+		row("app-name", "(not set)")
+	}
+
+	if defs.AppDescription != "" {
+		row("app-description", defs.AppDescription)
+	} else {
+		row("app-description", "(not set)")
+	}
+
+	if defs.BackupInterval != "" {
+		row("backup-interval", defs.BackupInterval)
+	} else {
+		row("backup-interval", "disabled")
+	}
+
+	if defs.BackupCount > 0 {
+		row("backup-count", fmt.Sprintf("%d", defs.BackupCount))
+	} else {
+		row("backup-count", "no limit")
+	}
+
+	if defs.BackupAge != "" {
+		row("backup-age", defs.BackupAge)
+	} else {
+		row("backup-age", "no limit")
 	}
 }
 

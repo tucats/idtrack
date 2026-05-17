@@ -35,6 +35,7 @@ func (s *srv) startBackups() {
 		log.Printf("backup: startup backup failed: %v", err)
 	} else {
 		log.Printf("backup: created %s (startup)", filepath.Base(dst))
+
 		go s.ageBackups(backupDir)
 	}
 
@@ -63,6 +64,7 @@ func (s *srv) doBackup(backupDir string) error {
 	}
 
 	log.Printf("backup: created %s", filepath.Base(dst))
+	
 	go s.ageBackups(backupDir)
 
 	return nil

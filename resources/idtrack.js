@@ -1303,10 +1303,31 @@ function toggleKeepLoggedIn(on) {
 
 // ── Idle timeout ──────────────────────────────────────────────────────────────
 
+// idleLogout is called when the inactivity timer fires. It clears the screen
+// and shows the login form with an explanatory message BEFORE the async
+// /api/logout round-trip, so the user never sees the issue list after timeout.
+async function idleLogout() {
+    stopIdleTracking();
+    _currentUser = null;
+    _detailDirty = false;
+    closeDetail();
+    document.getElementById('app').style.display = 'none';
+    showLogin('You have been signed out due to inactivity.');
+    sessionStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(PERSIST_KEY);
+    _keepLoggedIn = false;
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.keepLoggedIn = false;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
+    try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+}
+
 function _resetIdleTimer() {
     if (!_idleTimeoutSecs) return;
     if (_idleTimer) clearTimeout(_idleTimer);
-    _idleTimer = setTimeout(() => doLogout(), _idleTimeoutSecs * 1000);
+    _idleTimer = setTimeout(() => idleLogout(), _idleTimeoutSecs * 1000);
 }
 
 function startIdleTracking() {

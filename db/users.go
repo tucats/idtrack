@@ -28,6 +28,7 @@ type User struct {
 // hashPassword hashes a plaintext password with bcrypt at the default cost.
 func hashPassword(plaintext string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcrypt.DefaultCost)
+
 	return string(hash), err
 }
 
@@ -47,9 +48,11 @@ func VerifyPassword(storedHash, plaintext string) bool {
 	if strings.HasPrefix(storedHash, "$2") {
 		return bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(plaintext)) == nil
 	}
+
 	// Legacy path: compare SHA-256(plaintext) with the stored hex digest using
 	// constant-time comparison to avoid timing side-channels.
 	computed := fmt.Sprintf("%x", sha256.Sum256([]byte(plaintext)))
+	
 	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(computed)) == 1
 }
 
