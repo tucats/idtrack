@@ -56,6 +56,11 @@ func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Let's minify this before sending along so the server browser
+	// doesn't have to deal with comments, etc.
+	data = Minify(data, false)
+
+	// Send the data to the browser!
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Write(data)
 }
