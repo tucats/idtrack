@@ -9,7 +9,8 @@ import (
 )
 
 // handleCreateUser creates a new user account. Admin-only. Returns 409 Conflict
-// if the username is already taken (unlike the CLI "add" which upserts).
+// if the username is already taken (unlike the CLI "add" which upserts). The
+// password is accepted as plaintext and hashed server-side with bcrypt.
 func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -18,10 +19,10 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Username     string `json:"username"`
-		DisplayName  string `json:"display_name"`
-		PasswordHash string `json:"password_hash"` // pre-hashed by the browser
-		IsAdmin      bool   `json:"is_admin"`
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+		IsAdmin     bool   `json:"is_admin"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -37,7 +38,7 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.PasswordHash == "" {
+	if body.Password == "" {
 		jsonError(w, "password is required", http.StatusBadRequest)
 
 		return
@@ -63,7 +64,7 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		displayName = body.Username // default display name to login name
 	}
 
-	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, body.IsAdmin); err != nil {
+	if err := db.AddUser(s.database, body.Username, displayName, body.Password, body.IsAdmin); err != nil {
 		internalError(w, err)
 
 		return
@@ -75,7 +76,8 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 // handleUpdateUser modifies an existing user. Admin-only. The is_admin flag is
 // always passed through even if the client didn't intend to change it, because
 // the JSON body always includes a zero-value bool for unset fields. This is
-// intentional — the admin UI always sends the current value.
+// intentional — the admin UI always sends the current value. When a non-empty
+// password is provided it is hashed server-side with bcrypt.
 func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -86,9 +88,9 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	username := strings.ToLower(r.PathValue("username"))
 
 	var body struct {
-		DisplayName  string `json:"display_name"`
-		PasswordHash string `json:"password_hash"`
-		IsAdmin      bool   `json:"is_admin"`
+		DisplayName string `json:"display_name"`
+		Password    string `json:"password"`
+		IsAdmin     bool   `json:"is_admin"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -98,7 +100,7 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isAdmin := body.IsAdmin
-	if err := db.UpdateUser(s.database, username, body.DisplayName, body.PasswordHash, &isAdmin); err != nil {
+	if err := db.UpdateUser(s.database, username, body.DisplayName, body.Password, &isAdmin); err != nil {
 		jsonError(w, err.Error(), http.StatusNotFound)
 
 		return

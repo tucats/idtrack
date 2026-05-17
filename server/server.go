@@ -27,6 +27,7 @@ type srv struct {
 	appName         string
 	appDescription  string
 	loginLimiter    *rateLimiter
+	sessions        *sessionStore
 	mu              sync.Mutex
 	onboardingToken string
 }
@@ -49,6 +50,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		appName:        appName,
 		appDescription: appDescription,
 		loginLimiter:   newRateLimiter(),
+		sessions:       newSessionStore(),
 	}
 
 	mux := http.NewServeMux()
@@ -65,11 +67,12 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /manual", s.handleManual)
 
-	// Login validates credentials and records the login timestamp. It reads
-	// Basic Auth credentials directly rather than going through the auth
-	// middleware because the middleware would reject invalid credentials with
-	// 401 before we could return a descriptive error.
+	// Login / logout / onboarding are public endpoints that manage session cookies.
+	// They do not go through the auth middleware — login and onboarding need to
+	// run before a session exists; logout needs to run even when the session is
+	// already expired.
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/onboarding", s.handleOnboarding)
 
 	// Authenticated API endpoints are wrapped with s.auth(), which is a

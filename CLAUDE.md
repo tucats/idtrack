@@ -63,7 +63,7 @@ Both default to `"dev"` / `""` when built with plain `go build` (no flags).
 - **Go 1.25**, single binary, no runtime dependencies
 - **SQLite** via `modernc.org/sqlite` (pure-Go, no CGO required)
 - **HTTPS only** — TLS cert/key embedded in the binary via `embed.FS`
-- **Basic Auth** — password is SHA-256 hashed client-side (in JS) before transmission; the hash is stored directly in the DB (no salting — acceptable for an internal tool)
+- **Session-cookie auth** — browser sends plaintext password over TLS; server hashes with bcrypt (`golang.org/x/crypto/bcrypt`, default cost) and stores the hash in the DB. On login the server issues a cryptographically random 64-hex-char session token as an `HttpOnly; Secure; SameSite=Strict` cookie. The `auth` middleware validates the cookie against an in-memory `sessionStore` on each authenticated request. `POST /api/logout` deletes the server-side session and clears the cookie. Non-browser API clients may pass `Authorization: Bearer <token>` instead. Legacy SHA-256 hashes (from the old client-side scheme) are detected by format and transparently upgraded to bcrypt on first successful login.
 - **No framework** — `net/http` mux with Go 1.22+ path patterns (`GET /api/issues/{id}`)
 
 ## Database Schema
@@ -72,7 +72,7 @@ Both default to `"dev"` / `""` when built with plain `go build` (no flags).
 CREATE TABLE users (
     username      TEXT PRIMARY KEY,
     display_name  TEXT NOT NULL,
-    password_hash TEXT NOT NULL,   -- SHA-256 hex of the password
+    password_hash TEXT NOT NULL,   -- bcrypt hash (legacy: SHA-256 hex, upgraded on login)
     created_at    TEXT NOT NULL,   -- RFC3339 UTC
     -- added via migration:
     last_login_at TEXT NOT NULL DEFAULT '',
@@ -183,7 +183,8 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 | ------ | ---- | ---- | -------------- |
 | GET | `/api/version` | no | no |
 | GET | `/api/status` | no | no |
-| POST | `/api/login` | Basic (validates) | no |
+| POST | `/api/login` | JSON body (validates) | no |
+| POST | `/api/logout` | no | no |
 | POST | `/api/onboarding` | one-time token | no |
 | GET | `/api/users` | yes | no |
 | POST | `/api/users` | yes | **yes** |
@@ -215,7 +216,7 @@ The UUID is generated lazily on first status call when onboarding is needed and 
 
 ### Onboarding request (`POST /api/onboarding`)
 
-Authorization header: `Basic base64("onboarding:<uuid>")`. Body: `{ username, display_name, password_hash }`. Creates the first user as an admin, clears the token, calls `RecordLogin`, and returns the same shape as `/api/login`. The endpoint returns 409 if users already exist.
+Authorization header: `Basic base64("onboarding:<uuid>")`. Body: `{ username, display_name, password }` (plaintext password — hashed server-side). Creates the first user as an admin, clears the token, calls `RecordLogin`, sets a session cookie, and returns the same shape as `/api/login`. The endpoint returns 409 if users already exist.
 
 ### Login response
 
@@ -236,7 +237,6 @@ Single-page app. All JS is in one `idtrack.js` file; no build step, no framework
 ### Key state variables
 
 ```js
-_credentials      // 'Basic base64(user:sha256hash)' — sent on every API call
 _currentUser      // { username, display_name, is_admin }
 _userMap          // { username: display_name } — built from /api/users at login
 _projectData      // [{name, components: [...]}] — built from /api/projects at login
@@ -249,11 +249,11 @@ _idleTimer        // setTimeout handle; reset on any user activity
 
 ### Session persistence (three layers)
 
-`init()` always fetches `GET /api/status` first to capture `idle_timeout` and onboarding state, then checks three stores in order:
+`init()` always fetches `GET /api/status` first to capture `idle_timeout` and onboarding state, then checks two stores in order:
 
-1. **`sessionStorage` (`idtrack_session`)** — `{ user, creds }`. Survives page refresh, cleared when the tab closes. Written on every successful login.
-2. **`localStorage` (`idtrack_persist`)** — `{ username, hash }`. Written when **Keep me logged in** is enabled; `init()` uses these to call `POST /api/login` and auto-sign-in on next visit. Cleared on explicit sign-out.
-3. **Login screen** — shown if neither store has valid credentials and onboarding is not required.
+1. **`sessionStorage` (`idtrack_session`)** — `{ user }`. Survives page refresh, cleared when the tab closes. Written on every successful login. The actual session credential is the server-issued `idtrack_session` HttpOnly cookie — `sessionStorage` only carries the user display object so the UI can be restored without an extra round-trip.
+2. **`localStorage` (`idtrack_persist`)** — `{ user }` (non-sensitive display object only, **no credentials**). Written when **Keep me logged in** is enabled. On the next browser session `init()` restores `_currentUser` from this object and calls `launchApp()`; if the 30-day session cookie has expired, the first API call returns 401 and the user is redirected to the login screen. Cleared on explicit sign-out.
+3. **Login screen** — shown if neither store has a user object and onboarding is not required.
 
 Preferences (dark mode, keep-me-logged-in) are in `localStorage` under `idtrack_prefs`.
 
@@ -294,7 +294,7 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 
 ## Important Implementation Decisions
 
-**Password hashing is client-side.** The JS SHA-256 hashes the password before it leaves the browser. The hash is what's transmitted over Basic Auth and what's stored in the database. This means the server never sees the plaintext password. The tradeoff is that the hash effectively *is* the password credential — but for an internal tool over a private network this is acceptable.
+**Password hashing is server-side (bcrypt).** The browser sends the plaintext password over TLS to `POST /api/login`. The server hashes it with `bcrypt.GenerateFromPassword` (default cost) and compares against the stored bcrypt hash with `bcrypt.CompareHashAndPassword`. The DB stores the bcrypt hash string (begins with `$2a$`). Legacy SHA-256 hashes (64 lowercase hex chars, from the old client-side scheme) are detected by format in `db.IsLegacyHash` and verified via a constant-time SHA-256 comparison in `db.VerifyPassword`; they are transparently upgraded to bcrypt on next successful login via `db.UpgradePasswordHash`.
 
 **SQLite with `MaxOpenConns(1)`.** SQLite doesn't support concurrent writers. Setting max open connections to 1 serializes all access and avoids `SQLITE_BUSY` errors.
 
@@ -312,11 +312,11 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 
 **`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, and `appDescription` are all examples of the same pattern: add the field to the `defaults` struct in `main.go` (with `omitempty`), accept it via `idtrack default --flag`, pass it through `server.Start()`, store it on the `srv` struct, and expose it in `GET /api/status`. Follow this pattern for any future server-wide configuration values.
 
-**"Keep me logged in" stores the raw SHA-256 hash.** Since the hash *is* the credential (it's what Basic Auth transmits), storing `{ username, hash }` in `localStorage` is equivalent to storing a session token. Clearing it on sign-out is the correct revocation mechanism. Do not store the plaintext password — `sha256()` is called in the browser before anything is stored or transmitted.
+**"Keep me logged in" issues a 30-day session cookie.** When `keep_logged_in: true` is sent in the login body, the server creates a session with a 30-day TTL and sets `Max-Age=2592000` on the `idtrack_session` cookie. `localStorage` (under `PERSIST_KEY`) stores only the non-sensitive user display object `{ user }` — no credentials. On the next browser session `init()` restores `_currentUser` from this object and calls `launchApp()`; the browser sends the long-lived cookie automatically. If the session has expired or been invalidated, the first API call returns 401 and the user sees the login screen.
 
 **Idle timeout is enforced entirely client-side.** The server communicates the timeout value via `GET /api/status` but does not enforce it server-side. The frontend attaches passive event listeners for mouse, keyboard, touch, and scroll events and resets a `setTimeout` on each. If the timer fires, `doLogout()` is called. `startIdleTracking()` / `stopIdleTracking()` are called in `launchApp()` and `doLogout()` respectively; they are no-ops when `_idleTimeoutSecs` is 0.
 
-**Usernames are always lower-cased.** The browser lowercases the username value before building the Basic Auth header (login, onboarding, add-user forms). The server lowercases the username extracted from `r.BasicAuth()` in the `auth` middleware and `handleLogin`, and lowercases `body.Username` in `handleOnboarding` and `handleCreateUser`, and `r.PathValue("username")` in `handleUpdateUser` and `handleDeleteUser`. Username input fields carry `autocapitalize="none" autocorrect="off" spellcheck="false"` to suppress mobile keyboard transforms.
+**Usernames are always lower-cased.** The browser lowercases the username value before sending it in the login/onboarding/add-user JSON bodies. The server lowercases `body.Username` in `handleOnboarding`, `handleCreateUser`, and `handleLogin`, and `r.PathValue("username")` in `handleUpdateUser` and `handleDeleteUser`. Username input fields carry `autocapitalize="none" autocorrect="off" spellcheck="false"` to suppress mobile keyboard transforms.
 
 **CLI commands use positional subcommands, not flags for actions.** The `user`, `define`, and `delete` top-level commands all take a positional subcommand word as their first argument (`user list`, `user add`, `define project`, `delete component`, etc.). Options (values like `--name`, `--database`) remain as named flags. This is consistent across all three commands.
 
