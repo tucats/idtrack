@@ -12,13 +12,13 @@ import (
 // handleCreateComment adds a comment to an existing issue. The author is always
 // set to the authenticated user — clients cannot post as someone else.
 func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Body string `json:"body"`
+	}
+
 	id, ok := issueID(w, r)
 	if !ok {
 		return
-	}
-
-	var body struct {
-		Body string `json:"body"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {

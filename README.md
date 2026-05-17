@@ -86,7 +86,7 @@ idtrack serve [--port <n>] [--database <path>]
 ```
 
 | Flag | Default | Description |
-|------|---------|-------------|
+| ---- | ------- | ----------- |
 | `--port` | `8443` | TCP port to listen on |
 | `--database` | `idtrack.db` | Path to the SQLite database file |
 
@@ -141,7 +141,7 @@ Permanently removes the user account. Existing issues and comments that referenc
 All runtime state is stored in `~/.idtrack/`:
 
 | File | Description |
-|------|-------------|
+| ---- | ----------- |
 | `defaults.json` | Saved default port and database path |
 | `idtrack.pid` | PID of the running server (removed on `stop`) |
 | `idtrack.log` | Server log output (appended across restarts) |

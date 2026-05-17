@@ -25,14 +25,14 @@ func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
 // handleCreateProject creates a new project. Admin-only because project
 // structure is considered global configuration that ordinary users shouldn't change.
 func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
 
 		return
-	}
-
-	var body struct {
-		Name string `json:"name"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -60,6 +60,10 @@ func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 // The project name is extracted from the URL path using r.PathValue(), which
 // is Go 1.22's built-in way to access named path parameters (e.g. {project}).
 func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
 
@@ -67,10 +71,6 @@ func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	project := r.PathValue("project")
-
-	var body struct {
-		Name string `json:"name"`
-	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)

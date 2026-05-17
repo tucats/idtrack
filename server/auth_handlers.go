@@ -143,7 +143,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 // handleLogin validates Basic Auth credentials, records the login timestamp,
 // and returns the user's display name and admin flag so the browser can
-// personalise the UI. It is the only endpoint that calls db.RecordLogin — we
+// personalize the UI. It is the only endpoint that calls db.RecordLogin — we
 // do not update last_login_at on every authenticated request to keep overhead low.
 //
 // Login attempts are rate-limited per client IP: after loginRateLimit consecutive

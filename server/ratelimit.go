@@ -72,7 +72,7 @@ func (rl *rateLimiter) recordFailure(ip string) {
 }
 
 // clear removes any failure record for the IP. Called on successful login so
-// that a user who previously had failures is not penalised for past mistakes.
+// that a user who previously had failures is not penalized for past mistakes.
 func (rl *rateLimiter) clear(ip string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
