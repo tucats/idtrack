@@ -92,6 +92,17 @@ function displayName(username) {
     return _userMap[username] || username;
 }
 
+// canModifyIssue returns true when the current user is allowed to edit or
+// delete the given issue object. Admins, the original reporter, and the
+// current assignee all qualify; everyone else is a read-only third party who
+// can still view the issue and add comments.
+function canModifyIssue(issue) {
+    if (!_currentUser || !issue) return false;
+    return _currentUser.is_admin
+        || _currentUser.username === issue.reporter
+        || _currentUser.username === issue.assignee;
+}
+
 // =====================================================================
 // API LAYER
 // =====================================================================
@@ -452,8 +463,19 @@ async function selectIssue(id) {
         document.getElementById('detail-project').value = issue.project || '';
         populateComponentDropdown('detail-component', issue.project || '', issue.component || '');
 
+        const canEdit = canModifyIssue(issue);
+
         document.getElementById('detail-save-btn').style.display = 'none';
-        document.getElementById('detail-delete-btn').style.display = (_currentUser && _currentUser.is_admin) ? '' : 'none';
+        document.getElementById('detail-delete-btn').style.display = canEdit ? '' : 'none';
+
+        // Disable all editable fields for third-party viewers. Disabled inputs
+        // do not fire change events, so markDetailDirty() is never called and
+        // the Save button never appears. The comment textarea is intentionally
+        // excluded — any authenticated user may add a comment.
+        ['detail-title', 'detail-status', 'detail-priority',
+         'detail-assignee', 'detail-project', 'detail-component', 'detail-desc']
+            .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !canEdit; });
+
         _detailDirty = false;
 
         renderComments(comments);

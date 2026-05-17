@@ -4,8 +4,10 @@ bigfft
 BUILDVER 
 BUILDVERFILE
 buildvers
+creds
 DOINCREMENT
 GOARCH
+goldmark
 idtrack
 isatty
 ldflags
@@ -14,10 +16,11 @@ mathutil
 mattn
 modernc
 ncruces
-goldmark
+prefs
 remyoudompheng
 Roboto
 Segoe
+sess
 strftime
 tucats
 upserts
