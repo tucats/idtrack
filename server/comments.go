@@ -10,15 +10,30 @@ import (
 )
 
 // handleCreateComment adds a comment to an existing issue. The author is always
-// set to the authenticated user — clients cannot post as someone else.
+// set to the authenticated user — clients cannot post as someone else. The
+// issue must exist; a non-existent issue ID returns 404 rather than creating
+// an orphaned comment row (S-12).
 func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		Body string `json:"body"`
-	}
-
 	id, ok := issueID(w, r)
 	if !ok {
 		return
+	}
+
+	issue, err := db.GetIssue(s.database, id)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if issue == nil {
+		jsonError(w, "issue not found", http.StatusNotFound)
+
+		return
+	}
+
+	var body struct {
+		Body string `json:"body"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -37,7 +52,7 @@ func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	comment, err := db.CreateComment(s.database, id, author, body.Body)
 	if err != nil {
-		jsonError(w, "server error", http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}

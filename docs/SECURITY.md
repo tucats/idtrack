@@ -328,17 +328,18 @@ CSRF control.
 
 **Severity:** Low  
 **File:** `server/comments.go` (`handleCreateComment`)  
-**Status:** Not fixed
+**Fixed:** 2026-05-17
 
-`handleCreateComment` parses and validates the issue ID format (must be a
-positive integer) but does not check whether an issue with that ID actually
-exists in the database before inserting the comment. `db.CreateComment` blindly
-inserts a row with the given `issue_id`. An authenticated user can create
-comments referencing deleted or non-existent issue IDs, creating orphaned
-comment rows.
+`handleCreateComment` parsed and validated the issue ID format but did not
+check whether an issue with that ID actually existed before inserting the
+comment, allowing orphaned comment rows referencing deleted or non-existent
+issues.
 
-**Fix:** Call `db.GetIssue(s.database, id)` before `db.CreateComment` and
-return 404 if the issue is not found.
+**Fix applied:** `handleCreateComment` now calls `db.GetIssue` immediately after
+parsing the issue ID. If the issue is not found it returns `404 Not Found`
+before decoding the request body or calling `db.CreateComment`. The issue
+existence check was moved ahead of the body decode so that a 404 is returned
+even when no body is provided.
 
 ---
 
@@ -398,6 +399,6 @@ descriptive error if they are the last admin.
 | S-09 | Unauthenticated status endpoint hits DB | Low | **Fixed 2026-05-17** |
 | S-10 | Unbounded search parameter | Low | **Fixed 2026-05-17** |
 | S-11 | No Content-Type validation | Low | **Fixed 2026-05-17** |
-| S-12 | Comment creation ignores missing issue | Low | Open |
+| S-12 | Comment creation ignores missing issue | Low | **Fixed 2026-05-17** |
 | S-13 | `addColumnIfMissing` DDL interpolation | Info | Open |
 | S-14 | Last admin can self-demote | Info | Open |
