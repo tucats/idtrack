@@ -3,44 +3,119 @@
 // =====================================================================
 // CONSTANTS
 // =====================================================================
+// These values never change after the page loads. Declaring them with
+// 'const' (rather than 'let') communicates that intent and lets the
+// browser warn us if we accidentally try to reassign them.
+//
+// All three storage keys are named constants so every piece of code
+// that reads or writes browser storage uses the same string. A typo
+// in any one place would cause a silent bug that's hard to diagnose.
 
-const SESSION_KEY = 'idtrack_session';  // sessionStorage: { user }
-const PREFS_KEY   = 'idtrack_prefs';   // localStorage:   { darkMode, keepLoggedIn }
-const PERSIST_KEY = 'idtrack_persist'; // localStorage:   { user } when keepLoggedIn (no credentials)
+// sessionStorage key — holds { user } for the life of the browser tab.
+// Cleared automatically when the tab is closed.
+const SESSION_KEY = 'idtrack_session';
+
+// localStorage key — holds user preferences (dark mode, keep-me-logged-in,
+// desktop mode). Persists indefinitely across browser sessions.
+const PREFS_KEY   = 'idtrack_prefs';
+
+// localStorage key — holds { user } (display object only, no password)
+// when the user has "Keep me logged in" enabled. Used to restore the
+// display state on the next browser session; the actual auth credential
+// is the server-issued session cookie.
+const PERSIST_KEY = 'idtrack_persist';
+
 const APP_VERSION = '2.0';
 
 // =====================================================================
 // STATE
 // =====================================================================
+// Because this is a single-page app with no framework, all shared state
+// lives here as module-level variables. Functions read and write these
+// directly, then call a render function to update the visible page.
+//
+// The leading underscore (_) is a naming convention that signals
+// "this is module-private — don't reach in from outside this file".
 
-let _currentUser       = null;   // { username, display_name, is_admin }
-let _userMap           = {};     // username -> display_name
-let _userList          = [];     // full user objects from GET /api/users
-let _projectData       = [];     // [{name, components: [...]}]
-let _epProject          = null;  // currently open project in Edit Projects detail (null = new)
-let _epPendingComponents = [];   // staged components while creating a new project
+// The currently logged-in user. null means no one is logged in.
+// Shape: { username, display_name, is_admin }
+let _currentUser       = null;
+
+// A lookup table mapping username → display_name, built from GET /api/users
+// after login. Used by displayName() to show "Alice Smith" instead of "smith".
+let _userMap           = {};
+
+// The full list of user objects from GET /api/users. Needed by the
+// Edit User form so it can pre-populate fields when a user is selected.
+let _userList          = [];
+
+// All projects and their component lists, fetched from GET /api/projects.
+// Shape: [{ name: "Backend", components: ["API", "DB"] }, ...]
+let _projectData       = [];
+
+// The project currently open in the Edit Projects detail screen.
+// null means we are in "new project" mode.
+let _epProject          = null;
+
+// Components staged for a new project before the project itself is saved.
+// When the user clicks "Create Project" these are POSTed one by one.
+let _epPendingComponents = [];
+
+// Every issue returned by the most recent GET /api/issues call.
+// Filtering and sorting are applied to this array client-side.
 let _allIssues         = [];
+
+// The id of the issue currently open in the detail panel. null = none open.
 let _currentId         = null;
-let _sortCol     = 'id';
-let _sortAsc     = false;
+
+// Current sort state for the issue table.
+let _sortCol     = 'id';    // field name that matches issue object keys
+let _sortAsc     = false;   // true = A→Z / low→high, false = Z→A / high→low
+
+// Current filter state. 'all' means no filter applied for that dimension.
 let _statusFilter   = 'open';
 let _priorityFilter = 'all';
 let _projectFilter  = 'all';
+
+// true when any field in the detail panel has been changed but not yet saved.
+// Controls whether the "Save Changes" button is visible and whether the user
+// is warned before discarding changes.
 let _detailDirty    = false;
-let _originalStatus = 'Open'; // status when the issue was last loaded/saved
-let _pendingStatusData = null; // captured fields while status-change dialog is open
-let _darkMode       = false;
-let _keepLoggedIn   = false;
-let _desktopMode    = false;
-let _idleTimeoutSecs = 0;          // 0 = disabled; set from /api/status
-let _idleTimer       = null;       // setTimeout handle for idle logout
-let _appName         = 'idtrack';  // custom branding name; set from /api/status
-let _appDesc         = 'Issue Tracker'; // custom branding tagline; set from /api/status
+
+// The status value of the current issue as it was when last loaded or saved.
+// Comparing the current select value to this lets us detect Open→Resolved
+// and Resolved→Open transitions, which require a confirmation dialog.
+let _originalStatus = 'Open';
+
+// Holds all the form field values captured just before a status-change dialog
+// opens. Cleared on dialog confirm or cancel. null = no dialog is in progress.
+let _pendingStatusData = null;
+
+// User preference flags. Loaded from localStorage at startup by loadPrefs().
+let _darkMode       = false;  // body.dark CSS class active
+let _keepLoggedIn   = false;  // request 30-day session cookie on next login
+let _desktopMode    = false;  // html.desktop-mode class active (disables RWD CSS)
+
+// Idle-logout state. The timeout value comes from GET /api/status.
+// 0 means the feature is disabled.
+let _idleTimeoutSecs = 0;
+let _idleTimer       = null;  // handle returned by setTimeout(), kept so we can cancel it
+
+// Application branding. These defaults are overridden by GET /api/status
+// if the operator has set custom values via 'idtrack default --app-name'.
+let _appName         = 'idtrack';
+let _appDesc         = 'Issue Tracker';
 
 // =====================================================================
 // BRANDING
 // =====================================================================
 
+// applyBranding() updates every place in the UI that shows the application
+// name or description. It is called once during init() after GET /api/status
+// returns, and again never — the values don't change while the page is open.
+//
+// The inner setText helper silently skips elements that don't exist yet,
+// which makes it safe to call before the app shell is visible.
 function applyBranding() {
     document.title = _appName + ' — ' + _appDesc;
     const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
@@ -56,12 +131,23 @@ function applyBranding() {
 // UTILITY
 // =====================================================================
 
+// esc() turns a value into a safe HTML string by escaping the five
+// characters that have special meaning in HTML: & < > " '
+//
+// Call this on EVERY piece of user-supplied data before inserting it
+// into innerHTML. Skipping this step would let a user whose display
+// name is "<script>..." inject arbitrary code into every page that
+// shows their name — a classic cross-site scripting (XSS) attack.
 function esc(s) {
     return String(s == null ? '' : s)
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
         .replace(/"/g,'&quot;');
 }
 
+// fmtDate turns an ISO 8601 date string (e.g. "2025-05-15T14:32:00Z")
+// into a short, locale-appropriate date like "May 15, 2025".
+// Passing 'undefined' as the locale uses the user's browser locale, so
+// the format automatically matches their regional convention.
 function fmtDate(iso) {
     if (!iso) return '';
     try {
@@ -70,6 +156,9 @@ function fmtDate(iso) {
     } catch { return iso; }
 }
 
+// fmtDateTime is like fmtDate but also includes the time of day ("14:32").
+// Used for Created/Updated timestamps in the detail panel and for comment
+// timestamps, where knowing the exact time matters.
 function fmtDateTime(iso) {
     if (!iso) return '';
     try {
@@ -79,24 +168,40 @@ function fmtDateTime(iso) {
     } catch { return iso; }
 }
 
+// priorityBadge returns an HTML string for a colored pill that shows
+// the priority level (High / Medium / Low). The colors come from CSS
+// classes in idtrack.css. This string must be inserted via innerHTML,
+// not textContent, because it contains HTML tags.
 function priorityBadge(p) {
     const cls = {High:'badge-high', Medium:'badge-medium', Low:'badge-low'}[p] || 'badge-low';
     return `<span class="badge ${cls}">${esc(p)}</span>`;
 }
 
+// statusBadge works exactly like priorityBadge but for issue status
+// (Open / Resolved).
 function statusBadge(s) {
     const cls = s === 'Open' ? 'badge-open' : 'badge-resolved';
     return `<span class="badge ${cls}">${esc(s)}</span>`;
 }
 
+// displayName looks up the human-friendly display name for a username.
+// Issue records store the short login name (e.g. "smith") rather than
+// the display name ("Alice Smith") to keep foreign-key relationships
+// simple. The _userMap, built by populateAssigneeDropdowns() after login,
+// provides the reverse mapping. Falls back to the raw username if the
+// user has been deleted or the map hasn't been populated yet.
 function displayName(username) {
     return _userMap[username] || username;
 }
 
-// canModifyIssue returns true when the current user is allowed to edit or
-// delete the given issue object. Admins, the original reporter, and the
-// current assignee all qualify; everyone else is a read-only third party who
-// can still view the issue and add comments.
+// canModifyIssue returns true when the currently logged-in user is
+// permitted to edit or delete the given issue. The rule is: admins,
+// the original reporter, and the currently assigned user may modify an
+// issue; everyone else is read-only (but can still add comments).
+//
+// This check mirrors the server-side rule in server/issues.go. Checking
+// client-side lets us hide the Save/Delete buttons from users who would
+// receive a 403 anyway, keeping the UI uncluttered.
 function canModifyIssue(issue) {
     if (!_currentUser || !issue) return false;
     return _currentUser.is_admin
@@ -107,20 +212,48 @@ function canModifyIssue(issue) {
 // =====================================================================
 // API LAYER
 // =====================================================================
+// These five functions are the only places in this file that call
+// fetch(). All other code goes through one of these wrappers.
+//
+// Why wrappers? Two reasons:
+//
+// 1. Central 401 handling — if any request returns "Unauthorized" it
+//    means the session has expired. We immediately clear client state
+//    and redirect to the login screen so every caller gets this
+//    behavior for free without writing it themselves.
+//
+// 2. Consistent error surfacing — non-OK responses are turned into a
+//    thrown Error whose message is the server's error string (if the
+//    response body contains one). Callers can display it in the UI
+//    with a single try/catch block.
+//
+// The 'async' keyword means the function always returns a Promise.
+// Inside an async function, 'await' pauses execution until the Promise
+// resolves, making asynchronous code read like normal sequential code.
 
+// apiFetch is the lowest-level wrapper. It calls the browser's built-in
+// fetch() with whatever options the caller provides, intercepts 401s,
+// and returns the raw Response object for higher-level wrappers to parse.
 async function apiFetch(url, options = {}) {
     const res = await fetch(url, options);
 
     if (res.status === 401) {
+        // Session expired or never started — wipe all client-side auth
+        // state and redirect to login before this function returns.
         _currentUser = null;
         sessionStorage.removeItem(SESSION_KEY);
         localStorage.removeItem(PERSIST_KEY);
         showLogin('Session expired. Please sign in again.');
+        // Throwing stops execution in the caller's try block and jumps
+        // to its catch block, preventing it from trying to use a response
+        // that won't have the expected data shape.
         throw new Error('Unauthorized');
     }
     return res;
 }
 
+// apiGet performs a GET request and parses the JSON response body.
+// Throws an Error with the server's message if the status is not 2xx.
 async function apiGet(url) {
     const res = await apiFetch(url);
     if (!res.ok) {
@@ -131,6 +264,9 @@ async function apiGet(url) {
     return res.json();
 }
 
+// apiPost sends a POST request with a JSON body and returns the parsed
+// response. The Content-Type header tells the server to expect JSON
+// (the server's requireJSON middleware enforces this).
 async function apiPost(url, body) {
     const res = await apiFetch(url, {
         method: 'POST',
@@ -145,6 +281,8 @@ async function apiPost(url, body) {
     return res.json();
 }
 
+// apiPut is identical to apiPost but uses the PUT method. By convention,
+// POST creates a new resource and PUT replaces an existing one.
 async function apiPut(url, body) {
     const res = await apiFetch(url, {
         method: 'PUT',
@@ -159,6 +297,8 @@ async function apiPut(url, body) {
     return res.json();
 }
 
+// apiDelete sends a DELETE request. No body is needed; the resource is
+// identified by the URL path alone.
 async function apiDelete(url) {
     const res = await apiFetch(url, { method: 'DELETE' });
     if (!res.ok) {
@@ -172,38 +312,75 @@ async function apiDelete(url) {
 // =====================================================================
 // DOMAIN CALLS
 // =====================================================================
+// These functions sit one level above the raw API layer. Each one maps
+// to a specific server endpoint and knows what data shape to expect.
+// The rest of the UI code calls these by name rather than thinking
+// about URLs and response shapes directly.
 
+// GET /api/users
+// Returns all user accounts. Used to build _userMap / _userList and to
+// populate assignee dropdowns.
+// Response shape: { users: [{ username, display_name, is_admin, last_login_at }, ...] }
 async function fetchUsers() {
     const data = await apiGet('/api/users');
     return data.users || [];
 }
 
+// GET /api/issues
+// Returns every issue the server has. Filtering and sorting happen
+// client-side on the returned array; we do not send filter params to
+// the server.
+// Response shape: { issues: [{ id, title, description, reporter, assignee,
+//                               priority, status, created_at, updated_at,
+//                               project, component }, ...] }
 async function fetchIssues() {
     const data = await apiGet('/api/issues');
     return data.issues || [];
 }
 
+// GET /api/issues/{id}
+// Returns the full detail for one issue plus all its comments.
+// Response shape: { issue: { ...all fields... },
+//                   comments: [{ id, author, body, created_at }, ...] }
 async function fetchIssue(id) {
-    return apiGet(`/api/issues/${id}`);  // returns { issue, comments }
+    return apiGet(`/api/issues/${id}`);
 }
 
+// GET /api/projects
+// Returns all defined projects together with their component lists.
+// Response shape: { projects: [{ name, components: ["Comp A", ...] }, ...] }
 async function fetchProjects() {
     const data = await apiGet('/api/projects');
     return data.projects || [];
 }
 
+// POST /api/issues
+// Creates a new issue. Description and assignee are optional; all other
+// fields are required (validated server-side).
+// Response shape: { issue: { ...newly created issue... } }
 async function createIssue(title, description, priority, assignee, project, component) {
     return apiPost('/api/issues', { title, description, priority, assignee, project, component });
 }
 
+// PUT /api/issues/{id}
+// Replaces all mutable fields of an existing issue. Every field must
+// be provided even if unchanged — this is a full replacement, not a
+// partial update (PATCH). Only the reporter, current assignee, and
+// admins may call this; others receive 403 Forbidden.
+// Response shape: { issue: { ...updated issue... } }
 async function updateIssue(id, title, description, priority, status, assignee, project, component) {
     return apiPut(`/api/issues/${id}`, { title, description, priority, status, assignee, project, component });
 }
 
+// DELETE /api/issues/{id}
+// Permanently deletes an issue and all its comments. Admin-only.
 async function deleteIssue(id) {
     return apiDelete(`/api/issues/${id}`);
 }
 
+// POST /api/issues/{id}/comments
+// Adds a comment to an issue. Any authenticated user may comment on
+// any issue. Returns { comment: { ...new comment... } }.
 async function addComment(issueId, body) {
     return apiPost(`/api/issues/${issueId}/comments`, { body });
 }
@@ -212,6 +389,10 @@ async function addComment(issueId, body) {
 // UI — LOGIN
 // =====================================================================
 
+// showLogin hides the main app shell and displays the login overlay.
+// If a message is provided (e.g. "Session expired") it is shown above
+// the Sign In button. The username and password fields are always
+// cleared so previously typed values don't linger.
 function showLogin(msg) {
     document.getElementById('app').style.display = 'none';
     document.getElementById('login-error').textContent = msg || '';
@@ -221,6 +402,16 @@ function showLogin(msg) {
     document.getElementById('login-user').focus();
 }
 
+// submitLogin is called when the user clicks "Sign In" or presses Enter
+// in the password field. It reads the form, calls POST /api/login, and
+// on success stores the session and launches the app.
+//
+// POST /api/login
+//   Request body: { username, password, keep_logged_in }
+//   Response:     { username, display_name, is_admin }
+//   Side effect:  server sets an HttpOnly session cookie (idtrack_session)
+//                 that the browser will attach to all subsequent requests
+//                 automatically — JS cannot read HttpOnly cookies.
 async function submitLogin() {
     const username = document.getElementById('login-user').value.trim().toLowerCase();
     const password = document.getElementById('login-pass').value;
@@ -230,10 +421,17 @@ async function submitLogin() {
     err.textContent = '';
     if (!username || !password) { err.textContent = 'Username and password are required.'; return; }
 
+    // Disable the button and update its label while the request is in
+    // flight so the user knows something is happening.
     btn.disabled = true;
     btn.textContent = 'Signing in…';
 
     try {
+        // We call fetch() directly here instead of apiPost() because:
+        //  - Login is unauthenticated (no session cookie yet), so a 401
+        //    would be misleading.
+        //  - Wrong credentials give 401 but the error message should say
+        //    "Invalid password", not "Session expired".
         const res = await fetch('/api/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -249,6 +447,9 @@ async function submitLogin() {
         }
 
         const user = await res.json();
+        // Store only the non-sensitive display object — no password.
+        // The actual authentication token is the HttpOnly cookie the
+        // server just set in the Set-Cookie response header.
         _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
         sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser }));
         if (_keepLoggedIn) localStorage.setItem(PERSIST_KEY, JSON.stringify({ user: _currentUser }));
@@ -259,6 +460,8 @@ async function submitLogin() {
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Login failed.';
     } finally {
+        // 'finally' runs whether the try block succeeded or threw an error,
+        // so the button is always re-enabled even if login failed.
         btn.disabled = false;
         btn.textContent = 'Sign In';
     }
@@ -268,12 +471,19 @@ async function submitLogin() {
 // UI — MAIN APP
 // =====================================================================
 
+// launchApp is called once after every successful login — from
+// submitLogin(), submitOnboarding(), and init() when restoring a saved
+// session. It wires up the app shell for the logged-in state and then
+// fetches the initial data needed to render the UI.
 async function launchApp() {
+    // Show the user's display name in the header badge.
     document.getElementById('user-badge').textContent = _currentUser.display_name || _currentUser.username;
+    // Admin-only menu items: '' (visible) for admins, 'none' (hidden) for others.
     const adminDisplay = _currentUser.is_admin ? '' : 'none';
     document.getElementById('menu-manage-users').style.display   = adminDisplay;
     document.getElementById('menu-edit-projects').style.display  = adminDisplay;
     document.getElementById('app').style.display = '';
+    // Reset the idle timer so it starts fresh from this login event.
     stopIdleTracking();
     startIdleTracking();
     await refreshIssues();
@@ -281,9 +491,18 @@ async function launchApp() {
     await populateProjectDropdowns();
 }
 
+// doLogout is triggered by "Sign out" in the menu and by the idle-
+// timeout handler. It tells the server to invalidate the session, then
+// wipes all client-side auth state and shows the login screen.
+//
+// POST /api/logout
+//   No request body. The server reads the session token from the cookie,
+//   removes it from the in-memory session store, and clears the cookie
+//   in the Set-Cookie response header.
 async function doLogout() {
     stopIdleTracking();
-    // Ask the server to invalidate the session token and clear the cookie.
+    // Fire-and-forget: if the network call fails we still clear local
+    // state so the user is at least logged out on this device.
     try { await fetch('/api/logout', { method: 'POST' }); } catch {}
     _currentUser = null;
     sessionStorage.removeItem(SESSION_KEY);
@@ -303,7 +522,14 @@ async function doLogout() {
 // =====================================================================
 // UI — FILTERS & SORT
 // =====================================================================
+// The issue list is filtered and sorted entirely on the client side.
+// The full issue list is fetched once (stored in _allIssues) and all
+// filter/sort changes re-run filteredAndSorted() over that cached list
+// rather than making new server requests on every keystroke or click.
 
+// setStatusFilter / setPriorityFilter / setProjectFilter are the
+// onchange handlers for the three filter <select> elements in the
+// header bar. They update the relevant state variable and re-render.
 function setStatusFilter(val) {
     _statusFilter = val;
     renderIssues(_allIssues);
@@ -319,10 +545,17 @@ function setProjectFilter(val) {
     renderIssues(_allIssues);
 }
 
+// applyFilters is the oninput handler for the search box. It fires on
+// every keystroke. Re-running the filter over the cached array is fast
+// enough that live search feels instant.
 function applyFilters() {
     renderIssues(_allIssues);
 }
 
+// toggleSort is called when the user clicks a column header. If they
+// click the already-active column the direction is reversed; clicking a
+// new column sorts ascending (except 'id', which defaults to descending
+// so the newest issues appear first).
 function toggleSort(col) {
     if (_sortCol === col) {
         _sortAsc = !_sortAsc;
@@ -334,6 +567,12 @@ function toggleSort(col) {
     renderIssues(_allIssues);
 }
 
+// updateSortUI decorates the active column header with a sort arrow
+// (▲ ascending, ▼ descending). It first removes all indicators from
+// every header, then adds the correct one to the active column.
+// colMap translates the internal sort-column names (which match the
+// field names on issue objects) to the CSS class names on the <th>
+// elements in the HTML.
 function updateSortUI() {
     document.querySelectorAll('.issues-table th').forEach(th => {
         th.classList.remove('sort-active');
@@ -358,6 +597,11 @@ function updateSortUI() {
 // UI — ISSUES LIST
 // =====================================================================
 
+// refreshIssues fetches a fresh copy of all issues from the server and
+// re-renders the table. Called on login and after any mutation (create,
+// update, delete) to keep the list in sync with the server.
+//
+// GET /api/issues → { issues: [...] }
 async function refreshIssues() {
     try {
         _allIssues = await fetchIssues();
@@ -367,11 +611,17 @@ async function refreshIssues() {
     }
 }
 
+// filteredAndSorted applies the current filter and sort state to the
+// provided array and returns a new filtered+sorted array. The original
+// _allIssues array is never mutated. Given the same inputs and state
+// variables this function always returns the same result — it has no
+// side effects.
 function filteredAndSorted(issues) {
     const search = (document.getElementById('search-input') || {}).value || '';
     const q = search.toLowerCase();
 
     let result = issues.filter(issue => {
+        // Status filter: 'open' matches only Open issues, 'resolved' only Resolved.
         if (_statusFilter !== 'all') {
             const wantOpen = _statusFilter === 'open';
             if (wantOpen && issue.status !== 'Open') return false;
@@ -380,16 +630,23 @@ function filteredAndSorted(issues) {
         if (_priorityFilter !== 'all' && issue.priority !== _priorityFilter) return false;
         if (_projectFilter !== 'all' && issue.project !== _projectFilter) return false;
         if (q) {
+            // Text search: join all searchable fields into one string and
+            // check whether the query appears anywhere in it.
             const haystack = [issue.title, issue.description, issue.reporter, issue.assignee, issue.project, issue.component].join(' ').toLowerCase();
             if (!haystack.includes(q)) return false;
         }
         return true;
     });
 
+    // Priority is an ordered enum, not a string, so we map it to a number
+    // before sorting. Without this, "High" < "Low" < "Medium" alphabetically,
+    // which is wrong. The ?? 99 fallback handles unknown values gracefully.
     const priOrder = { High:0, Medium:1, Low:2 };
     result.sort((a, b) => {
         let va = a[_sortCol], vb = b[_sortCol];
         if (_sortCol === 'priority') { va = priOrder[va] ?? 99; vb = priOrder[vb] ?? 99; }
+        // IDs are integers stored as strings in the JSON; coerce to Number
+        // so "10" sorts after "9" rather than before it.
         if (_sortCol === 'id')       { va = Number(va); vb = Number(vb); }
         if (va < vb) return _sortAsc ? -1 : 1;
         if (va > vb) return _sortAsc ?  1 : -1;
@@ -399,6 +656,14 @@ function filteredAndSorted(issues) {
     return result;
 }
 
+// renderIssues rebuilds the entire issue table body from scratch. It
+// calls filteredAndSorted() on the provided array, then replaces the
+// tbody innerHTML with one row per visible issue. Building the HTML as
+// a single string and setting innerHTML once is much faster than
+// creating individual DOM nodes in a loop.
+//
+// It also handles the empty-state message shown when no issues match
+// the current filters.
 function renderIssues(issues) {
     const visible = filteredAndSorted(issues);
     const tbody   = document.getElementById('issues-tbody');
@@ -413,6 +678,9 @@ function renderIssues(issues) {
     table.style.display = '';
     empty.style.display = 'none';
 
+    // Template literals (backtick strings) allow embedded expressions
+    // inside ${ }. The map() + join('') pattern builds one big string
+    // from an array without repeatedly writing to innerHTML.
     tbody.innerHTML = visible.map(issue => {
         const sel = issue.id === _currentId ? ' selected' : '';
         return `<tr class="issue-row${sel}" onclick="selectIssue(${issue.id})">
@@ -434,6 +702,18 @@ function renderIssues(issues) {
 // UI — ISSUE DETAIL
 // =====================================================================
 
+// selectIssue opens the detail panel for the given issue id. It first
+// checks for unsaved changes, then fetches the full issue record
+// (including comments) from the server, populates all fields, and
+// makes the panel visible.
+//
+// GET /api/issues/{id}
+//   Response: { issue: { ...all fields... },
+//               comments: [{ id, author, body, created_at }, ...] }
+//
+// Adding 'has-detail' to #main-layout signals to the responsive CSS
+// that the detail panel is open; the CSS then hides the list panel on
+// tablet/phone screens so the detail panel gets the full height.
 async function selectIssue(id) {
     if (_detailDirty) {
         if (!confirm('You have unsaved changes. Discard them?')) return;
@@ -441,15 +721,19 @@ async function selectIssue(id) {
     _currentId   = id;
     _detailDirty = false;
 
+    // Re-render the list immediately so the clicked row gets the
+    // 'selected' highlight class and the previously selected row loses it.
     renderIssues(_allIssues);
 
     try {
         const { issue, comments } = await fetchIssue(id);
         if (!issue) return;
 
+        // Populate all detail panel fields from the fetched issue object.
         document.getElementById('detail-issue-id').textContent = `Issue #${issue.id}`;
         document.getElementById('detail-title').value    = issue.title       || '';
         document.getElementById('detail-status').value   = issue.status      || 'Open';
+        // Snapshot the status now so we can detect transitions later.
         _originalStatus = issue.status || 'Open';
         document.getElementById('detail-priority').value = issue.priority    || 'Medium';
         document.getElementById('detail-desc').value     = issue.description || '';
@@ -462,17 +746,23 @@ async function selectIssue(id) {
         asnSel.value = issue.assignee || '';
 
         document.getElementById('detail-project').value = issue.project || '';
+        // The component dropdown depends on the selected project, so we
+        // rebuild it with the appropriate options for that project.
         populateComponentDropdown('detail-component', issue.project || '', issue.component || '');
 
         const canEdit = canModifyIssue(issue);
 
+        // Save button is hidden by default; markDetailDirty() reveals it
+        // the first time any field changes.
         document.getElementById('detail-save-btn').style.display = 'none';
+        // Delete button is shown immediately for authorized users.
         document.getElementById('detail-delete-btn').style.display = canEdit ? '' : 'none';
 
-        // Disable all editable fields for third-party viewers. Disabled inputs
-        // do not fire change events, so markDetailDirty() is never called and
-        // the Save button never appears. The comment textarea is intentionally
-        // excluded — any authenticated user may add a comment.
+        // Disable all editable fields for read-only viewers (not the
+        // reporter, assignee, or an admin). A disabled input never fires
+        // change events, so markDetailDirty() is never triggered and the
+        // Save button never appears. The comment textarea is intentionally
+        // left enabled — any authenticated user may add a comment.
         ['detail-title', 'detail-status', 'detail-priority',
          'detail-assignee', 'detail-project', 'detail-component', 'detail-desc']
             .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !canEdit; });
@@ -482,6 +772,7 @@ async function selectIssue(id) {
         renderComments(comments);
         document.getElementById('comment-input').value = '';
         document.getElementById('detail-panel').style.display = '';
+        // Signal the responsive CSS that the detail panel is now open.
         const layout = document.getElementById('main-layout');
         if (layout) layout.classList.add('has-detail');
 
@@ -490,6 +781,10 @@ async function selectIssue(id) {
     }
 }
 
+// closeDetail hides the detail panel and clears the current selection.
+// Checks for unsaved changes first, just like selectIssue() does.
+// Removing 'has-detail' from #main-layout tells the responsive CSS to
+// restore the list panel at tablet/phone sizes.
 function closeDetail() {
     if (_detailDirty) {
         if (!confirm('You have unsaved changes. Discard them?')) return;
@@ -502,6 +797,10 @@ function closeDetail() {
     renderIssues(_allIssues);
 }
 
+// markDetailDirty is called by the oninput / onchange handlers on all
+// editable fields in the detail panel. The first call makes the Save
+// Changes button visible; subsequent calls while the panel is already
+// dirty are no-ops.
 function markDetailDirty() {
     if (!_detailDirty) {
         _detailDirty = true;
@@ -509,6 +808,12 @@ function markDetailDirty() {
     }
 }
 
+// saveIssueChanges reads all editable fields from the detail panel,
+// validates them, and then either:
+//   (a) calls doSaveIssue directly for simple field updates, or
+//   (b) opens a status-change confirmation dialog when the status has
+//       changed (Open→Resolved or Resolved→Open), capturing the current
+//       field values in _pendingStatusData for use after confirmation.
 async function saveIssueChanges() {
     if (!_currentId) return;
     const title     = document.getElementById('detail-title').value.trim();
@@ -524,8 +829,10 @@ async function saveIssueChanges() {
     if (!title)                          { err.textContent = 'Title is required.'; return; }
     if (!project)                        { err.textContent = 'Project is required.'; return; }
     if (!component)                      { err.textContent = 'Component is required.'; return; }
+    // An assignee is required before an issue can be marked Resolved.
     if (status === 'Resolved' && !assignee) { err.textContent = 'An assignee is required before marking an issue Resolved.'; return; }
 
+    // Status transitions require a dialog rather than an immediate save.
     if (_originalStatus === 'Open' && status === 'Resolved') {
         _pendingStatusData = { title, desc, priority, status, assignee, project, component };
         showResolveDialog();
@@ -537,9 +844,22 @@ async function saveIssueChanges() {
         return;
     }
 
+    // No status transition: save directly, no comment needed.
     await doSaveIssue(title, desc, priority, status, assignee, project, component, null);
 }
 
+// doSaveIssue performs the actual PUT to update the issue, then
+// optionally POSTs a comment (for status-change notes). Called by
+// saveIssueChanges() (commentBody = null) and confirmStatusChange()
+// (commentBody = non-null string).
+//
+// PUT /api/issues/{id}
+//   Request body: { title, description, priority, status, assignee, project, component }
+//   Response:     { issue: { ...updated issue... } }
+//
+// POST /api/issues/{id}/comments  (only when commentBody is non-null)
+//   Request body: { body: "comment text" }
+//   Response:     { comment: { ...new comment... } }
 async function doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody) {
     const err = document.getElementById('detail-error');
     const btn = document.getElementById('detail-save-btn');
@@ -552,10 +872,15 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
         _originalStatus = status;
         _detailDirty = false;
         btn.style.display = 'none';
+        // Update only the "Updated" timestamp rather than re-fetching the
+        // whole issue — the other fields are already correct in the form.
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
+        // Refresh the list so the row reflects the new status / priority.
         _allIssues = await fetchIssues();
         renderIssues(_allIssues);
         if (commentBody) {
+            // Re-fetch the comment list so the new one appears with its
+            // server-assigned id and timestamp.
             const { comments } = await fetchIssue(_currentId);
             renderComments(comments);
         }
@@ -567,6 +892,9 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
     }
 }
 
+// showResolveDialog configures and opens the status-change overlay for
+// the Open → Resolved transition. The "Fixed Version" field is shown
+// and the comment is optional.
 function showResolveDialog() {
     document.getElementById('sc-title').textContent          = 'Resolve Issue';
     document.getElementById('sc-intro').textContent          = 'Optionally document the resolution before marking this issue Resolved.';
@@ -579,6 +907,9 @@ function showResolveDialog() {
     document.getElementById('sc-version').focus();
 }
 
+// showReopenDialog configures the same overlay for the Resolved → Open
+// transition. The "Fixed Version" field is hidden and the comment
+// becomes required (confirmStatusChange enforces this).
 function showReopenDialog() {
     document.getElementById('sc-title').textContent          = 'Reopen Issue';
     document.getElementById('sc-intro').textContent          = 'A reason is required to reopen a resolved issue.';
@@ -591,6 +922,10 @@ function showReopenDialog() {
     document.getElementById('sc-comment').focus();
 }
 
+// confirmStatusChange is called when the user clicks "Confirm" in the
+// status-change dialog. It validates the inputs, assembles the comment
+// body (if any), hides the dialog, and delegates to doSaveIssue with
+// the values captured earlier in _pendingStatusData.
 async function confirmStatusChange() {
     if (!_pendingStatusData) return;
     const version = document.getElementById('sc-version').value.trim();
@@ -598,12 +933,16 @@ async function confirmStatusChange() {
     const err     = document.getElementById('sc-error');
     err.textContent = '';
 
+    // Reopening always requires a non-empty reason.
     const isReopen = _pendingStatusData.status === 'Open';
     if (isReopen && !comment) {
         err.textContent = 'A reason is required to reopen an issue.';
         return;
     }
 
+    // Build the comment body for a resolve transition by combining the
+    // optional "Fixed in <version>" header with the optional comment text.
+    // join('\n\n') puts a blank line between the two parts.
     let commentBody = null;
     if (_pendingStatusData.status === 'Resolved') {
         let parts = [];
@@ -620,6 +959,9 @@ async function confirmStatusChange() {
     await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody);
 }
 
+// cancelStatusChange dismisses the dialog without saving. It restores
+// the status dropdown to the issue's actual saved value so the UI
+// reflects reality after the user cancels.
 function cancelStatusChange() {
     if (_pendingStatusData) {
         document.getElementById('detail-status').value = _originalStatus;
@@ -632,12 +974,17 @@ function cancelStatusChange() {
 // UI — COMMENTS
 // =====================================================================
 
+// renderComments rebuilds the comment list in the detail panel from
+// the provided array. Admin users get a trash-can button on each
+// comment; regular users do not see any delete controls.
 function renderComments(comments) {
     const el = document.getElementById('comments-list');
     if (!comments || comments.length === 0) {
         el.innerHTML = '<p class="comments-empty">No comments yet.</p>';
         return;
     }
+    // This arrow function returns either the button HTML or an empty
+    // string depending on whether the current user is an admin.
     const trashBtn = (id) => (_currentUser && _currentUser.is_admin)
         ? `<button class="btn-trash" onclick="confirmDeleteComment(${id}, event)" title="Delete comment">&#x1F5D1;</button>`
         : '';
@@ -653,6 +1000,12 @@ function renderComments(comments) {
     `).join('');
 }
 
+// submitComment reads the comment textarea, posts it, and re-renders
+// the list. Ctrl+Enter / Cmd+Enter also triggers this via the
+// textarea's onkeydown handler in the HTML.
+//
+// POST /api/issues/{id}/comments
+//   Request body: { body: "comment text" }
 async function submitComment() {
     if (!_currentId) return;
     const input = document.getElementById('comment-input');
@@ -662,8 +1015,11 @@ async function submitComment() {
     try {
         await addComment(_currentId, body);
         input.value = '';
+        // Re-fetch rather than appending locally so we get the
+        // server-assigned id and creation timestamp.
         const { comments } = await fetchIssue(_currentId);
         renderComments(comments);
+        // Scroll the newly posted comment into view.
         const el = document.getElementById('comments-list');
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'end' });
     } catch (e) {
@@ -671,11 +1027,18 @@ async function submitComment() {
     }
 }
 
+// confirmDeleteIssue is triggered by the Delete button in the detail
+// panel header (shown only to admins). After confirmation it deletes the
+// issue server-side, removes it from the local cache, and closes the panel.
+//
+// DELETE /api/issues/{id}
 async function confirmDeleteIssue() {
     if (!_currentId) return;
     if (!confirm(`Delete Issue #${_currentId}? This cannot be undone.`)) return;
     try {
         await deleteIssue(_currentId);
+        // Remove from the local cache so the list updates immediately
+        // without a full re-fetch from the server.
         _allIssues = _allIssues.filter(i => i.id !== _currentId);
         closeDetail();
         renderIssues(_allIssues);
@@ -684,6 +1047,11 @@ async function confirmDeleteIssue() {
     }
 }
 
+// confirmDeleteComment is triggered by the trash-can button on each
+// comment (visible to admins only). event.stopPropagation() prevents
+// the click from bubbling up and triggering the parent row's handler.
+//
+// DELETE /api/issues/{id}/comments/{commentId}
 async function confirmDeleteComment(commentId, event) {
     event.stopPropagation();
     if (!confirm('Delete this comment? This cannot be undone.')) return;
@@ -700,6 +1068,10 @@ async function confirmDeleteComment(commentId, event) {
 // UI — NEW ISSUE
 // =====================================================================
 
+// showNewIssue resets all fields and opens the New Issue overlay.
+// The project and assignee dropdowns are refreshed from the server
+// each time the form opens so any recently added users or projects
+// are reflected immediately.
 async function showNewIssue() {
     document.getElementById('ni-title').value = '';
     document.getElementById('ni-priority').value = 'Medium';
@@ -708,6 +1080,7 @@ async function showNewIssue() {
     document.getElementById('ni-project').value = '';
     const niComp = document.getElementById('ni-component');
     niComp.innerHTML = '<option value="">Choose component…</option>';
+    // Component is disabled until a project is selected (see onNiProjectChange).
     niComp.disabled = true;
     await populateAssigneeDropdowns();
     await populateProjectDropdowns();
@@ -719,6 +1092,13 @@ function hideNewIssue() {
     document.getElementById('new-issue-overlay').style.display = 'none';
 }
 
+// submitNewIssue validates the form, creates the issue on the server,
+// refreshes the list, and then automatically opens the new issue's
+// detail panel so the user can see it immediately.
+//
+// POST /api/issues
+//   Request body: { title, description, priority, assignee, project, component }
+//   Response:     { issue: { ...newly created issue... } }
 async function submitNewIssue() {
     const title     = document.getElementById('ni-title').value.trim();
     const priority  = document.getElementById('ni-priority').value;
@@ -743,6 +1123,8 @@ async function submitNewIssue() {
         _allIssues = await fetchIssues();
         renderIssues(_allIssues);
 
+        // Auto-open the newly created issue. Because ids are auto-increment
+        // integers, the newest issue has the highest id in the list.
         if (_allIssues.length > 0) {
             const newest = _allIssues.reduce((a, b) => Number(a.id) > Number(b.id) ? a : b);
             selectIssue(newest.id);
@@ -759,6 +1141,16 @@ async function submitNewIssue() {
 // ASSIGNEE DROPDOWNS
 // =====================================================================
 
+// populateAssigneeDropdowns fetches the user list from the server and
+// rebuilds the Assignee dropdowns in both the New Issue form and the
+// detail panel. It also rebuilds _userMap and _userList so displayName()
+// works correctly everywhere.
+//
+// GET /api/users → { users: [...] }
+//
+// The previous selection is preserved after rebuilding so that calling
+// this function (e.g. after adding a user) does not silently clear an
+// in-progress assignment.
 async function populateAssigneeDropdowns() {
     let users = [];
     try { users = await fetchUsers(); } catch {}
@@ -774,16 +1166,25 @@ async function populateAssigneeDropdowns() {
     ['ni-assignee', 'detail-assignee'].forEach(id => {
         const sel = document.getElementById(id);
         if (!sel) return;
-        const prev = sel.value;
+        const prev = sel.value;  // Remember the current selection.
         sel.innerHTML = options;
-        sel.value = prev;
+        sel.value = prev;        // Restore it after rebuilding.
     });
 }
 
 // =====================================================================
 // UI — USER MANAGEMENT (admin)
 // =====================================================================
+// The Manage Users overlay is the "parent" in a two-level overlay
+// stack. Opening Add User or Edit User hides the parent; closing either
+// child always calls openManageUsers() to refresh and re-show the
+// parent list. This means every exit path — success, cancel, or
+// backdrop click — leaves the user list up to date.
 
+// openManageUsers shows the overlay and fetches the user list.
+// It shows "Loading…" while the request is in flight.
+//
+// GET /api/users → { users: [...] }
 async function openManageUsers() {
     _closeMenuOnOutside();
     document.getElementById('manage-users-list').innerHTML = '<p class="mu-loading">Loading…</p>';
@@ -797,6 +1198,8 @@ function hideManageUsers() {
     document.getElementById('manage-users-overlay').style.display = 'none';
 }
 
+// renderManageUsersList builds the user table inside the Manage Users
+// overlay. Each row is clickable and calls openEditUserFromManage().
 function renderManageUsersList(users) {
     const div = document.getElementById('manage-users-list');
     if (users.length === 0) {
@@ -817,6 +1220,9 @@ function renderManageUsersList(users) {
         </tbody></table>`;
 }
 
+// openAddUserFromManage and openEditUserFromManage implement the overlay
+// navigation pattern: hide the parent, open the child. Each child's
+// hide function calls openManageUsers() to return to a refreshed list.
 function openAddUserFromManage() {
     hideManageUsers();
     openAddUser();
@@ -827,6 +1233,7 @@ function openEditUserFromManage(username) {
     openEditUser(username);
 }
 
+// openAddUser clears and opens the Add User overlay.
 function openAddUser() {
     document.getElementById('au-username').value      = '';
     document.getElementById('au-display-name').value  = '';
@@ -838,11 +1245,18 @@ function openAddUser() {
     document.getElementById('au-username').focus();
 }
 
+// hideAddUser closes Add User and returns to the refreshed Manage Users list.
 function hideAddUser() {
     document.getElementById('add-user-overlay').style.display = 'none';
     openManageUsers();
 }
 
+// submitAddUser creates a new user account on the server.
+//
+// POST /api/users
+//   Request body: { username, display_name, password, is_admin }
+//   Response:     { user: { username, display_name, is_admin } }
+//   Admin-only: the server returns 403 Forbidden for non-admins.
 async function submitAddUser() {
     const username     = document.getElementById('au-username').value.trim().toLowerCase();
     const displayName  = document.getElementById('au-display-name').value.trim();
@@ -861,8 +1275,9 @@ async function submitAddUser() {
     btn.textContent = 'Adding…';
     try {
         await apiPost('/api/users', { username, display_name: displayName, password, is_admin: isAdmin });
+        // Refresh assignee dropdowns so the new user appears in them.
         await populateAssigneeDropdowns();
-        hideAddUser(); // hides overlay and returns to manage users (refreshed)
+        hideAddUser();
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add user.';
     } finally {
@@ -871,6 +1286,10 @@ async function submitAddUser() {
     }
 }
 
+// openEditUser pre-populates the Edit User form. The user select
+// dropdown is rebuilt from _userList. The optional 'preselect' argument
+// (passed from openEditUserFromManage) selects that user automatically
+// so the form is ready to edit without an extra click.
 function openEditUser(preselect) {
     const sel = document.getElementById('eu-username');
     sel.innerHTML = ['<option value="">Choose user…</option>']
@@ -884,11 +1303,17 @@ function openEditUser(preselect) {
     document.getElementById('edit-user-overlay').style.display = 'flex';
 }
 
+// hideEditUser closes Edit User and returns to the refreshed Manage Users list.
 function hideEditUser() {
     document.getElementById('edit-user-overlay').style.display = 'none';
     openManageUsers();
 }
 
+// onEditUserSelect is the onchange handler for the user dropdown in
+// the Edit User form. It finds the selected user in _userList and
+// fills in their current display name and admin status. The Delete
+// button is hidden for the currently logged-in user's own account
+// (self-deletion is disallowed).
 function onEditUserSelect() {
     const username = document.getElementById('eu-username').value;
     const user = _userList.find(u => u.username === username);
@@ -909,6 +1334,14 @@ function onEditUserSelect() {
         (user.username === _currentUser.username) ? 'none' : '';
 }
 
+// submitEditUser saves changes to an existing user.
+// Leaving the password fields blank means "keep the current password"
+// — the server skips the bcrypt hash update when the password field
+// is an empty string.
+//
+// PUT /api/users/{username}
+//   Request body: { display_name, password, is_admin }
+//   Admin-only. The server enforces that the last admin cannot be demoted.
 async function submitEditUser() {
     const username    = document.getElementById('eu-username').value;
     const displayName = document.getElementById('eu-display-name').value.trim();
@@ -929,7 +1362,7 @@ async function submitEditUser() {
             display_name: displayName, password, is_admin: isAdmin,
         });
         await populateAssigneeDropdowns();
-        hideEditUser(); // hides overlay and returns to manage users (refreshed)
+        hideEditUser();
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Save failed.';
     } finally {
@@ -938,6 +1371,13 @@ async function submitEditUser() {
     }
 }
 
+// confirmDeleteUser permanently deletes a user account after a
+// confirmation prompt.
+//
+// DELETE /api/users/{username}
+//   Admin-only. The server blocks deletion of the last admin account.
+//   Issues and comments that reference the username retain the username
+//   string; they are not deleted or reassigned.
 async function confirmDeleteUser() {
     const username = document.getElementById('eu-username').value;
     if (!username) return;
@@ -948,7 +1388,7 @@ async function confirmDeleteUser() {
     try {
         await apiDelete(`/api/users/${encodeURIComponent(username)}`);
         await populateAssigneeDropdowns();
-        hideEditUser(); // hides overlay and returns to manage users (refreshed)
+        hideEditUser();
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
     } finally {
@@ -960,6 +1400,15 @@ async function confirmDeleteUser() {
 // PROJECT / COMPONENT DROPDOWNS
 // =====================================================================
 
+// populateProjectDropdowns fetches the full project list from the
+// server and rebuilds three places in the UI:
+//   - The Project dropdown in the New Issue form  (ni-project)
+//   - The Project dropdown in the detail panel    (detail-project)
+//   - The Project filter in the header filter bar (project-filter)
+//
+// GET /api/projects → { projects: [{ name, components: [...] }, ...] }
+//
+// Previous selections are preserved on each dropdown after rebuilding.
 async function populateProjectDropdowns() {
     try { _projectData = await fetchProjects(); } catch { _projectData = []; }
 
@@ -978,6 +1427,9 @@ async function populateProjectDropdowns() {
     populateProjectFilter();
 }
 
+// populateProjectFilter rebuilds just the project filter dropdown in
+// the header bar. Called by populateProjectDropdowns() and after any
+// project is created or deleted.
 function populateProjectFilter() {
     const sel = document.getElementById('project-filter');
     if (!sel) return;
@@ -990,6 +1442,11 @@ function populateProjectFilter() {
     _projectFilter = sel.value;
 }
 
+// populateComponentDropdown rebuilds the Component dropdown for the
+// given select element, scoped to the named project. If the project
+// name is empty or not found in _projectData the dropdown is cleared
+// and disabled — components can't be chosen without a project.
+// 'selectedComponent' is the value to pre-select after rebuilding.
 function populateComponentDropdown(selectId, projectName, selectedComponent) {
     const sel = document.getElementById(selectId);
     if (!sel) return;
@@ -1006,10 +1463,16 @@ function populateComponentDropdown(selectId, projectName, selectedComponent) {
     sel.value = selectedComponent || '';
 }
 
+// onNiProjectChange is the onchange handler for the New Issue form's
+// Project dropdown. Selecting a project enables and populates the
+// cascading Component dropdown.
 function onNiProjectChange() {
     populateComponentDropdown('ni-component', document.getElementById('ni-project').value, '');
 }
 
+// onDetailProjectChange is the onchange handler for the detail panel's
+// Project dropdown. It cascades the Component dropdown and marks the
+// detail dirty so the Save button appears.
 function onDetailProjectChange() {
     populateComponentDropdown('detail-component', document.getElementById('detail-project').value, '');
     markDetailDirty();
@@ -1018,7 +1481,16 @@ function onDetailProjectChange() {
 // =====================================================================
 // UI — EDIT PROJECTS (admin)
 // =====================================================================
+// The Edit Projects UI is a two-screen overlay stack:
+//   ep-list-overlay   — list of all projects (parent screen)
+//   ep-detail-overlay — components for one project, or the new-project form
+//
+// Only one overlay is visible at a time. Navigation between them follows
+// the same parent/child pattern as Manage Users.
 
+// openEditProjects shows the project list overlay and renders the
+// current _projectData. No server call is needed here — _projectData
+// was populated by the most recent call to populateProjectDropdowns().
 function openEditProjects() {
     _closeMenuOnOutside();
     document.getElementById('ep-list-error').textContent = '';
@@ -1030,6 +1502,8 @@ function hideEditProjects() {
     document.getElementById('ep-list-overlay').style.display = 'none';
 }
 
+// epRenderProjectList rebuilds the clickable project rows inside the
+// list overlay from the in-memory _projectData array.
 function epRenderProjectList() {
     const body = document.getElementById('ep-list-body');
     if (!_projectData || _projectData.length === 0) {
@@ -1044,8 +1518,15 @@ function epRenderProjectList() {
         </div>`).join('');
 }
 
+// openProjectDetail switches from the project list to the detail screen.
+// Pass null for 'name' to open in "new project" mode.
+//
+// New project mode:  project name field is editable; components are staged
+//                    in _epPendingComponents; "Create Project" button visible.
+// Existing project:  name shown as heading; components listed with delete
+//                    buttons; "Delete Project" button visible.
 function openProjectDetail(name) {
-    _epProject = name; // null = new project
+    _epProject = name;
     _epPendingComponents = [];
 
     const isNew = name === null;
@@ -1060,17 +1541,22 @@ function openProjectDetail(name) {
     epRenderComponents();
     epRenderPending();
 
+    // Swap the two overlays.
     document.getElementById('ep-list-overlay').style.display   = 'none';
     document.getElementById('ep-detail-overlay').style.display = 'flex';
     document.getElementById(isNew ? 'ep-project-name' : 'ep-comp-name').focus();
 }
 
+// hideProjectDetail returns to the project list overlay, refreshing
+// it from the current _projectData.
 function hideProjectDetail() {
     document.getElementById('ep-detail-overlay').style.display = 'none';
     epRenderProjectList();
     document.getElementById('ep-list-overlay').style.display = 'flex';
 }
 
+// epRenderComponents lists the existing components for _epProject.
+// Each component row includes a trash-can button for immediate deletion.
 function epRenderComponents() {
     const list = document.getElementById('ep-comp-list');
     if (_epProject === null) { list.innerHTML = ''; return; }
@@ -1086,6 +1572,9 @@ function epRenderComponents() {
         </div>`).join('');
 }
 
+// epRenderPending shows the list of components staged for a new project.
+// These are held in _epPendingComponents and only sent to the server
+// once the project itself is created.
 function epRenderPending() {
     const listDiv  = document.getElementById('ep-pending-list');
     const itemsDiv = document.getElementById('ep-pending-items');
@@ -1098,11 +1587,23 @@ function epRenderPending() {
         </div>`).join('');
 }
 
+// epRemovePending removes a component from the staging list by its
+// array index and re-renders.
 function epRemovePending(index) {
     _epPendingComponents.splice(index, 1);
     epRenderPending();
 }
 
+// epAddComponent handles the "Add" button in the component input row.
+// Behavior differs between new-project mode and existing-project mode:
+//
+//   New project:      validate project name is set, then stage the
+//                     component in _epPendingComponents (no server call).
+//   Existing project: case-insensitive duplicate check, then POST immediately.
+//
+// POST /api/projects/{project}/components  (existing project only)
+//   Request body: { name }
+//   Admin-only.
 async function epAddComponent() {
     const name = document.getElementById('ep-comp-name').value.trim();
     const err  = document.getElementById('ep-detail-error');
@@ -1112,7 +1613,7 @@ async function epAddComponent() {
     const nameLower = name.toLowerCase();
 
     if (_epProject === null) {
-        // New-project mode: validate the project name is filled, then stage
+        // New-project mode: stage the component, don't hit the server yet.
         const projectName = document.getElementById('ep-project-name').value.trim();
         if (!projectName) { err.textContent = 'Enter a project name first.'; return; }
         if (_epPendingComponents.some(c => c.toLowerCase() === nameLower)) {
@@ -1126,7 +1627,7 @@ async function epAddComponent() {
         return;
     }
 
-    // Existing project: duplicate check, then POST immediately
+    // Existing project: duplicate check, then POST to the server.
     const project = _projectData.find(p => p.name === _epProject);
     if (project && project.components.some(c => c.toLowerCase() === nameLower)) {
         err.textContent = `"${name}" already exists in this project.`;
@@ -1134,6 +1635,7 @@ async function epAddComponent() {
     }
     try {
         await apiPost(`/api/projects/${encodeURIComponent(_epProject)}/components`, { name });
+        // Refresh _projectData so the new component appears everywhere.
         await populateProjectDropdowns();
         document.getElementById('ep-comp-name').value = '';
         document.getElementById('ep-comp-name').focus();
@@ -1143,6 +1645,12 @@ async function epAddComponent() {
     }
 }
 
+// epDeleteComponent removes a component from an existing project.
+// event.stopPropagation() prevents the click from bubbling to the
+// parent component row's onclick handler.
+//
+// DELETE /api/projects/{project}/components/{component}
+//   Admin-only. The server refuses if any issues reference this component.
 async function epDeleteComponent(componentName, event) {
     event.stopPropagation();
     if (!confirm(`Delete component "${componentName}" from project "${_epProject}"? This cannot be undone.`)) return;
@@ -1157,6 +1665,11 @@ async function epDeleteComponent(componentName, event) {
     }
 }
 
+// epDeleteProject removes the currently open project and all its
+// components. The server refuses if any issues reference the project.
+//
+// DELETE /api/projects/{project}
+//   Admin-only. The server returns an error listing blocking issue IDs.
 async function epDeleteProject() {
     if (!_epProject) return;
     if (!confirm(`Delete project "${_epProject}" and all its components? This cannot be undone.`)) return;
@@ -1171,6 +1684,17 @@ async function epDeleteProject() {
     }
 }
 
+// epSaveNewProject creates the new project and then POSTs each staged
+// component one by one. On success the view transitions to the
+// existing-project detail for the newly created project so the user
+// can keep adding or editing components without going back to the list.
+//
+// POST /api/projects
+//   Request body: { name }
+//   Admin-only.
+//
+// POST /api/projects/{project}/components  (once per staged component)
+//   Request body: { name }
 async function epSaveNewProject() {
     const name = document.getElementById('ep-project-name').value.trim();
     const err  = document.getElementById('ep-detail-error');
@@ -1194,7 +1718,9 @@ async function epSaveNewProject() {
         return;
     }
 
-    // Project created — now POST any staged components
+    // Project created. Now POST each staged component. We collect failures
+    // rather than aborting on the first error so the user can see which
+    // components didn't make it and retry them.
     const failures = [];
     for (const comp of _epPendingComponents) {
         try {
@@ -1207,7 +1733,8 @@ async function epSaveNewProject() {
 
     await populateProjectDropdowns();
 
-    // Transition to existing-project detail view
+    // Transition to the existing-project detail view so the user can
+    // continue editing without navigating back.
     _epProject = name;
     _epPendingComponents = failures;
     document.getElementById('ep-detail-title').textContent         = name;
@@ -1227,10 +1754,20 @@ async function epSaveNewProject() {
 // BACKDROP / MENU / SETTINGS
 // =====================================================================
 
+// backdropClick is attached to the overlay divs' onclick handlers. If
+// the user clicked the dark backdrop (not the white sheet inside it),
+// event.target will be the overlay div itself and we close it. Clicking
+// inside the sheet does not match because event.target will be a child
+// element, not the overlay div.
 function backdropClick(event, overlayId, hideFn) {
     if (event.target.id === overlayId) hideFn();
 }
 
+// toggleMenu opens or closes the hamburger (☰) dropdown. To close
+// the menu when the user clicks anywhere else on the page we register
+// a one-time click listener on document. The { once: true } option
+// causes the listener to remove itself automatically after it fires
+// once — no manual cleanup required.
 function toggleMenu(event) {
     event.stopPropagation();
     const menu = document.getElementById('app-menu');
@@ -1241,11 +1778,19 @@ function toggleMenu(event) {
     }
 }
 
+// _closeMenuOnOutside hides the menu. Called by the one-time document
+// click listener from toggleMenu() and also called directly by functions
+// that open an overlay so the menu doesn't remain visible behind it.
 function _closeMenuOnOutside() {
     const menu = document.getElementById('app-menu');
     if (menu) menu.style.display = 'none';
 }
 
+// openAbout shows the About overlay and fetches the current version info.
+//
+// GET /api/version
+//   Response: { version: "1.0-8", build_time: "20250515143200" }
+//   build_time is a 14-character compact UTC timestamp: YYYYMMDDHHmmSS.
 async function openAbout() {
     _closeMenuOnOutside();
     document.getElementById('about-overlay').style.display = 'flex';
@@ -1254,6 +1799,8 @@ async function openAbout() {
         document.getElementById('about-version').textContent = 'version ' + (data.version || '—');
         const bt = data.build_time || '';
         if (bt.length === 14) {
+            // Manually parse the compact timestamp into a readable UTC string.
+            // slice(start, end) extracts a substring: "20250515" → "2025","05","15"
             const ts = `${bt.slice(0,4)}-${bt.slice(4,6)}-${bt.slice(6,8)} ${bt.slice(8,10)}:${bt.slice(10,12)}:${bt.slice(12,14)} UTC`;
             document.getElementById('about-build').textContent = 'built ' + ts;
         } else {
@@ -1269,6 +1816,9 @@ function hideAbout() {
     document.getElementById('about-overlay').style.display = 'none';
 }
 
+// openSettings syncs all three toggle controls to the current state
+// variables before showing the overlay, so the checkboxes always
+// reflect the true current preferences.
 function openSettings() {
     _closeMenuOnOutside();
     document.getElementById('dark-mode-toggle').checked = _darkMode;
@@ -1281,6 +1831,16 @@ function hideSettings() {
     document.getElementById('settings-overlay').style.display = 'none';
 }
 
+// toggleDesktopMode enables or disables the "Always show desktop version"
+// setting. It adds or removes the 'desktop-mode' class from the <html>
+// element (document.documentElement). Every responsive CSS rule in
+// idtrack.css is scoped to 'html:not(.desktop-mode)', so adding this
+// class makes all mobile/tablet layout overrides inert — the page
+// renders identically to a desktop browser regardless of screen width.
+//
+// A separate minified inline <script> in the HTML <head> reads this
+// preference and applies the class before the browser renders the first
+// frame, preventing any flash of mobile layout on page reload.
 function toggleDesktopMode(on) {
     _desktopMode = on;
     document.documentElement.classList.toggle('desktop-mode', on);
@@ -1291,6 +1851,9 @@ function toggleDesktopMode(on) {
     } catch {}
 }
 
+// toggleDarkMode adds or removes the 'dark' class from <body>. All dark
+// mode color overrides in idtrack.css use the 'body.dark' selector, so
+// adding this class is all that's needed to switch themes.
 function toggleDarkMode(on) {
     _darkMode = on;
     document.body.classList.toggle('dark', on);
@@ -1301,6 +1864,15 @@ function toggleDarkMode(on) {
     } catch {}
 }
 
+// toggleKeepLoggedIn controls whether the next login will request a
+// 30-day session cookie and persist the user display object to
+// localStorage for automatic session restoration. This does not affect
+// the current session; it only changes the behavior of the next login.
+//
+// If turned on while already logged in, the user object is written to
+// localStorage immediately so a future browser session can restore the
+// display state without re-entering credentials (the auth is carried by
+// the long-lived session cookie the server set at login time).
 function toggleKeepLoggedIn(on) {
     _keepLoggedIn = on;
     try {
@@ -1318,10 +1890,15 @@ function toggleKeepLoggedIn(on) {
 }
 
 // ── Idle timeout ──────────────────────────────────────────────────────────────
+// The server communicates the configured idle-logout duration via
+// GET /api/status ('idle_timeout' in seconds; 0 = disabled). Enforcement
+// is entirely client-side: a setTimeout fires after the timeout, and any
+// detected user activity resets the timer.
 
-// idleLogout is called when the inactivity timer fires. It clears the screen
-// and shows the login form with an explanatory message BEFORE the async
-// /api/logout round-trip, so the user never sees the issue list after timeout.
+// idleLogout is called when the inactivity timer fires. It immediately
+// hides the app and shows the login screen before the async /api/logout
+// network call completes, so the user never sees the issue list after
+// timing out even on a slow connection.
 async function idleLogout() {
     stopIdleTracking();
     _currentUser = null;
@@ -1337,15 +1914,24 @@ async function idleLogout() {
         p.keepLoggedIn = false;
         localStorage.setItem(PREFS_KEY, JSON.stringify(p));
     } catch {}
+    // Tell the server to invalidate the session after the UI is already clean.
     try { await fetch('/api/logout', { method: 'POST' }); } catch {}
 }
 
+// _resetIdleTimer cancels the current timer and starts a fresh one.
+// This function is registered as a passive event listener for several
+// user-activity events so every interaction pushes the logout deadline
+// further into the future.
 function _resetIdleTimer() {
     if (!_idleTimeoutSecs) return;
     if (_idleTimer) clearTimeout(_idleTimer);
     _idleTimer = setTimeout(() => idleLogout(), _idleTimeoutSecs * 1000);
 }
 
+// startIdleTracking attaches _resetIdleTimer as a listener to the
+// listed events and starts the initial countdown. 'passive: true' tells
+// the browser that these listeners will never call preventDefault(),
+// allowing the browser to optimize scrolling and touch handling.
 function startIdleTracking() {
     if (!_idleTimeoutSecs) return;
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
@@ -1353,12 +1939,27 @@ function startIdleTracking() {
     _resetIdleTimer();
 }
 
+// stopIdleTracking cancels the pending timer and removes all activity
+// listeners. Called on any logout (manual or idle) and at the start of
+// launchApp() before re-registering, to avoid accumulating duplicate
+// listeners across multiple logins.
 function stopIdleTracking() {
     if (_idleTimer) { clearTimeout(_idleTimer); _idleTimer = null; }
     const events = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'];
     events.forEach(ev => document.removeEventListener(ev, _resetIdleTimer));
 }
 
+// loadPrefs reads the saved user preferences from localStorage and
+// applies them immediately. Called at the very start of init() before
+// any network requests, so dark mode and desktop mode are active before
+// the first visible render.
+//
+// Note: the 'desktop-mode' class on <html> is also set by a minified
+// inline <script> in the HTML <head> that runs even earlier. That
+// script prevents the flash of mobile layout that would otherwise occur
+// between page load and this function running. loadPrefs() re-applies
+// the class here to keep the JS state variables (_darkMode, _desktopMode)
+// in sync with what is already visible.
 function loadPrefs() {
     try {
         const p = JSON.parse(localStorage.getItem(PREFS_KEY));
@@ -1379,6 +1980,11 @@ function loadPrefs() {
     } catch {}
 }
 
+// mainLayoutClick is the onclick handler for the main layout container
+// (the area that holds both the issue list and the detail panel). If
+// the user clicks on the empty space around the list — not on an issue
+// row and not inside the detail panel — we close the detail panel.
+// This gives a natural "click away to close" behavior on desktop.
 function mainLayoutClick(event) {
     const detail = document.getElementById('detail-panel');
     if (!detail || detail.style.display === 'none') return;
@@ -1390,9 +1996,16 @@ function mainLayoutClick(event) {
 // =====================================================================
 // UI — ONBOARDING
 // =====================================================================
+// Onboarding runs exactly once: when the database has no users. The
+// server detects this in GET /api/status and returns { onboarding: true,
+// token: "<uuid>" }. The client uses that one-time token as a Basic auth
+// credential when creating the first admin account. Once the account is
+// created the token is cleared from server memory.
 
 let _onboardingToken = null;
 
+// showOnboarding stores the token and opens the first-run account
+// creation form.
 function showOnboarding(token) {
     _onboardingToken = token;
     document.getElementById('ob-username').value      = '';
@@ -1404,6 +2017,17 @@ function showOnboarding(token) {
     document.getElementById('ob-username').focus();
 }
 
+// submitOnboarding creates the first admin account. It uses HTTP Basic
+// authentication with the one-time token rather than a session cookie,
+// because no user account or session exists yet.
+//
+// POST /api/onboarding
+//   Authorization: Basic base64("onboarding:<uuid-token>")
+//   Content-Type:  application/json
+//   Request body:  { username, display_name, password }
+//   Response:      { username, display_name, is_admin: true }
+//   Side effect:   server sets a session cookie, just like /api/login.
+//   Returns 409 Conflict if any users already exist.
 async function submitOnboarding() {
     const username    = document.getElementById('ob-username').value.trim().toLowerCase();
     const displayName = document.getElementById('ob-display-name').value.trim();
@@ -1421,6 +2045,8 @@ async function submitOnboarding() {
     btn.textContent = 'Creating…';
 
     try {
+        // btoa() encodes a string to Base64, which is the format that
+        // the HTTP Basic Authentication scheme requires.
         const tokenCreds = 'Basic ' + btoa('onboarding:' + _onboardingToken);
 
         const res = await fetch('/api/onboarding', {
@@ -1443,7 +2069,9 @@ async function submitOnboarding() {
         _onboardingToken = null;
         document.getElementById('onboarding-overlay').style.display = 'none';
 
-        // The server set a session cookie; store the user object for display.
+        // The server set a session cookie in the response. Store the
+        // user display object so the app shell can render without an
+        // extra round-trip.
         _currentUser = { username: user.username, display_name: user.display_name || username, is_admin: true };
         sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser }));
 
@@ -1461,10 +2089,29 @@ async function submitOnboarding() {
 // INITIALIZATION
 // =====================================================================
 
+// init() is the application entry point. It runs once when the page
+// finishes loading (see the DOMContentLoaded listener at the bottom).
+// The startup sequence is:
+//
+//  1. Load preferences (dark mode, keep-me-logged-in, desktop mode).
+//  2. GET /api/status — get idle timeout, custom branding, and whether
+//     first-run onboarding is needed.
+//  3. Check sessionStorage for a live in-tab session (survives refresh,
+//     cleared when the tab closes).
+//  4. Check localStorage for a persisted "keep me logged in" session
+//     (survives closing the browser entirely; auth via 30-day cookie).
+//  5. If no session exists but onboarding is needed, show the first-run
+//     account creation form.
+//  6. Otherwise show the standard login screen.
 async function init() {
     loadPrefs();
 
-    // Always fetch status first to get idle_timeout and onboarding state.
+    // GET /api/status
+    //   Always called without authentication — it is the very first
+    //   request on every page load.
+    //   Response: { idle_timeout: N, onboarding: bool, token: "uuid",
+    //               app_name: "...", app_description: "..." }
+    //   'onboarding' and 'token' are only present when no users exist.
     let statusData = null;
     try {
         const res = await fetch('/api/status');
@@ -1477,10 +2124,10 @@ async function init() {
     }
     applyBranding();
 
-    // Session storage: live in-tab session survives page refresh. The session
-    // cookie is HttpOnly so JS cannot read it, but the browser sends it
-    // automatically — the first authenticated API call in launchApp() will
-    // surface a 401 if it has expired, falling back to showLogin().
+    // sessionStorage holds the user object for the life of the current
+    // browser tab. The session cookie is HttpOnly so JS can't read it,
+    // but the browser sends it automatically — launchApp() will surface
+    // a 401 on the first API call if the cookie has since expired.
     const saved = sessionStorage.getItem(SESSION_KEY);
     if (saved) {
         try {
@@ -1493,9 +2140,9 @@ async function init() {
         } catch {}
     }
 
-    // Persistent storage: "keep me logged in" across browser sessions. Only
-    // the non-sensitive user object is stored; the session cookie (set with
-    // MaxAge=30 days at login) carries the credential.
+    // localStorage holds the user object across browser sessions when
+    // "Keep me logged in" is enabled. The actual credential is the
+    // 30-day session cookie the server issued at login.
     const persist = localStorage.getItem(PERSIST_KEY);
     if (persist) {
         try {
@@ -1503,13 +2150,15 @@ async function init() {
             if (user && user.username) {
                 _currentUser = user;
                 sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user }));
-                // launchApp() will hit 401 and show login if the cookie expired.
+                // launchApp() will surface a 401 and call showLogin() if
+                // the 30-day cookie has expired.
                 await launchApp();
                 return;
             }
         } catch {}
     }
 
+    // No active session — decide whether to show onboarding or login.
     if (statusData && statusData.onboarding) {
         showOnboarding(statusData.token);
         return;
@@ -1518,4 +2167,9 @@ async function init() {
     showLogin();
 }
 
+// DOMContentLoaded fires when the HTML has been fully parsed and all
+// elements exist in the DOM — the correct moment to start the app.
+// Using this event (rather than putting <script> at the very end of
+// <body>) makes the startup trigger explicit and is the standard pattern
+// for JavaScript-driven single-page applications.
 document.addEventListener('DOMContentLoaded', init);

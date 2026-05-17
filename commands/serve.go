@@ -96,6 +96,7 @@ func Serve(args []string, static fs.FS) {
 				}
 
 				port = n
+
 				passArgs = append(passArgs, "--port", args[i])
 			}
 
