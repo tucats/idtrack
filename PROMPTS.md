@@ -243,7 +243,7 @@ UUID and never uses it again.
 The webapp, having created the new user, should assume the username
 and password entered (and hashed by the webapp) are then the login credentials, and proceed to the issues list page.
 
-# Prompt 16 *** Resolved 1.0-14 ***
+## Prompt 16 *** Resolved 1.0-14 ***
 
 Let's add a new setting to the "Settings" dialog, for "Keep me logged in". When true, the username and hashed password should be stored in secure local storage in the browser, and used as the username/password the next time the user opens the webapp. Choosing "logout" will clear these stored tokens, forcing a login the next time the webapp is used.
 
@@ -270,4 +270,39 @@ The intent of this is to consolidate user managemnt into a single menu
 item for Admin users, and make all the operations (add, edit, delete)
 done from the same UX area.
 
-Update MANUAL.md to reflect new UX for managing users via the webapp.
+Update MANUAL.md to reflect new UX for managing users via the webapp
+
+## Prompt 18 *** Resolved 1.0-16 ***
+
+When an issue is changed from "Open" to "Resolved", bring up a dialog
+that prompts the user to enter a reason to explain the resolution.
+This should include a field for the version number of the fix, and a
+text box with room for a natural language comment.
+If the user enters non-empty text in either field, add the information
+as a single comment to the issue at the same time as you set the status
+value. If the "fixed version" field is non-empty, add text:
+
+   Fixed in {version}
+
+Followed by a blank line. If the version text is empty, do not include
+this in the comment at all, just include the text comment (if also
+non-empty).
+
+The intent is to encourage the user to document why an issue can be
+marked as Resolved, as opposed to just changing the status.
+
+Similarly, if an issue goes from Resolved to Open, ask the user to
+enter a reason. This comment is _required_ to change the state
+back to Open. Add the comment to the issue at the same time the status
+of the issue is updated.
+
+## Prompt 19
+
+Ensure that any username entered in the webapp is converted to lower-case,
+so "Tom" and "tom" are the same username. If possible, add hints to the
+text field definition for a username to suppress auto-capitalization,
+auto-correct, and auto-completion.
+
+Additionally, authentication on the server-side should lower-case any
+username received as part of basic authentication so it will always
+match usernames case-insensitively.

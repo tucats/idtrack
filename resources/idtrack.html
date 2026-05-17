@@ -314,6 +314,27 @@
   </div>
 </div>
 
+<!-- Status-change dialog (resolve / reopen) -->
+<div id="status-change-overlay" class="overlay" style="display:none">
+  <div class="sheet issue-sheet">
+    <h3 id="sc-title"></h3>
+    <p id="sc-intro" class="sc-intro"></p>
+    <div id="sc-version-group" class="form-group">
+      <label for="sc-version">Fixed Version <span class="label-hint">(optional)</span></label>
+      <input id="sc-version" type="text" placeholder="e.g. 1.2-34" onkeydown="if(event.key==='Enter')confirmStatusChange()">
+    </div>
+    <div class="form-group">
+      <label for="sc-comment" id="sc-comment-label">Comment</label>
+      <textarea id="sc-comment" rows="4" placeholder="Enter reason…"></textarea>
+    </div>
+    <div id="sc-error" class="error-text"></div>
+    <div class="button-row">
+      <button class="btn btn-primary" onclick="confirmStatusChange()">Confirm</button>
+      <button class="btn btn-secondary" onclick="cancelStatusChange()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== MAIN APP ==================== -->
 <div id="app" style="display:none">
 

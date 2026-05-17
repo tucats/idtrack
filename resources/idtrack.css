@@ -785,6 +785,21 @@ body.dark .issues-table tr.issue-row:hover    { background: #1a2040; }
 body.dark .issues-table tr.issue-row.selected { background: #1e2a50; }
 body.dark .toggle-track::before { background: #e2e5ea; }
 
+/* ==================== STATUS-CHANGE DIALOG ==================== */
+
+.sc-intro {
+  font-size: .875rem;
+  color: var(--text-muted);
+  margin-bottom: 1.25rem;
+  line-height: 1.5;
+}
+
+.label-hint {
+  font-size: .8125rem;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
 /* ==================== SCROLLBAR ==================== */
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
