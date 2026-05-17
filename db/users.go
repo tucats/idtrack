@@ -219,6 +219,15 @@ func RecordLogin(database *sql.DB, username string) error {
 	return err
 }
 
+// CountAdmins returns the number of users with admin privileges. It is used to
+// guard against operations that would leave the system with no admin account.
+func CountAdmins(database *sql.DB) (int, error) {
+	var count int
+	err := database.QueryRow(`SELECT COUNT(*) FROM users WHERE is_admin = 1`).Scan(&count)
+
+	return count, err
+}
+
 func HasUsers(database *sql.DB) (bool, error) {
 	var count int
 

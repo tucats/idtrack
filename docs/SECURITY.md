@@ -367,20 +367,39 @@ validate against a known-good list of table/column names before executing.
 ## S-14 — Last admin can demote themselves (administrative lockout)
 
 **Severity:** Info  
-**File:** `server/users.go` (`handleUpdateUser`)  
-**Status:** Not fixed
+**File:** `server/users.go` (`handleUpdateUser`, `handleDeleteUser`), `db/users.go`  
+**Fixed:** 2026-05-17
 
-The server prevents an admin from deleting their own account (`handleDeleteUser`
-checks `username == currentUser(r).Username`), but there is no equivalent guard
-against an admin revoking their own admin privilege via `PUT /api/users/{self}`
-with `is_admin: false`. If this is the only admin account, the system would have
-no admin and no way to restore admin access except via the CLI (`idtrack user
-update --admin true`).
+The server prevented an admin from deleting their own account but had no guard
+against operations that left the system with no admin account at all — either
+by demoting the last admin via `PUT /api/users/{user}` with `is_admin: false`,
+or by deleting an admin account when it was the only one remaining.
 
-**Fix:** In `handleUpdateUser`, when the target username equals the current
-user's username and `body.IsAdmin == false`, check if they are currently an
-admin and whether any other admin accounts exist. Block the request with a
-descriptive error if they are the last admin.
+**Fix applied:**
+
+Added `db.CountAdmins(database)` in `db/users.go` which executes
+`SELECT COUNT(*) FROM users WHERE is_admin = 1` to count current admins.
+
+Both mutation handlers now call this before committing a change that would
+reduce the admin count to zero:
+
+- **`handleUpdateUser`**: If `body.IsAdmin` is `false` and the target user is
+  currently an admin, `CountAdmins` is called. If the result is ≤ 1 the
+  request is rejected with `400 Bad Request` and the message:
+  *"cannot leave the system with no admin account — use the idtrack CLI to
+  manage admin accounts"*
+
+- **`handleDeleteUser`**: If the target user is an admin, `CountAdmins` is
+  called before the self-deletion check. If the result is ≤ 1 the same error
+  is returned. The last-admin guard runs first so the more informative message
+  takes priority when both conditions apply (i.e. an admin trying to delete
+  themselves when they are the only admin). A `FindUser` call was also added
+  at the start of the handler so that deleting a non-existent account now
+  returns `404` rather than silently succeeding.
+
+The error message explicitly directs the operator to the CLI
+(`idtrack user update --admin true`) because the web app has no mechanism to
+bootstrap a new admin without an existing one.
 
 ---
 
@@ -401,4 +420,4 @@ descriptive error if they are the last admin.
 | S-11 | No Content-Type validation | Low | **Fixed 2026-05-17** |
 | S-12 | Comment creation ignores missing issue | Low | **Fixed 2026-05-17** |
 | S-13 | `addColumnIfMissing` DDL interpolation | Info | Open |
-| S-14 | Last admin can self-demote | Info | Open |
+| S-14 | Last admin can self-demote | Info | **Fixed 2026-05-17** |

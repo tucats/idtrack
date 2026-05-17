@@ -73,11 +73,18 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
+// lastAdminError is the message returned when an operation would leave the
+// system with no admin account. It directs the user to the CLI because the
+// web app has no way to bootstrap a new admin without an existing one.
+const lastAdminError = "cannot leave the system with no admin account — use the idtrack CLI to manage admin accounts"
+
 // handleUpdateUser modifies an existing user. Admin-only. The is_admin flag is
 // always passed through even if the client didn't intend to change it, because
 // the JSON body always includes a zero-value bool for unset fields. This is
 // intentional — the admin UI always sends the current value. When a non-empty
 // password is provided it is hashed server-side with bcrypt.
+//
+// Demoting a user from admin is blocked when they are the last admin (S-14).
 func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -99,6 +106,33 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// If the update would strip admin from a user, verify at least one other
+	// admin will remain. The admin UI always sends the current is_admin value,
+	// so body.IsAdmin==false means the caller explicitly wants to demote.
+	if !body.IsAdmin {
+		target, err := db.FindUser(s.database, username)
+		if err != nil {
+			internalError(w, err)
+
+			return
+		}
+
+		if target != nil && target.IsAdmin {
+			n, err := db.CountAdmins(s.database)
+			if err != nil {
+				internalError(w, err)
+
+				return
+			}
+
+			if n <= 1 {
+				jsonError(w, lastAdminError, http.StatusBadRequest)
+
+				return
+			}
+		}
+	}
+
 	isAdmin := body.IsAdmin
 	if err := db.UpdateUser(s.database, username, body.DisplayName, body.Password, &isAdmin); err != nil {
 		jsonError(w, err.Error(), http.StatusNotFound)
@@ -109,8 +143,9 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleDeleteUser removes a user account. Admin-only. An admin cannot delete
-// their own account to prevent accidentally locking everyone out.
+// handleDeleteUser removes a user account. Admin-only. Deletion is blocked
+// when it would leave the system with no admin account (S-14), which covers
+// both self-deletion and deletion of any other account that is the last admin.
 func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -119,6 +154,37 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := strings.ToLower(r.PathValue("username"))
+
+	target, err := db.FindUser(s.database, username)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if target == nil {
+		jsonError(w, "user not found", http.StatusNotFound)
+
+		return
+	}
+
+	// Check last-admin guard before the self-deletion check so that the more
+	// informative "last admin" message takes priority when both conditions apply.
+	if target.IsAdmin {
+		n, err := db.CountAdmins(s.database)
+		if err != nil {
+			internalError(w, err)
+
+			return
+		}
+
+		if n <= 1 {
+			jsonError(w, lastAdminError, http.StatusBadRequest)
+
+			return
+		}
+	}
+
 	if username == currentUser(r).Username {
 		jsonError(w, "cannot delete your own account", http.StatusBadRequest)
 
