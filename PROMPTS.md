@@ -333,7 +333,7 @@ Additionally, authentication on the server-side should lower-case any
 username received as part of basic authentication so it will always
 match usernames case-insensitively.
 
-## Prompt 20
+## Prompt 20 ***Resolved 1.0-18***
 
 Lets consolidate the admin menu items for adding projects, adding components,
 and deleting projects or components into a single menu item, "Edit Projects..."
@@ -354,3 +354,8 @@ exist (case-insensitive check).
 
 The intent of this is to create a single holistic interface to adding, updating,
 and deleting project names and components for a given project.
+
+## Prompt 21 ***Resolved 1.0-19***
+
+When an issue is marked Resolved, if the "assign to" field is still unassigned,
+ensure that the user fills it in before allowing the save of the status.
