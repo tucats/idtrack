@@ -1,0 +1,381 @@
+# idtrack Security Review
+
+Findings from a manual review of `server/`, `db/`, and `resources/idtrack.js`.
+Each item has a severity rating, affected files, a proposed fix, and — where
+fixed — a record of what was changed and when.
+
+Severity scale: **Critical** · **High** · **Medium** · **Low** · **Info**
+
+---
+
+## S-01 — No HTTP server timeouts (slow-loris DoS)
+
+**Severity:** High  
+**File:** `server/server.go`  
+**Fixed:** 2026-05-17
+
+`http.Serve(tlsLn, mux)` is called with Go's zero-value defaults, meaning there
+are no read, write, or idle timeouts. A client that opens a connection and sends
+bytes very slowly (slow-loris) holds a goroutine and connection slot open
+indefinitely. With enough such clients the server's goroutine pool is exhausted
+and legitimate requests stall.
+
+**Fix applied:** Replaced the bare `http.Serve` call with a configured
+`http.Server` in `server/server.go`:
+
+```go
+httpSrv := &http.Server{
+    Handler:      handler,
+    ReadTimeout:  15 * time.Second,
+    WriteTimeout: 30 * time.Second,
+    IdleTimeout:  120 * time.Second,
+}
+return httpSrv.Serve(tlsLn)
+```
+
+---
+
+## S-02 — No request body size limit (memory exhaustion DoS)
+
+**Severity:** High  
+**Files:** `server/issues.go`, `server/users.go`, `server/comments.go`,
+`server/auth_handlers.go`, `server/projects.go`  
+**Fixed:** 2026-05-17
+
+Every handler that accepts a POST or PUT body decodes it with
+`json.NewDecoder(r.Body).Decode(...)` without first capping the body size.
+An attacker can send a gigabyte body to exhaust the server's heap, triggering
+an OOM kill or a minutes-long GC pause that blocks all other requests.
+
+**Fix applied:** Added a `limitBody` middleware function in `server/middleware.go`
+that wraps `r.Body` with `http.MaxBytesReader` (64 KiB cap) on every POST and
+PUT request. The middleware is wired as the second outermost layer in `Start()`:
+
+```go
+handler := secureHeaders(limitBody(mux))
+```
+
+The 64 KiB limit is generous for any legitimate API call while remaining far
+below anything that would stress the heap.
+
+---
+
+## S-03 — No login rate limiting (brute-force / credential stuffing)
+
+**Severity:** High  
+**File:** `server/auth_handlers.go` (`handleLogin`), `server/middleware.go` (`auth`)  
+**Fixed:** 2026-05-17
+
+There is no throttling on failed authentication attempts. `POST /api/login` had
+no lockout or delay, allowing unlimited guessing. Because the stored credential
+is the raw SHA-256 hex of the password, and SHA-256 is extremely fast to compute,
+an attacker can make tens of thousands of guesses per second limited only by
+network latency.
+
+**Fix applied:** Added `server/ratelimit.go` containing a `rateLimiter` type
+that tracks failed login attempts per client IP using a fixed one-minute window.
+After 10 consecutive failures within the window, `handleLogin` returns
+`429 Too Many Requests` with a `Retry-After: 60` header. The window resets to
+zero on successful login. The limiter uses `RemoteAddr` (not
+`X-Forwarded-For`) to prevent clients from spoofing their IP to bypass the limit.
+Stale entries are evicted on each `allow()` call to bound memory use.
+
+Rate limiting is applied only to `POST /api/login`; the `auth` middleware (which
+runs on every authenticated request) is not rate-limited, as doing so would
+penalise users with multiple active browser tabs.
+
+---
+
+## S-04 — Non-constant-time credential comparison (timing side-channel)
+
+**Severity:** Medium  
+**Files:** `server/middleware.go`, `server/auth_handlers.go`  
+**Fixed:** 2026-05-17
+
+Both the `auth` middleware and `handleLogin` compared password hashes with the
+`!=` operator, which short-circuits on the first mismatching byte. In theory,
+across many requests, timing differences can reveal how many leading characters
+of a submitted hash match the stored hash, aiding dictionary attacks.
+
+**Fix applied:** Replaced all credential comparisons with
+`crypto/subtle.ConstantTimeCompare`:
+
+```go
+if subtle.ConstantTimeCompare([]byte(user.PasswordHash), []byte(hash)) != 1 {
+    // reject
+}
+```
+
+Applied in both `server/middleware.go` (`auth` middleware) and
+`server/auth_handlers.go` (`handleLogin`).
+
+---
+
+## S-05 — Missing security response headers
+
+**Severity:** Medium  
+**Files:** `server/middleware.go` (new middleware), `server/server.go` (wiring),
+`server/helpers.go` (`jsonResponse`)  
+**Fixed:** 2026-05-17
+
+No security headers were set on any response.
+
+**Fix applied:** Added a `secureHeaders` middleware in `server/middleware.go`
+that runs as the outermost handler layer and sets the following headers on every
+response:
+
+| Header | Value set |
+| --- | --- |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-Frame-Options` | `DENY` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'` |
+| `Strict-Transport-Security` | `max-age=3600` |
+| `Referrer-Policy` | `same-origin` |
+
+Additionally, `Cache-Control: no-store` is now set in `jsonResponse()` in
+`server/helpers.go`, so all JSON API responses are excluded from browser and
+proxy caches.
+
+**Remaining limitation:** The CSP requires `'unsafe-inline'` for `script-src`
+and `style-src` because `idtrack.html` uses inline `onclick` attributes
+throughout. Removing these to allow a stricter (nonce-based or hash-based) CSP
+would require a significant HTML refactor and is tracked as future work.
+
+The HSTS `max-age` is set conservatively at 3600 seconds (1 hour) to avoid
+browser-trust problems with the self-signed certificate. Operators using a
+trusted certificate should raise this to 31536000 (1 year).
+
+---
+
+## S-06 — Internal database error strings returned to clients
+
+**Severity:** Medium  
+**Files:** `server/users.go`, `server/auth_handlers.go`, `server/projects.go`,
+`server/helpers.go`  
+**Fixed:** 2026-05-17
+
+Several error paths called `jsonError(w, err.Error(), ...)` with a raw `error`
+value from the `db` package, potentially exposing SQLite internals such as
+constraint names, table names, and file paths.
+
+**Fix applied:** Added an `internalError(w, err)` helper in `server/helpers.go`
+that logs the full error text server-side (to the server log, where it is
+available for debugging) and returns a generic `"server error"` string to the
+client:
+
+```go
+func internalError(w http.ResponseWriter, err error) {
+    log.Printf("internal error: %v", err)
+    jsonError(w, "server error", http.StatusInternalServerError)
+}
+```
+
+`internalError` was applied at these specific call sites:
+
+- `server/users.go` — `db.AddUser` failure in `handleCreateUser`
+- `server/users.go` — `db.DeleteUser` failure in `handleDeleteUser`
+- `server/auth_handlers.go` — `db.AddUser` failure in `handleOnboarding`
+- `server/auth_handlers.go` — `db.HasUsers` failure in `handleStatus` and `handleOnboarding`
+- `server/auth_handlers.go` — `db.FindUser` failure in `handleLogin`
+- `server/projects.go` — `db.CreateProject` failure in `handleCreateProject`
+  (also corrected the HTTP status from 409 to 500, since `INSERT OR IGNORE`
+  never produces a conflict — any error here is a genuine DB failure)
+
+The intentional human-readable messages that the `db` package constructs
+deliberately (e.g. `project "X" is referenced by issues: #1, #2`) are passed
+through unchanged, as they are informative and contain no internal detail.
+The `db.UpdateUser` "user not found" message and the project/component
+referential-integrity messages fall into this category.
+
+---
+
+## S-07 — Unsalted SHA-256 password storage
+
+**Severity:** Medium (acknowledged design trade-off)  
+**Files:** `resources/idtrack.js`, `db/users.go`, `server/auth_handlers.go`  
+**Status:** Not fixed — accepted trade-off
+
+Passwords are hashed client-side with plain SHA-256 (no salt) before being
+transmitted and stored. Consequences if the database is compromised:
+
+- Two users with the same password share identical `password_hash` values.
+- SHA-256 is a general-purpose hash function, not a password KDF. A GPU can
+  test billions of candidates per second against the stored hashes.
+- Precomputed SHA-256 rainbow tables for common passwords are publicly available.
+
+This is explicitly accepted as a trade-off for the current client-side-hash /
+Basic-Auth model.
+
+**Fix (partial, without changing the auth model):** Add a per-user salt stored
+alongside the hash. The browser would need to fetch the salt before computing
+the hash. This breaks the current stateless Basic Auth flow.
+
+**Full fix:** Move hashing server-side using bcrypt or Argon2id. The browser
+sends the plaintext password over TLS; the server hashes it with a slow KDF
+and compares. This requires a session token (cookie or JWT) rather than
+per-request Basic Auth.
+
+---
+
+## S-08 — Long-lived credentials in `localStorage` with no expiry
+
+**Severity:** Medium  
+**File:** `resources/idtrack.js`  
+**Status:** Not fixed
+
+When "Keep me logged in" is enabled, `{ username, hash }` is written to
+`localStorage` with no expiration timestamp. The SHA-256 hash IS the credential
+(it is used directly in the `Authorization` header). Problems:
+
+1. The credential persists indefinitely on any shared or abandoned device.
+2. Any XSS vulnerability introduced in the future would allow the stored hash
+   to be exfiltrated and replayed.
+3. There is no server-side mechanism to invalidate a stolen stored credential
+   (the hash cannot be "rotated" without the user changing their password).
+
+**Fix (short term):** Store an expiry timestamp alongside the credential and
+clear it on load if expired (e.g. 30-day cap).
+
+**Fix (long term):** Replace long-lived localStorage credentials with a
+server-issued session token (short-lived, revocable).
+
+---
+
+## S-09 — `GET /api/status` unauthenticated DB hit (lightweight DoS)
+
+**Severity:** Low  
+**File:** `server/auth_handlers.go` (`handleStatus`), `db/users.go` (`HasUsers`)  
+**Status:** Not fixed
+
+`GET /api/status` requires no authentication and executes `SELECT COUNT(*) FROM
+users` on every call. There is no caching and no rate limit. A sustained flood
+of status requests forces repeated DB reads and JSON serialization. Because this
+endpoint also generates or returns the onboarding UUID under a mutex when no
+users exist, a burst of concurrent requests all hitting the mutex in onboarding
+mode adds lock contention.
+
+**Fix (short term):** Cache the `hasUsers` result on the `srv` struct with a
+short TTL (e.g. 5 seconds) — it rarely changes in normal operation.
+
+**Fix (longer term):** Same per-IP rate limiting as S-03.
+
+---
+
+## S-10 — Unbounded `search` query parameter (SQL amplification DoS)
+
+**Severity:** Low  
+**Files:** `server/issues.go`, `db/issues.go`  
+**Status:** Not fixed
+
+The `search` query parameter is passed to a `LIKE '%...%'` clause without any
+length restriction. A very long search pattern forces SQLite to evaluate a
+leading-wildcard pattern across all rows' text columns, which cannot use an
+index. At scale this becomes a full table scan on every request.
+
+**Fix:** Truncate or reject the search parameter above a reasonable length
+(e.g. 200 characters) in `handleListIssues` before passing it to `db.ListIssues`.
+
+---
+
+## S-11 — No `Content-Type` validation on incoming JSON requests
+
+**Severity:** Low  
+**Files:** All handlers that decode a request body  
+**Status:** Not fixed
+
+No handler verifies that the incoming `Content-Type` is `application/json`
+before decoding. While `json.Decoder` will fail on non-JSON bodies regardless,
+the absence of this check:
+
+- Allows form-encoded POST bodies to be silently ignored (decoder sees `{}`).
+- Weakens defence against certain CSRF-style attacks that rely on the server
+  accepting a form submission as if it were JSON.
+
+**Fix:** In a middleware or per handler, check:
+
+```go
+if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+    jsonError(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
+    return
+}
+```
+
+---
+
+## S-12 — Comment creation does not verify the parent issue exists
+
+**Severity:** Low  
+**File:** `server/comments.go` (`handleCreateComment`)  
+**Status:** Not fixed
+
+`handleCreateComment` parses and validates the issue ID format (must be a
+positive integer) but does not check whether an issue with that ID actually
+exists in the database before inserting the comment. `db.CreateComment` blindly
+inserts a row with the given `issue_id`. An authenticated user can create
+comments referencing deleted or non-existent issue IDs, creating orphaned
+comment rows.
+
+**Fix:** Call `db.GetIssue(s.database, id)` before `db.CreateComment` and
+return 404 if the issue is not found.
+
+---
+
+## S-13 — `addColumnIfMissing` uses string interpolation for DDL (code pattern)
+
+**Severity:** Info  
+**File:** `db/db.go` line 115  
+**Status:** Not fixed
+
+```go
+fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition)
+```
+
+Table and column names are interpolated directly into SQL. Currently all call
+sites use string literals so there is no injection risk. However, the function's
+signature accepts arbitrary strings; a future caller passing user-derived input
+would create a SQL injection vulnerability.
+
+**Fix:** No immediate action required. Add a comment to the function noting
+that arguments must be compile-time constants (never user input). Optionally,
+validate against a known-good list of table/column names before executing.
+
+---
+
+## S-14 — Last admin can demote themselves (administrative lockout)
+
+**Severity:** Info  
+**File:** `server/users.go` (`handleUpdateUser`)  
+**Status:** Not fixed
+
+The server prevents an admin from deleting their own account (`handleDeleteUser`
+checks `username == currentUser(r).Username`), but there is no equivalent guard
+against an admin revoking their own admin privilege via `PUT /api/users/{self}`
+with `is_admin: false`. If this is the only admin account, the system would have
+no admin and no way to restore admin access except via the CLI (`idtrack user
+update --admin true`).
+
+**Fix:** In `handleUpdateUser`, when the target username equals the current
+user's username and `body.IsAdmin == false`, check if they are currently an
+admin and whether any other admin accounts exist. Block the request with a
+descriptive error if they are the last admin.
+
+---
+
+## Summary Table
+
+| ID | Title | Severity | Status |
+| --- | --- | --- | --- |
+| S-01 | No HTTP server timeouts | High | **Fixed 2026-05-17** |
+| S-02 | No request body size limit | High | **Fixed 2026-05-17** |
+| S-03 | No login rate limiting | High | **Fixed 2026-05-17** |
+| S-04 | Non-constant-time credential comparison | Medium | **Fixed 2026-05-17** |
+| S-05 | Missing security response headers | Medium | **Fixed 2026-05-17** |
+| S-06 | Internal DB errors returned to clients | Medium | **Fixed 2026-05-17** |
+| S-07 | Unsalted SHA-256 password storage | Medium | Open — accepted trade-off |
+| S-08 | Long-lived localStorage credentials | Medium | Open |
+| S-09 | Unauthenticated status endpoint hits DB | Low | Open |
+| S-10 | Unbounded search parameter | Low | Open |
+| S-11 | No Content-Type validation | Low | Open |
+| S-12 | Comment creation ignores missing issue | Low | Open |
+| S-13 | `addColumnIfMissing` DDL interpolation | Info | Open |
+| S-14 | Last admin can self-demote | Info | Open |

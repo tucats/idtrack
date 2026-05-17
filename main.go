@@ -69,11 +69,11 @@ func main() {
 		usage()
 		os.Exit(0)
 
-	case "serve", "start":
+	case "serve", "start", "run":
 		runServe(args[1:])
 	case "stop":
 		runStop()
-	case "default":
+	case "default", "config":
 		runDefault(args[1:])
 	case "user", "users":
 		runUser(args[1:])

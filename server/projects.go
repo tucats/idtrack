@@ -48,7 +48,7 @@ func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := db.CreateProject(s.database, body.Name); err != nil {
-		jsonError(w, err.Error(), http.StatusConflict)
+		internalError(w, err)
 
 		return
 	}
