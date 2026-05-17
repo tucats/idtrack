@@ -21,10 +21,12 @@ idtrack/
 │   └── projects.go       # Project/Component CRUD
 ├── server/
 │   ├── server.go         # srv struct + Start() — route wiring and TLS setup
-│   ├── middleware.go     # contextKey, auth(), currentUser()
+│   ├── middleware.go     # contextKey, auth(), requireJSON(), currentUser()
 │   ├── helpers.go        # issueID(), jsonResponse(), jsonError()
 │   ├── static.go         # static file handlers + handleManual()
-│   ├── auth_handlers.go  # handleVersion, handleStatus, handleOnboarding, handleLogin
+│   ├── sessions.go       # sessionStore — create/lookup/delete session tokens
+│   ├── backup.go         # startBackups(), doBackup(), quiesce(), ageBackups()
+│   ├── auth_handlers.go  # handleVersion, handleStatus, handleOnboarding, handleLogin, handleLogout
 │   ├── users.go          # user CRUD handlers
 │   ├── projects.go       # project/component CRUD handlers
 │   ├── issues.go         # issue CRUD handlers
@@ -124,7 +126,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N, "app_name": "...", "app_description": "..."}` — persisted defaults; all fields are omitempty |
+| `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h"}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -134,7 +136,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--idle-timeout duration] [--app-name text] [--app-description text]`
+### `idtrack default [--port n] [--database path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag.
 
@@ -142,6 +144,9 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--app-name` sets a custom application name shown in the header, login screen, onboarding screen, and About dialog (default: `idtrack`).
 - `--app-description` sets a custom tagline shown under the name on the login screen and About dialog (default: `Issue Tracker`).
 - Both branding values are returned by `GET /api/status` as `app_name` and `app_description` (omitted when not set). The frontend applies them immediately after the status probe via `applyBranding()`.
+- `--backup-interval` accepts any Go duration string (`1h`, `30m`). Use `0` to disable backups. Stored as a string in `defaults.json` and parsed to `time.Duration` in `runServe`.
+- `--backup-count` is a non-negative integer. `0` means no count limit.
+- `--backup-age` accepts any Go duration string. Use `0` to disable age-based pruning. Stored as a string in `defaults.json`.
 
 ### `idtrack serve [--port n] [--database path]`
 
@@ -177,7 +182,7 @@ All `user` subcommands accept an optional `--database path` flag. Actions are po
 
 ## HTTP API
 
-All authenticated endpoints use Basic Auth where the password field carries the SHA-256 hex hash (not the plaintext password). The `auth` middleware validates on every request and stores the `*db.User` in the request context.
+Authenticated endpoints require a valid session token delivered as an `HttpOnly; Secure; SameSite=Strict` cookie named `idtrack_session`, or via `Authorization: Bearer <token>`. The `auth` middleware validates the token against the in-memory `sessionStore` on every request and stores the `*db.User` in the request context. Sessions are created by `POST /api/login` and `POST /api/onboarding`; deleted by `POST /api/logout`. JSON-body endpoints additionally require `Content-Type: application/json` (enforced by the `requireJSON` middleware).
 
 | Method | Path | Auth | Admin required |
 | ------ | ---- | ---- | -------------- |
@@ -310,7 +315,7 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 
 **Onboarding uses a one-time in-memory UUID.** When `GET /api/status` detects an empty users table it generates a UUID, stores it on the `srv` struct behind a `sync.Mutex`, and returns it in the response. `POST /api/onboarding` validates `Authorization: Basic base64("onboarding:<uuid>")`, creates the first admin user, then clears the token. Because the token lives only in process memory it is lost on server restart — in that case the client simply receives a fresh UUID on the next status probe.
 
-**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, and `appDescription` are all examples of the same pattern: add the field to the `defaults` struct in `main.go` (with `omitempty`), accept it via `idtrack default --flag`, pass it through `server.Start()`, store it on the `srv` struct, and expose it in `GET /api/status`. Follow this pattern for any future server-wide configuration values.
+**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, `appDescription`, and the backup params (`dbPath`, `backupInterval`, `backupCount`, `backupAge`) are all examples of the same pattern: add the field to the `defaults` struct in `main.go` (with `omitempty`), accept it via `idtrack default --flag`, pass it through `server.Start()`, and store it on the `srv` struct. Duration-type flags are stored as strings in `defaults.json` and parsed to `time.Duration` in `runServe`. Follow this pattern for any future server-wide configuration values.
 
 **"Keep me logged in" issues a 30-day session cookie.** When `keep_logged_in: true` is sent in the login body, the server creates a session with a 30-day TTL and sets `Max-Age=2592000` on the `idtrack_session` cookie. `localStorage` (under `PERSIST_KEY`) stores only the non-sensitive user display object `{ user }` — no credentials. On the next browser session `init()` restores `_currentUser` from this object and calls `launchApp()`; the browser sends the long-lived cookie automatically. If the session has expired or been invalidated, the first API call returns 401 and the user sees the login screen.
 
@@ -323,3 +328,13 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 **Resolving an issue requires an assignee.** `saveIssueChanges()` blocks with an error if `status === 'Resolved'` and the assignee field is empty, before the resolve dialog is shown. This prevents issues from being closed without ownership.
 
 **Status transitions post comments atomically with the save.** `doSaveIssue(commentBody)` calls `updateIssue()` then `addComment()` in sequence. If the comment fails after the issue update succeeds the status is still changed (no rollback). For Open→Resolved this is acceptable since the comment is optional; for Resolved→Open the required comment failing would be a server error unlikely in practice.
+
+**`requireJSON` middleware enforces Content-Type on JSON-body endpoints (S-11).** Applied selectively at route-registration time (`mux.Handle("POST /api/...", requireJSON(http.HandlerFunc(...)))`), not globally, so endpoints with no body (logout, DELETE routes) are unaffected. Returns 415 Unsupported Media Type when the header is absent or wrong.
+
+**Issue authorization: reporter, assignee, or admin may modify/delete (S-12 adjacent).** `issueModifier(u *db.User, issue *db.Issue) bool` checks `u.IsAdmin || u.Username == issue.Reporter || u.Username == issue.Assignee`. Both `handleUpdateIssue` and `handleDeleteIssue` fetch the current issue record first and call `issueModifier`; a third-party authenticated user receives 403. Any authenticated user may create a comment on any issue.
+
+**Comment parent validation prevents orphaned comments (S-12).** `handleCreateComment` calls `db.GetIssue` before inserting the comment row. A non-existent issue ID returns 404 rather than creating a comment with a dangling `issue_id`.
+
+**Last-admin guard blocks lockout (S-14).** `db.CountAdmins` counts rows with `is_admin = 1`. Both `handleDeleteUser` and `handleUpdateUser` call it when the operation would leave no admin: deletion of the last admin returns 400 with a message directing the operator to use the CLI; demotion of the last admin is blocked the same way. The last-admin check runs before the self-deletion check in `handleDeleteUser` so the more informative message takes priority when both conditions apply.
+
+**Backup strategy: filesystem copy with RWMutex quiescing.** When `backupInterval > 0`, `server/backup.go` manages all backup logic. `startBackups()` is called in `Start()` before `httpSrv.Serve` (so the first backup is written before any requests are served). It creates an `idtrack-backups/` directory next to the database file, writes an initial backup synchronously, then launches a goroutine that fires `doBackup()` every `backupInterval`. `doBackup` takes `s.backupMu.Lock()` (write lock) to quiesce the server, calls `copyFile` (io.Copy + fsync), releases the lock, then runs `ageBackups` in a separate goroutine. Every HTTP request holds `s.backupMu.RLock()` via the `quiesce` middleware, which wraps the entire mux. The RWMutex ensures: in-flight requests finish before the backup copy starts; new requests block (briefly) while the copy is in progress; no 503 is returned to clients. `ageBackups` enforces count pruning first (delete oldest beyond limit), then age pruning (delete files whose name-embedded timestamp is before `now − backupAge`). Backup filenames embed the UTC timestamp (`idtrack-20060102T150405.db`) so alphabetical and chronological order coincide and the age can be recovered from the name without touching the filesystem mtime.

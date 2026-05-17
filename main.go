@@ -50,6 +50,9 @@ type defaults struct {
 	IdleTimeout    int    `json:"idle_timeout,omitempty"`    // seconds; 0 means disabled
 	AppName        string `json:"app_name,omitempty"`        // custom branding name
 	AppDescription string `json:"app_description,omitempty"` // custom branding tagline
+	BackupInterval string `json:"backup_interval,omitempty"` // Go duration string, e.g. "1h"; empty = disabled
+	BackupCount    int    `json:"backup_count,omitempty"`    // max backups to retain; 0 = no limit
+	BackupAge      string `json:"backup_age,omitempty"`      // max age of a backup; empty = no limit
 }
 
 // pidRecord is the structure written to ~/.idtrack/idtrack.pid. Storing the
@@ -141,6 +144,9 @@ Commands:
 		 --idle-timeout <duration>
 		 --app-name <name>
 		 --app-description <text>
+		 --backup-interval <duration>  (e.g. 1h, 30m; 0 to disable)
+		 --backup-count <n>            (max backups to keep; 0 = no limit)
+		 --backup-age <duration>       (e.g. 168h for 7 days; 0 to disable)
 
 	define [subcommand] [options]
 		Create projects and components.
@@ -264,16 +270,32 @@ func runServe(args []string) {
 	}
 
 	// Foreground path: open the database and block in the HTTP server loop.
-	d, err := db.Open(database)
+	absDB, err := filepath.Abs(database)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", database, err)
+		fmt.Fprintf(os.Stderr, "cannot resolve database path %q: %v\n", database, err)
 		os.Exit(1)
+	}
+
+	d, err := db.Open(absDB)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error opening database %q: %v\n", absDB, err)
+		os.Exit(1)
+	}
+
+	// Parse backup duration strings from the stored defaults. Invalid values
+	// are ignored silently — they were validated when written by runDefault.
+	var backupInterval, backupAge time.Duration
+	if defs.BackupInterval != "" {
+		backupInterval, _ = time.ParseDuration(defs.BackupInterval)
+	}
+	if defs.BackupAge != "" {
+		backupAge, _ = time.ParseDuration(defs.BackupAge)
 	}
 
 	// fs.FS(embedded) converts our embed.FS to the standard fs.FS interface
 	// that server.Start expects, allowing it to read static files.
 	static := fs.FS(embedded)
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
@@ -809,12 +831,16 @@ func runDeleteProjectOrComponent(args []string) {
 // file are left unchanged — we load existing values and merge on top of them.
 func runDefault(args []string) {
 	var (
-		port           int
-		database       string
-		idleTimeout    int
-		idleTimeoutSet bool
-		appName        string
-		appDescription string
+		port            int
+		database        string
+		idleTimeout     int
+		idleTimeoutSet  bool
+		appName         string
+		appDescription  string
+		backupInterval  string
+		backupCount     int
+		backupCountSet  bool
+		backupAge       string
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -865,6 +891,45 @@ func runDefault(args []string) {
 				i++
 				appDescription = args[i]
 			}
+		case "--backup-interval":
+			if i+1 < len(args) {
+				i++
+				val := args[i]
+				if val == "0" || val == "0s" {
+					backupInterval = "" // empty = disabled
+				} else {
+					if _, err := time.ParseDuration(val); err != nil {
+						fmt.Fprintf(os.Stderr, "invalid backup-interval %q: use a Go duration like 1h, 30m\n", val)
+						os.Exit(1)
+					}
+					backupInterval = val
+				}
+			}
+		case "--backup-count":
+			if i+1 < len(args) {
+				i++
+				n, err := strconv.Atoi(args[i])
+				if err != nil || n < 0 {
+					fmt.Fprintf(os.Stderr, "invalid backup-count %q: must be a non-negative integer\n", args[i])
+					os.Exit(1)
+				}
+				backupCount = n
+				backupCountSet = true
+			}
+		case "--backup-age":
+			if i+1 < len(args) {
+				i++
+				val := args[i]
+				if val == "0" || val == "0s" {
+					backupAge = "" // empty = disabled
+				} else {
+					if _, err := time.ParseDuration(val); err != nil {
+						fmt.Fprintf(os.Stderr, "invalid backup-age %q: use a Go duration like 168h, 720h\n", val)
+						os.Exit(1)
+					}
+					backupAge = val
+				}
+			}
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			usage()
@@ -872,8 +937,10 @@ func runDefault(args []string) {
 		}
 	}
 
-	if port == 0 && database == "" && !idleTimeoutSet && appName == "" && appDescription == "" {
-		fmt.Fprintln(os.Stderr, "must specify at least --port, --database, --idle-timeout, --app-name, or --app-description")
+	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
+		backupInterval != "" || backupCountSet || backupAge != ""
+	if !anySet {
+		fmt.Fprintln(os.Stderr, "must specify at least one option")
 		usage()
 		os.Exit(1)
 	}
@@ -898,6 +965,18 @@ func runDefault(args []string) {
 
 	if appDescription != "" {
 		defs.AppDescription = appDescription
+	}
+
+	if backupInterval != "" {
+		defs.BackupInterval = backupInterval
+	}
+
+	if backupCountSet {
+		defs.BackupCount = backupCount
+	}
+
+	if backupAge != "" {
+		defs.BackupAge = backupAge
 	}
 
 	home, err := os.UserHomeDir()
@@ -947,6 +1026,18 @@ func runDefault(args []string) {
 
 	if defs.AppDescription != "" {
 		fmt.Printf("  app-desc:     %s\n", defs.AppDescription)
+	}
+
+	if defs.BackupInterval != "" {
+		fmt.Printf("  backup-interval: %s\n", defs.BackupInterval)
+	}
+
+	if defs.BackupCount > 0 {
+		fmt.Printf("  backup-count:    %d\n", defs.BackupCount)
+	}
+
+	if defs.BackupAge != "" {
+		fmt.Printf("  backup-age:      %s\n", defs.BackupAge)
 	}
 }
 
