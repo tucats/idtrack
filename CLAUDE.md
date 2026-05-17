@@ -25,6 +25,7 @@ idtrack/
     ├── idtrack.html
     ├── idtrack.css
     ├── idtrack.js
+    ├── MANUAL.md         # User manual (rendered via /manual as HTML)
     ├── https-server.crt  # Self-signed TLS certificate
     └── https-server.key  # TLS private key
 ```
@@ -115,7 +116,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File            | Contents                                               |
 |-----------------|--------------------------------------------------------|
-| `defaults.json` | `{"port": N, "database": "path"}` — persisted defaults |
+| `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N}` — persisted defaults (idle_timeout in seconds, omitted when 0) |
 | `idtrack.pid`   | PID of the running server process                      |
 | `idtrack.log`   | Stdout/stderr of the background server                 |
 
@@ -125,9 +126,11 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path]`
+### `idtrack default [--port n] [--database path] [--idle-timeout duration]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag.
+
+- `--idle-timeout` accepts any Go duration string (`30m`, `1h`, `90s`). Use `0` to disable. The server returns this value from `GET /api/status`; the frontend enforces it as an idle-logout timer.
 
 ### `idtrack serve [--port n] [--database path]`
 
@@ -179,7 +182,9 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 | Method | Path | Auth | Admin required |
 | ------ | ---- | ---- | -------------- |
 | GET | `/api/version` | no | no |
+| GET | `/api/status` | no | no |
 | POST | `/api/login` | Basic (validates) | no |
+| POST | `/api/onboarding` | one-time token | no |
 | GET | `/api/users` | yes | no |
 | POST | `/api/users` | yes | **yes** |
 | PUT | `/api/users/{username}` | yes | **yes** |
@@ -196,6 +201,21 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 | DELETE | `/api/issues/{id}` | yes | **yes** |
 | POST | `/api/issues/{id}/comments` | yes | no |
 | DELETE | `/api/issues/{id}/comments/{cid}` | yes | **yes** |
+
+### Status response (`GET /api/status`)
+
+Always returns `idle_timeout` (seconds, 0 = disabled). When no users exist in the database, also returns `onboarding: true` and a one-time UUID `token`:
+
+```json
+{ "onboarding": false, "idle_timeout": 1800 }
+{ "onboarding": true,  "idle_timeout": 0, "token": "<uuid>" }
+```
+
+The UUID is generated lazily on first status call when onboarding is needed and held in memory on the `srv` struct (protected by `sync.Mutex`). It is cleared after `POST /api/onboarding` succeeds or after any user is found in the DB.
+
+### Onboarding request (`POST /api/onboarding`)
+
+Authorization header: `Basic base64("onboarding:<uuid>")`. Body: `{ username, display_name, password_hash }`. Creates the first user as an admin, clears the token, calls `RecordLogin`, and returns the same shape as `/api/login`. The endpoint returns 409 if users already exist.
 
 ### Login response
 
@@ -216,15 +236,26 @@ Single-page app. All JS is in one `idtrack.js` file; no build step, no framework
 ### Key state variables
 
 ```js
-_credentials  // 'Basic base64(user:sha256hash)' — sent on every API call
-_currentUser  // { username, display_name, is_admin }
-_userMap      // { username: display_name } — built from /api/users at login
-_projectData  // [{name, components: [...]}] — built from /api/projects at login
-_allIssues    // full issue list, filtered/sorted client-side
-_currentId    // currently selected issue id
+_credentials      // 'Basic base64(user:sha256hash)' — sent on every API call
+_currentUser      // { username, display_name, is_admin }
+_userMap          // { username: display_name } — built from /api/users at login
+_projectData      // [{name, components: [...]}] — built from /api/projects at login
+_allIssues        // full issue list, filtered/sorted client-side
+_currentId        // currently selected issue id
+_keepLoggedIn     // bool — mirrors localStorage pref; controls PERSIST_KEY writes
+_idleTimeoutSecs  // int from /api/status; 0 = no timeout
+_idleTimer        // setTimeout handle; reset on any user activity
 ```
 
-Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refresh doesn't require re-login. Dark mode preference is in `localStorage` (key: `idtrack_prefs`).
+### Session persistence (three layers)
+
+`init()` always fetches `GET /api/status` first to capture `idle_timeout` and onboarding state, then checks three stores in order:
+
+1. **`sessionStorage` (`idtrack_session`)** — `{ user, creds }`. Survives page refresh, cleared when the tab closes. Written on every successful login.
+2. **`localStorage` (`idtrack_persist`)** — `{ username, hash }`. Written when **Keep me logged in** is enabled; `init()` uses these to call `POST /api/login` and auto-sign-in on next visit. Cleared on explicit sign-out.
+3. **Login screen** — shown if neither store has valid credentials and onboarding is not required.
+
+Preferences (dark mode, keep-me-logged-in) are in `localStorage` under `idtrack_prefs`.
 
 ### Display name resolution
 
@@ -243,8 +274,14 @@ Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refr
 
 - **Delete Issue** button appears in the detail panel header only when `_currentUser.is_admin` is true. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}`.
 - **Trash icon** (🗑) appears on each comment only for admins. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}/comments/{cid}`.
-- Hamburger menu shows three additional admin-only items: **Add Project**, **Add Component**, **Delete Project/Component**. Each opens a modal overlay. The "Delete" overlay lets the admin pick a project and either a specific component or "All components" (which deletes the entire project). If the project/component is in use by issues, the server returns 409 Conflict with an error message listing the affected issue IDs, which is displayed in the overlay.
-- Non-admin users never see these controls. The server enforces admin on all project mutate endpoints (returns 403 Forbidden).
+- Hamburger menu shows four additional admin-only items: **Edit Users…**, **Add Project**, **Add Component**, **Delete Project/Component**.
+- **Edit Users…** opens `manage-users-overlay`, which lists all users and provides add/edit/delete in a single place. See "Overlay navigation pattern" below.
+- The project overlays each open a modal. The "Delete" overlay lets the admin pick a project and either a specific component or "All components". If in use, the server returns 409 Conflict with the affected issue IDs.
+- Non-admin users never see these controls. The server enforces admin on all mutate endpoints (returns 403 Forbidden).
+
+### Overlay navigation pattern
+
+The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and `openEditUserFromManage(username)` hide it before opening the child overlay. `hideAddUser()` and `hideEditUser()` always call `openManageUsers()` when they close — so every exit path (success, cancel, backdrop click) refreshes and re-displays the user list. This pattern should be followed if similar consolidated-management overlays are added in future.
 
 ## Important Implementation Decisions
 
@@ -261,3 +298,11 @@ Session is persisted in `sessionStorage` (key: `idtrack_session`) so a page refr
 **Schema migrations are additive only.** New columns are always added with `DEFAULT` values via `addColumnIfMissing`. Existing data is never altered. This keeps the migration path trivially safe.
 
 **Static assets are embedded.** The TLS cert/key and all web assets are compiled into the binary with `//go:embed resources`. Deployment is a single file copy.
+
+**Onboarding uses a one-time in-memory UUID.** When `GET /api/status` detects an empty users table it generates a UUID, stores it on the `srv` struct behind a `sync.Mutex`, and returns it in the response. `POST /api/onboarding` validates `Authorization: Basic base64("onboarding:<uuid>")`, creates the first admin user, then clears the token. Because the token lives only in process memory it is lost on server restart — in that case the client simply receives a fresh UUID on the next status probe.
+
+**`server.Start()` takes `idleTimeout int` (seconds).** This is read from `defaults.IdleTimeout` in `runServe` and threaded into the `srv` struct. When adding new server-wide configuration, follow this pattern: add the field to the `defaults` struct in `main.go`, accept it via `idtrack default --flag`, pass it through `server.Start()`, and expose it in `GET /api/status` or a similar probe endpoint.
+
+**"Keep me logged in" stores the raw SHA-256 hash.** Since the hash *is* the credential (it's what Basic Auth transmits), storing `{ username, hash }` in `localStorage` is equivalent to storing a session token. Clearing it on sign-out is the correct revocation mechanism. Do not store the plaintext password — `sha256()` is called in the browser before anything is stored or transmitted.
+
+**Idle timeout is enforced entirely client-side.** The server communicates the timeout value via `GET /api/status` but does not enforce it server-side. The frontend attaches passive event listeners for mouse, keyboard, touch, and scroll events and resets a `setTimeout` on each. If the timer fires, `doLogout()` is called. `startIdleTracking()` / `stopIdleTracking()` are called in `launchApp()` and `doLogout()` respectively; they are no-ops when `_idleTimeoutSecs` is 0.

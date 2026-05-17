@@ -276,27 +276,30 @@ Click **Create** to submit. The new issue appears in the list immediately.
 
 Users with **Admin** privilege see additional items in the hamburger menu (☰, top right of the screen).
 
-### Add User
+### Edit Users…
 
-Opens a form to create a new user account:
+Opens a panel listing all current user accounts — username, display name, admin status, and last login time. All user management is done from this single overlay.
+
+**To add a user**, click **Add User…**. Fill in:
 
 - **Username** — must be unique
 - **Display Name** — shown in the UI; defaults to username if left blank
-- **Admin** — toggle to grant admin access
 - **Password** / **Confirm Password** — must match; minimum one character
+- **Admin privileges** — toggle to grant full admin access
 
-Click **Create User** to save. The new user can log in immediately.
+Click **Add User** to save. The new user can log in immediately.
 
-### Edit User
+**To edit a user**, click anywhere on that user's row. The edit form opens pre-populated with their current details. You can change any combination of:
 
-Opens a form to modify an existing account:
+- **Display Name**
+- **Password** — leave blank to keep the current password unchanged
+- **Admin privileges**
 
-1. Select the user from the dropdown.
-2. Change any fields: Display Name, Admin status, or Password.
-3. Leave **New Password** blank to keep the current password unchanged.
-4. Click **Save Changes**.
+Click **Save Changes** to apply.
 
-The **Delete User** button permanently removes the selected account. You cannot delete your own account via this UI.
+**To delete a user**, open their edit form (click the row), then click **Delete User** and confirm. You cannot delete your own account. Issues and comments that reference the deleted username retain the username string.
+
+After any add, edit, or delete operation — and when cancelled — the overlay automatically returns to the refreshed user list.
 
 ### Add Project
 
@@ -335,13 +338,23 @@ Each comment has a trash-can icon (🗑) visible only to admins. Clicking it pro
 
 ## 5. Settings and Preferences {#settings}
 
+Open the hamburger menu (☰) and choose **Settings**.
+
 ### Dark Mode
 
-Open the hamburger menu (☰) and choose **Settings**. Toggle **Dark Mode** on or off. This preference is saved in your browser's `localStorage` and persists across sessions.
+Toggle **Dark Mode** on or off. This preference is saved in your browser's `localStorage` and persists across sessions.
+
+### Keep me logged in
+
+When enabled, your credentials are stored in your browser's `localStorage` so that the next time you open the app you are signed in automatically without having to enter your password.
+
+Choosing **Sign out** always clears the stored credentials, regardless of this setting. The next visit will require a manual login.
+
+> **Note:** Stored credentials persist until you sign out. Use this setting only on devices you trust and control.
 
 ### Sign Out
 
-Open the hamburger menu and choose **Sign out**. This clears your session data and returns you to the login screen.
+Open the hamburger menu and choose **Sign out**. This clears your session, removes any stored credentials (if **Keep me logged in** was on), and returns you to the login screen.
 
 ---
 

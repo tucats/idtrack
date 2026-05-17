@@ -599,6 +599,57 @@ html, body {
   color: var(--text);
 }
 
+/* ==================== MANAGE USERS ==================== */
+
+.manage-users-sheet { max-width: 580px; }
+
+.manage-users-sheet h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  color: var(--text);
+}
+
+.mu-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .875rem;
+  margin-bottom: .5rem;
+}
+
+.mu-table th {
+  padding: .45rem .65rem;
+  text-align: left;
+  font-size: .75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+}
+
+.mu-table td {
+  padding: .5rem .65rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.mu-row { cursor: pointer; transition: background .1s; }
+.mu-row:hover { background: var(--bg); }
+body.dark .mu-row:hover { background: #1a2040; }
+
+.mu-username  { font-weight: 600; font-family: monospace; font-size: .875rem; }
+.mu-login     { font-size: .8125rem; color: var(--text-light); white-space: nowrap; }
+
+.mu-empty, .mu-loading {
+  text-align: center;
+  color: var(--text-light);
+  font-style: italic;
+  padding: 1.5rem 0;
+  font-size: .9rem;
+}
+
 /* ==================== ABOUT ==================== */
 
 .about-logo {

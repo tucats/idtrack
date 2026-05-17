@@ -243,7 +243,7 @@ UUID and never uses it again.
 The webapp, having created the new user, should assume the username
 and password entered (and hashed by the webapp) are then the login credentials, and proceed to the issues list page.
 
-# Prompt 16
+# Prompt 16 *** Resolved 1.0-14 ***
 
 Let's add a new setting to the "Settings" dialog, for "Keep me logged in". When true, the username and hashed password should be stored in secure local storage in the browser, and used as the username/password the next time the user opens the webapp. Choosing "logout" will clear these stored tokens, forcing a login the next time the webapp is used.
 
@@ -252,7 +252,7 @@ Also, create a default "inactive logout" default settings, managed using the idt
 The idea is that the server admin can specify an idle timeout enforced 
 by the webapp but this is not the default behavior.
 
-## Prompt 17
+## Prompt 17 *** Resolved 1.0-15 ***
 
 Let's improve the admin functions that allows editing users. Currently,
 adding, editing, and deleting users are spread across several menu
@@ -269,3 +269,5 @@ confirmation dialog if selected.
 The intent of this is to consolidate user managemnt into a single menu
 item for Admin users, and make all the operations (add, edit, delete)
 done from the same UX area.
+
+Update MANUAL.md to reflect new UX for managing users via the webapp.
