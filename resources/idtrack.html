@@ -153,6 +153,18 @@
   </div>
 </div>
 
+<!-- ==================== MANAGE USERS OVERLAY (admin) ==================== -->
+<div id="manage-users-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'manage-users-overlay',hideManageUsers)">
+  <div class="sheet manage-users-sheet">
+    <h3>Manage Users</h3>
+    <div id="manage-users-list"></div>
+    <div class="button-row">
+      <button class="btn btn-primary" onclick="openAddUserFromManage()">Add User…</button>
+      <button class="btn btn-secondary" onclick="hideManageUsers()">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== ADD USER OVERLAY (admin) ==================== -->
 <div id="add-user-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'add-user-overlay',hideAddUser)">
   <div class="sheet user-admin-sheet">
@@ -343,8 +355,7 @@
         <div id="app-menu" class="app-menu" style="display:none">
           <button class="menu-item" onclick="openSettings()">Settings</button>
           <button class="menu-item" onclick="openAbout()">About</button>
-          <button id="menu-add-user" class="menu-item" onclick="openAddUser()" style="display:none">Add User</button>
-          <button id="menu-edit-user" class="menu-item" onclick="openEditUser()" style="display:none">Edit User</button>
+          <button id="menu-manage-users" class="menu-item" onclick="openManageUsers()" style="display:none">Edit Users…</button>
           <button id="menu-add-project" class="menu-item" onclick="openAddProject()" style="display:none">Add Project</button>
           <button id="menu-add-component" class="menu-item" onclick="openAddComponent()" style="display:none">Add Component</button>
           <button id="menu-manage-projects" class="menu-item" onclick="openManageProjects()" style="display:none">Delete Project/Component</button>

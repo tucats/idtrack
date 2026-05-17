@@ -248,8 +248,7 @@ async function submitLogin() {
 async function launchApp() {
     document.getElementById('user-badge').textContent = _currentUser.display_name || _currentUser.username;
     const adminDisplay = _currentUser.is_admin ? '' : 'none';
-    document.getElementById('menu-add-user').style.display         = adminDisplay;
-    document.getElementById('menu-edit-user').style.display        = adminDisplay;
+    document.getElementById('menu-manage-users').style.display     = adminDisplay;
     document.getElementById('menu-add-project').style.display      = adminDisplay;
     document.getElementById('menu-add-component').style.display    = adminDisplay;
     document.getElementById('menu-manage-projects').style.display  = adminDisplay;
@@ -666,8 +665,50 @@ async function populateAssigneeDropdowns() {
 // UI — USER MANAGEMENT (admin)
 // =====================================================================
 
-function openAddUser() {
+async function openManageUsers() {
     _closeMenuOnOutside();
+    document.getElementById('manage-users-list').innerHTML = '<p class="mu-loading">Loading…</p>';
+    document.getElementById('manage-users-overlay').style.display = 'flex';
+    let users = [];
+    try { users = await fetchUsers(); _userList = users; } catch {}
+    renderManageUsersList(users);
+}
+
+function hideManageUsers() {
+    document.getElementById('manage-users-overlay').style.display = 'none';
+}
+
+function renderManageUsersList(users) {
+    const div = document.getElementById('manage-users-list');
+    if (users.length === 0) {
+        div.innerHTML = '<p class="mu-empty">No users yet.</p>';
+        return;
+    }
+    div.innerHTML = `<table class="mu-table">
+        <thead><tr>
+            <th>Username</th><th>Display Name</th><th>Admin</th><th>Last Login</th>
+        </tr></thead>
+        <tbody>${users.map(u => `
+            <tr class="mu-row" onclick="openEditUserFromManage('${esc(u.username)}')">
+                <td class="mu-username">${esc(u.username)}</td>
+                <td>${esc(u.display_name || u.username)}</td>
+                <td>${u.is_admin ? '<span class="badge badge-open">Admin</span>' : ''}</td>
+                <td class="mu-login">${esc(u.last_login_at ? fmtDateTime(u.last_login_at) : '(never)')}</td>
+            </tr>`).join('')}
+        </tbody></table>`;
+}
+
+function openAddUserFromManage() {
+    hideManageUsers();
+    openAddUser();
+}
+
+function openEditUserFromManage(username) {
+    hideManageUsers();
+    openEditUser(username);
+}
+
+function openAddUser() {
     document.getElementById('au-username').value      = '';
     document.getElementById('au-display-name').value  = '';
     document.getElementById('au-password').value      = '';
@@ -680,6 +721,7 @@ function openAddUser() {
 
 function hideAddUser() {
     document.getElementById('add-user-overlay').style.display = 'none';
+    openManageUsers();
 }
 
 async function submitAddUser() {
@@ -702,7 +744,7 @@ async function submitAddUser() {
         const passwordHash = await sha256(password);
         await apiPost('/api/users', { username, display_name: displayName, password_hash: passwordHash, is_admin: isAdmin });
         await populateAssigneeDropdowns();
-        hideAddUser();
+        hideAddUser(); // hides overlay and returns to manage users (refreshed)
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add user.';
     } finally {
@@ -711,24 +753,22 @@ async function submitAddUser() {
     }
 }
 
-function openEditUser() {
-    _closeMenuOnOutside();
+function openEditUser(preselect) {
     const sel = document.getElementById('eu-username');
     sel.innerHTML = ['<option value="">Choose user…</option>']
         .concat(_userList.map(u => `<option value="${esc(u.username)}">${esc(u.display_name || u.username)} (${esc(u.username)})</option>`))
         .join('');
-    sel.value = '';
-    document.getElementById('eu-display-name').value  = '';
+    sel.value = preselect || '';
     document.getElementById('eu-password').value       = '';
     document.getElementById('eu-confirm').value         = '';
-    document.getElementById('eu-admin').checked         = false;
     document.getElementById('eu-error').textContent    = '';
-    document.getElementById('eu-delete-btn').style.display = 'none';
+    onEditUserSelect();
     document.getElementById('edit-user-overlay').style.display = 'flex';
 }
 
 function hideEditUser() {
     document.getElementById('edit-user-overlay').style.display = 'none';
+    openManageUsers();
 }
 
 function onEditUserSelect() {
@@ -772,7 +812,7 @@ async function submitEditUser() {
             display_name: displayName, password_hash: passwordHash, is_admin: isAdmin,
         });
         await populateAssigneeDropdowns();
-        hideEditUser();
+        hideEditUser(); // hides overlay and returns to manage users (refreshed)
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Save failed.';
     } finally {
@@ -791,7 +831,7 @@ async function confirmDeleteUser() {
     try {
         await apiDelete(`/api/users/${encodeURIComponent(username)}`);
         await populateAssigneeDropdowns();
-        hideEditUser();
+        hideEditUser(); // hides overlay and returns to manage users (refreshed)
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
     } finally {
