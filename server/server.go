@@ -30,6 +30,8 @@ type srv struct {
 	sessions        *sessionStore
 	mu              sync.Mutex
 	onboardingToken string
+	statusHasUsers  bool      // cached result of db.HasUsers (S-09)
+	statusCachedAt  time.Time // zero value forces refresh on first call
 }
 
 // Start wires up all routes, loads the TLS certificate, opens a TCP listener,
@@ -70,31 +72,31 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	// Login / logout / onboarding are public endpoints that manage session cookies.
 	// They do not go through the auth middleware — login and onboarding need to
 	// run before a session exists; logout needs to run even when the session is
-	// already expired.
-	mux.HandleFunc("POST /api/login", s.handleLogin)
+	// already expired. Routes that accept a JSON body are wrapped with requireJSON
+	// (S-11); logout has no body so it is excluded.
+	mux.Handle("POST /api/login", requireJSON(http.HandlerFunc(s.handleLogin)))
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
-	mux.HandleFunc("POST /api/onboarding", s.handleOnboarding)
+	mux.Handle("POST /api/onboarding", requireJSON(http.HandlerFunc(s.handleOnboarding)))
 
-	// Authenticated API endpoints are wrapped with s.auth(), which is a
-	// middleware function that validates Basic Auth on every request and stores
-	// the authenticated user in the request context. Handlers use currentUser()
-	// to retrieve that value.
+	// Authenticated API endpoints are wrapped with s.auth(), which validates the
+	// session cookie on every request and stores the *db.User in the context.
+	// JSON-body endpoints are additionally wrapped with requireJSON (S-11).
 	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
-	mux.Handle("POST /api/users", s.auth(http.HandlerFunc(s.handleCreateUser)))
-	mux.Handle("PUT /api/users/{username}", s.auth(http.HandlerFunc(s.handleUpdateUser)))
+	mux.Handle("POST /api/users", s.auth(requireJSON(http.HandlerFunc(s.handleCreateUser))))
+	mux.Handle("PUT /api/users/{username}", s.auth(requireJSON(http.HandlerFunc(s.handleUpdateUser))))
 	mux.Handle("DELETE /api/users/{username}", s.auth(http.HandlerFunc(s.handleDeleteUser)))
 	mux.Handle("GET /api/projects", s.auth(http.HandlerFunc(s.handleListProjects)))
-	mux.Handle("POST /api/projects", s.auth(http.HandlerFunc(s.handleCreateProject)))
-	mux.Handle("POST /api/projects/{project}/components", s.auth(http.HandlerFunc(s.handleCreateComponent)))
+	mux.Handle("POST /api/projects", s.auth(requireJSON(http.HandlerFunc(s.handleCreateProject))))
+	mux.Handle("POST /api/projects/{project}/components", s.auth(requireJSON(http.HandlerFunc(s.handleCreateComponent))))
 	mux.Handle("DELETE /api/projects/{project}", s.auth(http.HandlerFunc(s.handleDeleteProject)))
 	mux.Handle("DELETE /api/projects/{project}/components/{component}", s.auth(http.HandlerFunc(s.handleDeleteComponent)))
 
 	mux.Handle("GET /api/issues", s.auth(http.HandlerFunc(s.handleListIssues)))
-	mux.Handle("POST /api/issues", s.auth(http.HandlerFunc(s.handleCreateIssue)))
+	mux.Handle("POST /api/issues", s.auth(requireJSON(http.HandlerFunc(s.handleCreateIssue))))
 	mux.Handle("GET /api/issues/{id}", s.auth(http.HandlerFunc(s.handleGetIssue)))
-	mux.Handle("PUT /api/issues/{id}", s.auth(http.HandlerFunc(s.handleUpdateIssue)))
+	mux.Handle("PUT /api/issues/{id}", s.auth(requireJSON(http.HandlerFunc(s.handleUpdateIssue))))
 	mux.Handle("DELETE /api/issues/{id}", s.auth(http.HandlerFunc(s.handleDeleteIssue)))
-	mux.Handle("POST /api/issues/{id}/comments", s.auth(http.HandlerFunc(s.handleCreateComment)))
+	mux.Handle("POST /api/issues/{id}/comments", s.auth(requireJSON(http.HandlerFunc(s.handleCreateComment))))
 	mux.Handle("DELETE /api/issues/{id}/comments/{cid}", s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
 	// Read the TLS certificate and key from the embedded filesystem. Both

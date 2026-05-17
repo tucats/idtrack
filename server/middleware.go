@@ -98,6 +98,24 @@ func limitBody(next http.Handler) http.Handler {
 	})
 }
 
+// requireJSON rejects any request whose Content-Type header does not begin
+// with "application/json" with 415 Unsupported Media Type. Apply this
+// middleware to every handler that decodes a JSON request body (S-11).
+// Endpoints with no expected request body (e.g. DELETE, GET, POST /api/logout)
+// are intentionally excluded from the route wiring so clients do not need to
+// send a Content-Type header for bodyless requests.
+func requireJSON(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+			jsonError(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
+
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // secureHeaders is a middleware that adds defensive HTTP response headers to
 // every response. It runs as the outermost middleware layer so headers are
 // present on all responses, including error pages.
