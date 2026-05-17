@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>idtrack — Issue Tracker</title>
   <link rel="stylesheet" href="/assets/idtrack/idtrack.css">
+  <script>try{const p=JSON.parse(localStorage.getItem('idtrack_prefs')||'{}');if(p.desktopMode)document.documentElement.classList.add('desktop-mode');}catch(e){}</script>
 </head>
 <body>
 
@@ -129,6 +130,13 @@
       <span class="settings-label">Keep me logged in</span>
       <label class="toggle">
         <input type="checkbox" id="keep-logged-in-toggle" onchange="toggleKeepLoggedIn(this.checked)">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div class="settings-row">
+      <span class="settings-label">Always show desktop version</span>
+      <label class="toggle">
+        <input type="checkbox" id="desktop-mode-toggle" onchange="toggleDesktopMode(this.checked)">
         <span class="toggle-track"></span>
       </label>
     </div>
@@ -368,7 +376,7 @@
     </div>
   </header>
 
-  <div class="main-layout" onclick="mainLayoutClick(event)">
+  <div id="main-layout" class="main-layout" onclick="mainLayoutClick(event)">
 
     <!-- Issues List Panel -->
     <div id="list-panel" class="list-panel">

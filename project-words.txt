@@ -8,6 +8,7 @@ creds
 DOINCREMENT
 GOARCH
 goldmark
+HSTS
 idtrack
 isatty
 ldflags
@@ -16,7 +17,10 @@ mathutil
 mattn
 modernc
 ncruces
+nolint
+nosniff
 prefs
+quiescing
 remyoudompheng
 Roboto
 Segoe

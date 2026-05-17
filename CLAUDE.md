@@ -304,6 +304,30 @@ State: `_originalStatus` is set when an issue loads and updated after each succe
 
 The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and `openEditUserFromManage(username)` hide it before opening the child overlay. `hideAddUser()` and `hideEditUser()` always call `openManageUsers()` when they close — so every exit path (success, cancel, backdrop click) refreshes and re-displays the user list. The Edit Projects overlay follows the same pattern: `ep-list-overlay` is the parent, `ep-detail-overlay` is the child; `hideProjectDetail()` always re-opens the list. Follow this pattern for any future consolidated-management overlays.
 
+### Responsive Web Design
+
+Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
+
+**Tablet (≤900px)** — stacked layout:
+
+- `.main-layout` switches to `flex-direction: column`.
+- The detail panel takes full width (`width: 100%; max-width: none`).
+- When an issue is selected, `selectIssue()` adds the `has-detail` class to `#main-layout`; `closeDetail()` removes it. The CSS rule `.main-layout.has-detail .list-panel { display: none }` hides the list, and `.main-layout.has-detail .detail-panel { flex: 1 }` gives the detail panel the full remaining height. This gives a full-screen detail experience at tablet sizes instead of the cramped split-panel.
+- The filter bar (`.header-center`) is hidden at this breakpoint and re-exposed at ≤600px.
+
+**Phone (≤600px)** — compact layout:
+
+- Header wraps to two rows: title + action buttons on row 1, filter strip on row 2. The filter strip is horizontally scrollable and label-free.
+- The user badge is hidden (the username is accessible via the hamburger menu).
+- Issues table shows only **#, Title, Priority, Status** — the Project, Component, Assignee, and Date columns are hidden via `display: none` on their respective `.col-*` classes.
+- Sheets/overlays become full-width bottom drawers (rounded top corners, `align-items: flex-end` on `.overlay`). Login and onboarding sheets remain vertically centred since they are first-run flows, not contextual actions.
+- `form-row` stacks vertically so password-pair fields don't side-by-side on narrow screens.
+- The Last Login column in the manage-users table is hidden.
+
+**Layout foundation** — `#app { display: flex; flex-direction: column; height: 100% }` makes the app a flex column so `.app-header` drives its own height and `.main-layout { flex: 1; min-height: 0 }` fills whatever remains. This replaces the old `calc(100vh - 52px)` approach and correctly handles a taller two-row header on mobile without any JavaScript measurement.
+
+**"Always show desktop version" setting** — a toggle in Settings that adds the class `desktop-mode` to `<html>`. Every responsive CSS rule is gated on `html:not(.desktop-mode)`, so when the class is present all mobile/tablet overrides become inert and the app renders as a full desktop layout regardless of viewport width (the user will need to pinch-zoom or scroll horizontally). The preference is stored in `idtrack_prefs` under `desktopMode`. To prevent a flash of mobile layout on reload, a minified inline `<script>` in `<head>` reads `localStorage` and applies the class before the browser renders the first frame — the same class that `toggleDesktopMode()` and `loadPrefs()` manage at runtime.
+
 ## Important Implementation Decisions
 
 **Password hashing is server-side (bcrypt).** The browser sends the plaintext password over TLS to `POST /api/login`. The server hashes it with `bcrypt.GenerateFromPassword` (default cost) and compares against the stored bcrypt hash with `bcrypt.CompareHashAndPassword`. The DB stores the bcrypt hash string (begins with `$2a$`). Legacy SHA-256 hashes (64 lowercase hex chars, from the old client-side scheme) are detected by format in `db.IsLegacyHash` and verified via a constant-time SHA-256 comparison in `db.VerifyPassword`; they are transparently upgraded to bcrypt on next successful login via `db.UpgradePasswordHash`.
@@ -345,5 +369,7 @@ The manage-users overlay is a **parent overlay**: `openAddUserFromManage()` and 
 **Comment parent validation prevents orphaned comments (S-12).** `handleCreateComment` calls `db.GetIssue` before inserting the comment row. A non-existent issue ID returns 404 rather than creating a comment with a dangling `issue_id`.
 
 **Last-admin guard blocks lockout (S-14).** `db.CountAdmins` counts rows with `is_admin = 1`. Both `handleDeleteUser` and `handleUpdateUser` call it when the operation would leave no admin: deletion of the last admin returns 400 with a message directing the operator to use the CLI; demotion of the last admin is blocked the same way. The last-admin check runs before the self-deletion check in `handleDeleteUser` so the more informative message takes priority when both conditions apply.
+
+**Full-screen detail panel on mobile uses a CSS class, not JS visibility logic.** At ≤900px, when an issue is selected the JS adds `has-detail` to `#main-layout`; closing removes it. The CSS rule `.main-layout.has-detail .list-panel { display: none }` handles the panel switch. This keeps the responsive behaviour entirely in CSS — the class is harmless above 900px where no matching media-query rule exists, so no viewport-width check is needed in JS.
 
 **Backup strategy: filesystem copy with RWMutex quiescing.** When `backupInterval > 0`, `server/backup.go` manages all backup logic. `startBackups()` is called in `Start()` before `httpSrv.Serve` (so the first backup is written before any requests are served). It creates an `idtrack-backups/` directory next to the database file, writes an initial backup synchronously, then launches a goroutine that fires `doBackup()` every `backupInterval`. `doBackup` takes `s.backupMu.Lock()` (write lock) to quiesce the server, calls `copyFile` (io.Copy + fsync), releases the lock, then runs `ageBackups` in a separate goroutine. Every HTTP request holds `s.backupMu.RLock()` via the `quiesce` middleware, which wraps the entire mux. The RWMutex ensures: in-flight requests finish before the backup copy starts; new requests block (briefly) while the copy is in progress; no 503 is returned to clients. `ageBackups` enforces count pruning first (delete oldest beyond limit), then age pruning (delete files whose name-embedded timestamp is before `now − backupAge`). Backup filenames embed the UTC timestamp (`idtrack-20060102T150405.db`) so alphabetical and chronological order coincide and the age can be recovered from the name without touching the filesystem mtime.
