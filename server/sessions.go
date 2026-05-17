@@ -56,6 +56,7 @@ func (ss *sessionStore) lookup(token string) (string, bool) {
 
 	if time.Now().After(s.expiresAt) {
 		delete(ss.sessions, token)
+		
 		return "", false
 	}
 
