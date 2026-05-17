@@ -486,9 +486,10 @@ async function saveIssueChanges() {
     const err       = document.getElementById('detail-error');
 
     err.textContent = '';
-    if (!title)     { err.textContent = 'Title is required.'; return; }
-    if (!project)   { err.textContent = 'Project is required.'; return; }
-    if (!component) { err.textContent = 'Component is required.'; return; }
+    if (!title)                          { err.textContent = 'Title is required.'; return; }
+    if (!project)                        { err.textContent = 'Project is required.'; return; }
+    if (!component)                      { err.textContent = 'Component is required.'; return; }
+    if (status === 'Resolved' && !assignee) { err.textContent = 'An assignee is required before marking an issue Resolved.'; return; }
 
     if (_originalStatus === 'Open' && status === 'Resolved') {
         _pendingStatusData = { title, desc, priority, status, assignee, project, component };
