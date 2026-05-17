@@ -128,7 +128,7 @@ For users without the "admin" attribute, do not show these icons or permit the a
 endpoints you'll add to support deleting and issue or a comment.
 
 Add a "--admin true/false" flag to the "idtrack user" command set for adding a new user or updating a user to set
-or clear this attribute for a specifc user.
+or clear this attribute for a specific user.
 
 ## PROMPT 8
 
@@ -136,7 +136,7 @@ Let's add a project and component to each issue. These must be selected from a l
 of values in the database.
 
 When creating a new issue, popup allow selecting a project from the list. Once the
-project is known, the components for that porject are offered in a second popup.
+project is known, the components for that project are offered in a second popup.
 
 Allow sorting the issue list by project and/or component. You can remove the column
 from the listing of who reported the issue, but that should still be available as a
@@ -145,14 +145,14 @@ readonly value in the issue detail.
 The issue detail list should allow the user to change the project and component. If
 the project is changed, the UI should reset the component to "Choose..." or something
 similar to show no component chosen. You cannot create an issue without choosing
-an valid project and compoonent.
+an valid project and component.
 
 Create new idtrack CLI subcommands:
 
 - idtrack define --project "Text"
 - idtrack define --project "text" --component "text"
-- idtrack delete --project "text" 
-- idtrack delete --project "text" --component "Text" 
+- idtrack delete --project "text"
+- idtrack delete --project "text" --component "Text"
 
 These commands create a new project, or add a component to a project in the
 database of allowed project and component names. IF the define command specifies
@@ -168,7 +168,7 @@ projects should be displayed as part of the error information.
 For users with "Admin" privilege, add menu items to the hamburger
 menu in the webapp that lets them delete projects or delete components.
 
-The slideover lets them choose project and component, where 
+The slide-over lets them choose project and component, where
 component can be "all" which deletes the entire project. Add an
 endpoint that supports this ONLY if the user has admin privileges.
 IF the project or component cannot be deleted because it is in use
@@ -183,16 +183,17 @@ this that ONLY can be used by an admin user.
 
 ## Prompt 11
 
-For "admin" users, allow them to "Add User" or "Edit User" via 
-new "hamburger" menu items. 
+For "admin" users, allow them to "Add User" or "Edit User" via
+new "hamburger" menu items.
 
-The "Add User" function will allow the admin webuser to create a new
+The "Add User" function will allow the admin web user to create a new
 user account using the web interface. This should allow specifying
-a new (unique) username, display name, admin status, and password (bullet-text entry, require matching second copy of password). This is added
-to the user data.
+a new (unique) username, display name, admin status, and password
+(bullet-text entry, require matching second copy of password). This
+is added to the user data.
 
 "Edit User" allows a user to change the password, display name,
-and admin status for an existing user. There should also be a 
+and admin status for an existing user. There should also be a
 "Delete User" button that deletes the entry.
 
 ## Prompt 12
@@ -211,52 +212,76 @@ the user clicks the "Save" button, all components are added
 
 ## Prompt 13
 
-Add a filter to the webapp by project. It should offer "All..." followed by an alphabetical list of projects. If a project other than "All..." is selected, the issue list should be filtered to only show those issues for that project.
+Add a filter to the webapp by project. It should offer "All..."
+followed by an alphabetical list of projects. If a project other
+than "All..." is selected, the issue list should be filtered to
+only show those issues for that project.
 
-For symmetry in the user interface, make the filter on project status work the same way. "All..." is the default, but a popup allows selecting "Open" or "Resolved" as selectors.
+For symmetry in the user interface, make the filter on project
+status work the same way. "All..." is the default, but a popup
+allows selecting "Open" or "Resolved" as selectors.
 
 Let's make the same change to the filter for priority; use a
 dropdown menu with "All...", followed by High, Medium, and Low.
 
 ## Prompt 14
 
-Write a comprehensive user manual for using idtrack. This should include how the webapp works for regular users, additional features for admin users, and the cli which should include how to boostrap the system (create an iniitial admin user, start the server).
+Write a comprehensive user manual for using idtrack. This should
+include how the webapp works for regular users, additional features
+for admin users, and the cli which should include how to bootstrap
+the system (create an initial admin user, start the server).
 
-Put this in MANUAL.md in the resources directory. Add an endpoint that serves the Markdown as HTML, and add it as a button in the "About" window, which opens a new page with the served manual in the page.
+Put this in MANUAL.md in the resources directory. Add an endpoint
+that serves the Markdown as HTML, and add it as a button in the
+"About" window, which opens a new page with the served manual in
+the page.
 
-## Prompt 15 *** Resolved 1.0-13 ***
+## Prompt 15 ***Resolved 1.0-13***
 
-Let's improve the onboarding experience. On startup, the webapp should
-probe the server for startup status. IF the server sees that the
-database is not initialized, or there are no rows in the users table,
-then an onboarding dialog will appear in the browser. The server should generate a one-time-use UUID to return with the probe result when the
-onboarding is needed, and this UUID can server as a Basic token exactly
-once to create an "admin" user to put the first entry in the user database.
+Let's improve the onboarding experience. On startup, the webapp
+should probe the server for startup status. IF the server sees that
+the database is not initialized, or there are no rows in the users
+table, then an onboarding dialog will appear in the browser. The
+server should generate a one-time-use UUID to return with the probe
+result when the onboarding is needed, and this UUID can server as a
+Basic token exactly once to create an "admin" user to put the first
+entry in the user database.
 
 The webapp, getting the message that onboarding is required, should put
 up a dialog asking for the credentials to create the first user, which
-is by definition an Admin user. This is sent to the server as an 
+is by definition an Admin user. This is sent to the server as an
 "add a new user" operation, using the one-time-use UUID as the token to
 authorize this use case -- once this is done, the server discards the
 UUID and never uses it again.
 
 The webapp, having created the new user, should assume the username
-and password entered (and hashed by the webapp) are then the login credentials, and proceed to the issues list page.
+and password entered (and hashed by the webapp) are then the login
+credentials, and proceed to the issues list page.
 
-## Prompt 16 *** Resolved 1.0-14 ***
+## Prompt 16 ***Resolved 1.0-14***
 
-Let's add a new setting to the "Settings" dialog, for "Keep me logged in". When true, the username and hashed password should be stored in secure local storage in the browser, and used as the username/password the next time the user opens the webapp. Choosing "logout" will clear these stored tokens, forcing a login the next time the webapp is used.
+Let's add a new setting to the "Settings" dialog, for "Keep me logged in".
+When true, the username and hashed password should be stored in secure
+local storage in the browser, and used as the username/password the next
+time the user opens the webapp. Choosing "logout" will clear these stored
+tokens, forcing a login the next time the webapp is used.
 
-Also, create a default "inactive logout" default settings, managed using the idtrack default command. If a timeout is specified (ro non-blank), then this becasue the idle time logout setting. When the webapp does the "first run" probe, it should also receive this default timeout value. If present and non-empty, update the webapp to automatically log the user out after this amount of time spent with the webapp open but idle. If there is no timeout value, then do not enforce any idle timeout.
+Also, create a default "inactive logout" default settings, managed using
+the idtrack default command. If a timeout is specified (ro non-blank),
+then this because the idle time logout setting. When the webapp does the
+"first run" probe, it should also receive this default timeout value. If
+present and non-empty, update the webapp to automatically log the user
+out after this amount of time spent with the webapp open but idle. If
+there is no timeout value, then do not enforce any idle timeout.
 
-The idea is that the server admin can specify an idle timeout enforced 
+The idea is that the server admin can specify an idle timeout enforced
 by the webapp but this is not the default behavior.
 
-## Prompt 17 *** Resolved 1.0-15 ***
+## Prompt 17 ***Resolved 1.0-15***
 
 Let's improve the admin functions that allows editing users. Currently,
 adding, editing, and deleting users are spread across several menu
-items. Lets consolidae into  a single "Edit Users..." menu item for
+items. Lets consolidate into  a single "Edit Users..." menu item for
 the admin function.
 
 This brings up a dialog that lists the current users. The admin user
@@ -266,18 +291,19 @@ existing user list to bring up the current user editing function. This
 overlay should also have a  "Delete User" button added, with the usual
 confirmation dialog if selected.
 
-The intent of this is to consolidate user managemnt into a single menu
+The intent of this is to consolidate user management into a single menu
 item for Admin users, and make all the operations (add, edit, delete)
 done from the same UX area.
 
 Update MANUAL.md to reflect new UX for managing users via the webapp
 
-## Prompt 18 *** Resolved 1.0-16 ***
+## Prompt 18 ***Resolved 1.0-16***
 
 When an issue is changed from "Open" to "Resolved", bring up a dialog
 that prompts the user to enter a reason to explain the resolution.
 This should include a field for the version number of the fix, and a
 text box with room for a natural language comment.
+
 If the user enters non-empty text in either field, add the information
 as a single comment to the issue at the same time as you set the status
 value. If the "fixed version" field is non-empty, add text:
@@ -292,11 +318,11 @@ The intent is to encourage the user to document why an issue can be
 marked as Resolved, as opposed to just changing the status.
 
 Similarly, if an issue goes from Resolved to Open, ask the user to
-enter a reason. This comment is _required_ to change the state
+enter a reason. This comment is *required* to change the state
 back to Open. Add the comment to the issue at the same time the status
 of the issue is updated.
 
-## Prompt 19
+## Prompt 19 ***Resolved 1.0-17***
 
 Ensure that any username entered in the webapp is converted to lower-case,
 so "Tom" and "tom" are the same username. If possible, add hints to the

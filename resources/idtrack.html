@@ -16,6 +16,7 @@
     <div class="form-group">
       <label for="login-user">Username</label>
       <input id="login-user" type="text" autocomplete="username" placeholder="username"
+             autocapitalize="none" autocorrect="off" spellcheck="false"
              onkeydown="if(event.key==='Enter') document.getElementById('login-pass').focus()">
     </div>
     <div class="form-group">
@@ -38,6 +39,7 @@
     <div class="form-group">
       <label for="ob-username">Username <span class="required">*</span></label>
       <input id="ob-username" type="text" autocomplete="username" placeholder="login name"
+             autocapitalize="none" autocorrect="off" spellcheck="false"
              onkeydown="if(event.key==='Enter') document.getElementById('ob-display-name').focus()">
     </div>
     <div class="form-group">
@@ -171,7 +173,8 @@
     <h3>Add User</h3>
     <div class="form-group">
       <label for="au-username">Username <span class="required">*</span></label>
-      <input id="au-username" type="text" autocomplete="off" placeholder="login name" maxlength="50">
+      <input id="au-username" type="text" autocomplete="off" placeholder="login name" maxlength="50"
+             autocapitalize="none" autocorrect="off" spellcheck="false">
     </div>
     <div class="form-group">
       <label for="au-display-name">Display Name</label>
