@@ -82,7 +82,7 @@ Stale entries are evicted on each `allow()` call to bound memory use.
 
 Rate limiting is applied only to `POST /api/login`; the `auth` middleware (which
 runs on every authenticated request) is not rate-limited, as doing so would
-penalise users with multiple active browser tabs.
+penalize users with multiple active browser tabs.
 
 ---
 
@@ -301,7 +301,7 @@ patterns.
 
 No handler verified that the incoming `Content-Type` was `application/json`
 before decoding. This allowed form-encoded POST bodies to be silently treated
-as an empty JSON object and weakened defence against certain CSRF-style attacks.
+as an empty JSON object and weakened defense against certain CSRF-style attacks.
 
 **Fix applied:** Added a `requireJSON` middleware in `server/middleware.go` that
 rejects requests with a non-`application/json` Content-Type with
@@ -314,12 +314,12 @@ route that decodes a JSON request body:
 - `POST /api/issues`, `PUT /api/issues/{id}`
 - `POST /api/issues/{id}/comments`
 
-Bodyless endpoints (`GET`, `DELETE`, `POST /api/logout`) are intentionally
+Body-less endpoints (`GET`, `DELETE`, `POST /api/logout`) are intentionally
 excluded so clients do not need to send a Content-Type header for requests
 with no body.
 
 Note: with `SameSite=Strict` session cookies (S-07) already providing strong
-CSRF protection, this fix adds defence-in-depth rather than being the primary
+CSRF protection, this fix adds defense-in-depth rather than being the primary
 CSRF control.
 
 ---

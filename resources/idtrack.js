@@ -31,6 +31,7 @@ let _originalStatus = 'Open'; // status when the issue was last loaded/saved
 let _pendingStatusData = null; // captured fields while status-change dialog is open
 let _darkMode       = false;
 let _keepLoggedIn   = false;
+let _desktopMode    = false;
 let _idleTimeoutSecs = 0;          // 0 = disabled; set from /api/status
 let _idleTimer       = null;       // setTimeout handle for idle logout
 let _appName         = 'idtrack';  // custom branding name; set from /api/status
@@ -481,6 +482,8 @@ async function selectIssue(id) {
         renderComments(comments);
         document.getElementById('comment-input').value = '';
         document.getElementById('detail-panel').style.display = '';
+        const layout = document.getElementById('main-layout');
+        if (layout) layout.classList.add('has-detail');
 
     } catch (e) {
         if (e.message !== 'Unauthorized') console.error('selectIssue:', e);
@@ -494,6 +497,8 @@ function closeDetail() {
     _currentId   = null;
     _detailDirty = false;
     document.getElementById('detail-panel').style.display = 'none';
+    const layout = document.getElementById('main-layout');
+    if (layout) layout.classList.remove('has-detail');
     renderIssues(_allIssues);
 }
 
@@ -1268,11 +1273,22 @@ function openSettings() {
     _closeMenuOnOutside();
     document.getElementById('dark-mode-toggle').checked = _darkMode;
     document.getElementById('keep-logged-in-toggle').checked = _keepLoggedIn;
+    document.getElementById('desktop-mode-toggle').checked = _desktopMode;
     document.getElementById('settings-overlay').style.display = 'flex';
 }
 
 function hideSettings() {
     document.getElementById('settings-overlay').style.display = 'none';
+}
+
+function toggleDesktopMode(on) {
+    _desktopMode = on;
+    document.documentElement.classList.toggle('desktop-mode', on);
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.desktopMode = on;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
 }
 
 function toggleDarkMode(on) {
@@ -1353,6 +1369,11 @@ function loadPrefs() {
             }
             if (p.keepLoggedIn) {
                 _keepLoggedIn = true;
+            }
+            if (p.desktopMode) {
+                _desktopMode = true;
+                // Class already set by the <head> inline script; no-op if already present.
+                document.documentElement.classList.add('desktop-mode');
             }
         }
     } catch {}

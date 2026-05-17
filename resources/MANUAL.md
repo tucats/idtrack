@@ -226,6 +226,24 @@ To proceed with a delete that has blocking issues, you must first re-assign or d
 
 Navigate to `https://localhost:8443` (or your configured host and port) to access the web interface.
 
+### Mobile and Responsive Layout
+
+The web app adapts automatically to the size of your browser window or device screen.
+
+**On phones and small screens (up to about 600 px wide):**
+
+- The filter controls move to a scrollable strip below the header rather than sitting inside it.
+- The issue list shows only the **#**, **Title**, **Priority**, and **Status** columns. Project, Component, Assignee, and Created date are hidden to keep the table readable. All fields remain visible when you open an issue.
+- Dialogs and overlays slide up from the bottom of the screen.
+- Form fields that normally sit side-by-side (such as the two password fields) stack vertically.
+
+**On tablets and medium screens (up to about 900 px wide):**
+
+- The issue list and the detail panel stack vertically instead of sitting side by side.
+- Opening an issue takes over the full screen. Tap **← Back** to return to the list.
+
+If you prefer to see the full desktop layout regardless of screen size — for example, when using a phone in landscape mode and are comfortable with pinch-to-zoom — see [Always show desktop version](#settings) in the Settings section.
+
 ### Logging In
 
 Enter your username and password on the login screen and click **Sign In**. Your session is preserved for the life of the browser tab — if you refresh the page, you are not required to log in again. Closing the browser tab ends your session.
@@ -441,6 +459,14 @@ If the 30-day session cookie has expired, the first page load will redirect you 
 Choosing **Sign out** always clears the stored information and invalidates the session, regardless of this setting. The next visit will require a manual login.
 
 > **Note:** The long-lived session persists until you sign out or the 30-day cookie expires. Use this setting only on devices you trust and control.
+
+### Always show desktop version
+
+When this setting is enabled the responsive layout rules are disabled entirely, and the app renders exactly as it does on a desktop browser regardless of screen width. All eight issue-table columns are visible, the filter bar stays in the header, and dialogs appear centred rather than as bottom drawers.
+
+This is useful on a phone or tablet when you want access to columns or layout elements that are otherwise hidden on small screens. The trade-off is that everything will be smaller than normal — you will likely need to pinch-to-zoom to read and interact with parts of the page comfortably.
+
+The preference is saved in your browser's `localStorage` and persists across sessions, on the same device and browser.
 
 ### Sign Out
 

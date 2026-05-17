@@ -40,6 +40,12 @@ html, body {
   color: var(--text);
 }
 
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 /* ==================== OVERLAY / SHEET ==================== */
 
 .overlay {
@@ -291,7 +297,8 @@ html, body {
 
 .main-layout {
   display: flex;
-  height: calc(100vh - var(--header-h));
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -884,11 +891,107 @@ body.dark .toggle-track::before { background: #e2e5ea; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-light); }
 
 /* ==================== RESPONSIVE ==================== */
+/* All rules are gated on html:not(.desktop-mode) so the "Always show desktop
+   version" setting (which adds .desktop-mode to <html>) bypasses them all.   */
 
+/* ── Tablet (≤900px): stacked layout, full-screen detail ── */
 @media (max-width: 900px) {
-  .detail-panel { width: 100%; min-width: 0; border-left: none; border-top: 1px solid var(--border); }
-  .main-layout  { flex-direction: column; }
-  .list-panel   { flex: none; height: 40vh; }
-  .detail-panel.open { flex: 1; }
-  .header-center { display: none; }
+  html:not(.desktop-mode) .detail-panel {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+  html:not(.desktop-mode) .main-layout { flex-direction: column; }
+
+  /* List fills all available height while detail is closed */
+  html:not(.desktop-mode) .list-panel { flex: 1; min-height: 0; }
+
+  /* Detail open: list disappears, detail gets full height */
+  html:not(.desktop-mode) .main-layout.has-detail .list-panel   { display: none; }
+  html:not(.desktop-mode) .main-layout.has-detail .detail-panel { flex: 1; min-height: 0; }
+
+  /* Hide the filter bar in the header — re-exposed at ≤600px as a second row */
+  html:not(.desktop-mode) .header-center { display: none; }
+}
+
+/* ── Phone (≤600px) ── */
+@media (max-width: 600px) {
+
+  /* Header: two rows — title+actions on row 1, filters on row 2 */
+  html:not(.desktop-mode) .app-header {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 0 0.75rem;
+    row-gap: 0;
+    column-gap: 0.5rem;
+    align-items: center;
+  }
+  html:not(.desktop-mode) .header-left  { order: 1; flex: 1 0 auto; padding: 8px 0; }
+  html:not(.desktop-mode) .header-right { order: 2; flex: 0 0 auto; padding: 8px 0; }
+
+  /* Filter strip: second row, horizontally scrollable */
+  html:not(.desktop-mode) .header-center {
+    display: flex;
+    order: 3;
+    flex: 0 0 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 8px;
+  }
+  html:not(.desktop-mode) .header-center::-webkit-scrollbar { display: none; }
+  html:not(.desktop-mode) .filter-bar   { flex-wrap: nowrap; gap: 0.3rem; align-items: center; }
+  html:not(.desktop-mode) .filter-label { display: none; }
+  html:not(.desktop-mode) .filter-select { max-width: 90px; font-size: .8rem; padding: .2rem .45rem; }
+  html:not(.desktop-mode) .search-box   { width: 100px;    font-size: .8rem; padding: .2rem .45rem; }
+
+  /* Drop the user badge — username is visible in the hamburger menu */
+  html:not(.desktop-mode) .user-badge { display: none; }
+
+  /* Issues table: show only #, Title, Priority, Status */
+  html:not(.desktop-mode) .col-project,
+  html:not(.desktop-mode) .col-component,
+  html:not(.desktop-mode) .col-assignee,
+  html:not(.desktop-mode) .col-date { display: none; }
+  html:not(.desktop-mode) .col-title { min-width: 80px; }
+
+  /* Sheets: full-width bottom-drawer */
+  html:not(.desktop-mode) .overlay { align-items: flex-end; padding: 0; }
+  html:not(.desktop-mode) .sheet {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 16px 16px 0 0;
+    padding: 1.25rem 1rem 1.75rem;
+    max-height: 92vh;
+    overflow-y: auto;
+  }
+
+  /* Login / onboarding: keep centred for first-run intentionality */
+  html:not(.desktop-mode) #login-overlay,
+  html:not(.desktop-mode) #onboarding-overlay {
+    align-items: center;
+    padding: 1rem;
+  }
+  html:not(.desktop-mode) #login-overlay .sheet,
+  html:not(.desktop-mode) #onboarding-overlay .sheet {
+    border-radius: var(--radius);
+    padding: 1.5rem 1.25rem;
+    max-height: 90vh;
+  }
+
+  /* Stack form rows vertically on narrow viewports */
+  html:not(.desktop-mode) .form-row { flex-direction: column; gap: 0; }
+
+  /* Comfortable tap targets */
+  html:not(.desktop-mode) .btn-sm    { padding: .45rem .8rem; }
+  html:not(.desktop-mode) .menu-item { padding: .75rem 1rem; font-size: .95rem; }
+
+  /* Detail header: allow action buttons to wrap to a second line */
+  html:not(.desktop-mode) .detail-header { flex-wrap: wrap; }
+  html:not(.desktop-mode) .detail-header-actions { display: flex; gap: .5rem; }
+
+  /* Manage-users table: drop Last Login column on narrow screens */
+  html:not(.desktop-mode) .mu-table th:last-child,
+  html:not(.desktop-mode) .mu-table td:last-child { display: none; }
 }
