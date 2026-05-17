@@ -198,8 +198,8 @@ All authenticated endpoints use Basic Auth where the password field carries the 
 | GET | `/api/issues` | yes | no |
 | POST | `/api/issues` | yes | no |
 | GET | `/api/issues/{id}` | yes | no |
-| PUT | `/api/issues/{id}` | yes | no |
-| DELETE | `/api/issues/{id}` | yes | **yes** |
+| PUT | `/api/issues/{id}` | yes | reporter/assignee/admin |
+| DELETE | `/api/issues/{id}` | yes | reporter/assignee/admin |
 | POST | `/api/issues/{id}/comments` | yes | no |
 | DELETE | `/api/issues/{id}/comments/{cid}` | yes | **yes** |
 

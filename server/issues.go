@@ -105,12 +105,41 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// issueModifier returns true when the user is authorised to edit or delete the
+// given issue. Admins, the original reporter, and the current assignee may all
+// make changes; any other authenticated user is a read-only third party.
+func issueModifier(u *db.User, issue *db.Issue) bool {
+	return u.IsAdmin || u.Username == issue.Reporter || u.Username == issue.Assignee
+}
+
 // handleUpdateIssue replaces all editable fields of an issue. All fields must
 // be sent in the request body — this is a full replacement (PUT semantics), not
-// a partial update (PATCH semantics).
+// a partial update (PATCH semantics). Only the reporter, assignee, or an admin
+// may update an issue; all other authenticated users receive 403.
 func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
+		return
+	}
+
+	// Fetch the current record before decoding the body so we can authorise
+	// against the current reporter and assignee fields.
+	existing, err := db.GetIssue(s.database, id)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if existing == nil {
+		jsonError(w, "issue not found", http.StatusNotFound)
+
+		return
+	}
+
+	if !issueModifier(currentUser(r), existing) {
+		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
 
@@ -138,7 +167,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	issue, err := db.UpdateIssue(s.database, id, body.Title, body.Description, body.Priority, body.Status, body.Assignee, body.Project, body.Component)
 	if err != nil {
-		jsonError(w, "server error", http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
@@ -152,22 +181,35 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})
 }
 
-// handleDeleteIssue permanently removes an issue and all its comments.
-// Admin-only because deletions are irreversible.
+// handleDeleteIssue permanently removes an issue and all its comments. Only
+// the reporter, assignee, or an admin may delete an issue.
 func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
-	if !currentUser(r).IsAdmin {
-		jsonError(w, "forbidden", http.StatusForbidden)
-
-		return
-	}
-
 	id, ok := issueID(w, r)
 	if !ok {
 		return
 	}
 
+	existing, err := db.GetIssue(s.database, id)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if existing == nil {
+		jsonError(w, "issue not found", http.StatusNotFound)
+
+		return
+	}
+
+	if !issueModifier(currentUser(r), existing) {
+		jsonError(w, "forbidden", http.StatusForbidden)
+
+		return
+	}
+
 	if err := db.DeleteIssue(s.database, id); err != nil {
-		jsonError(w, "server error", http.StatusInternalServerError)
+		internalError(w, err)
 
 		return
 	}
