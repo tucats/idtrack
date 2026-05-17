@@ -332,3 +332,25 @@ auto-correct, and auto-completion.
 Additionally, authentication on the server-side should lower-case any
 username received as part of basic authentication so it will always
 match usernames case-insensitively.
+
+## Prompt 20
+
+Lets consolidate the admin menu items for adding projects, adding components,
+and deleting projects or components into a single menu item, "Edit Projects..."
+
+This should allow the user to see the list of existing projects. Clicking
+on a project in the list brings up the "Add Component" window, and there
+should be a button here to "Delete Project". Also ach component in the list of
+existing components gets a trash-can icon next to it signalling deleting
+the component.
+
+The list of projects also has a "New Project..." button that brings up a
+version of the "Add Component" window, with the project name as a text field
+the user can type into.
+
+Validate that the project name does not already exit (case-insensitive check).
+Validate that the combination of project name and component does not already
+exist (case-insensitive check).
+
+The intent of this is to create a single holistic interface to adding, updating,
+and deleting project names and components for a given project.

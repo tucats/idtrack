@@ -18,7 +18,8 @@ let _currentUser       = null;   // { username, display_name }
 let _userMap           = {};     // username -> display_name
 let _userList          = [];     // full user objects from GET /api/users
 let _projectData       = [];     // [{name, components: [...]}]
-let _pendingComponents = [];     // component names staged in the Add Components overlay
+let _epProject          = null;  // currently open project in Edit Projects detail (null = new)
+let _epPendingComponents = [];   // staged components while creating a new project
 let _allIssues         = [];
 let _currentId         = null;
 let _sortCol     = 'id';
@@ -250,10 +251,8 @@ async function submitLogin() {
 async function launchApp() {
     document.getElementById('user-badge').textContent = _currentUser.display_name || _currentUser.username;
     const adminDisplay = _currentUser.is_admin ? '' : 'none';
-    document.getElementById('menu-manage-users').style.display     = adminDisplay;
-    document.getElementById('menu-add-project').style.display      = adminDisplay;
-    document.getElementById('menu-add-component').style.display    = adminDisplay;
-    document.getElementById('menu-manage-projects').style.display  = adminDisplay;
+    document.getElementById('menu-manage-users').style.display   = adminDisplay;
+    document.getElementById('menu-edit-projects').style.display  = adminDisplay;
     document.getElementById('app').style.display = '';
     stopIdleTracking();
     startIdleTracking();
@@ -982,217 +981,212 @@ function onDetailProjectChange() {
     markDetailDirty();
 }
 
-function openAddProject() {
+// =====================================================================
+// UI — EDIT PROJECTS (admin)
+// =====================================================================
+
+function openEditProjects() {
     _closeMenuOnOutside();
-    document.getElementById('ap-name').value = '';
-    document.getElementById('ap-error').textContent = '';
-    document.getElementById('add-project-overlay').style.display = 'flex';
-    document.getElementById('ap-name').focus();
+    document.getElementById('ep-list-error').textContent = '';
+    epRenderProjectList();
+    document.getElementById('ep-list-overlay').style.display = 'flex';
 }
 
-function hideAddProject() {
-    document.getElementById('add-project-overlay').style.display = 'none';
+function hideEditProjects() {
+    document.getElementById('ep-list-overlay').style.display = 'none';
 }
 
-async function submitAddProject() {
-    const name = document.getElementById('ap-name').value.trim();
-    const err  = document.getElementById('ap-error');
-    const btn  = document.getElementById('ap-submit-btn');
-
-    err.textContent = '';
-    if (!name) { err.textContent = 'Project name is required.'; return; }
-
-    btn.disabled = true;
-    btn.textContent = 'Adding…';
-    try {
-        await apiPost('/api/projects', { name });
-        await populateProjectDropdowns();
-        hideAddProject();
-    } catch (e) {
-        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add project.';
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Add Project';
+function epRenderProjectList() {
+    const body = document.getElementById('ep-list-body');
+    if (!_projectData || _projectData.length === 0) {
+        body.innerHTML = '<p class="ep-empty">No projects yet. Click <strong>+ New Project</strong> to add one.</p>';
+        return;
     }
+    body.innerHTML = _projectData.map(p => `
+        <div class="ep-project-row" onclick="openProjectDetail('${esc(p.name)}')">
+            <span class="ep-project-name">${esc(p.name)}</span>
+            <span class="ep-project-count">${p.components.length} component${p.components.length !== 1 ? 's' : ''}</span>
+            <span class="ep-project-arrow">&#8250;</span>
+        </div>`).join('');
 }
 
-function openAddComponent() {
-    _closeMenuOnOutside();
-    _pendingComponents = [];
-    document.getElementById('ac-name').value = '';
-    document.getElementById('ac-error').textContent = '';
-    const sel = document.getElementById('ac-project');
-    sel.innerHTML = ['<option value="">Choose project…</option>']
-        .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
-        .join('');
-    sel.value = '';
-    renderPendingComponents();
-    document.getElementById('add-component-overlay').style.display = 'flex';
+function openProjectDetail(name) {
+    _epProject = name; // null = new project
+    _epPendingComponents = [];
+
+    const isNew = name === null;
+    document.getElementById('ep-detail-title').textContent          = isNew ? 'New Project' : name;
+    document.getElementById('ep-name-group').style.display          = isNew ? '' : 'none';
+    document.getElementById('ep-project-name').value                = '';
+    document.getElementById('ep-delete-project-btn').style.display  = isNew ? 'none' : '';
+    document.getElementById('ep-comp-name').value                   = '';
+    document.getElementById('ep-detail-error').textContent          = '';
+    document.getElementById('ep-create-btn').style.display          = isNew ? '' : 'none';
+
+    epRenderComponents();
+    epRenderPending();
+
+    document.getElementById('ep-list-overlay').style.display   = 'none';
+    document.getElementById('ep-detail-overlay').style.display = 'flex';
+    document.getElementById(isNew ? 'ep-project-name' : 'ep-comp-name').focus();
 }
 
-function hideAddComponent() {
-    document.getElementById('add-component-overlay').style.display = 'none';
+function hideProjectDetail() {
+    document.getElementById('ep-detail-overlay').style.display = 'none';
+    epRenderProjectList();
+    document.getElementById('ep-list-overlay').style.display = 'flex';
 }
 
-function onAcProjectChange() {
-    _pendingComponents = [];
-    document.getElementById('ac-error').textContent = '';
-    renderPendingComponents();
-    document.getElementById('ac-name').focus();
+function epRenderComponents() {
+    const list = document.getElementById('ep-comp-list');
+    if (_epProject === null) { list.innerHTML = ''; return; }
+    const project = _projectData.find(p => p.name === _epProject);
+    if (!project || project.components.length === 0) {
+        list.innerHTML = '<p class="ep-empty-comps">No components yet.</p>';
+        return;
+    }
+    list.innerHTML = project.components.map(c => `
+        <div class="ep-comp-item">
+            <span class="ep-comp-name">${esc(c)}</span>
+            <button class="btn-trash" onclick="epDeleteComponent('${esc(c).replace(/'/g,"\\'")}', event)" title="Delete component">&#x1F5D1;</button>
+        </div>`).join('');
 }
 
-function addPendingComponent() {
-    const name = document.getElementById('ac-name').value.trim();
-    const err  = document.getElementById('ac-error');
+function epRenderPending() {
+    const listDiv  = document.getElementById('ep-pending-list');
+    const itemsDiv = document.getElementById('ep-pending-items');
+    if (_epPendingComponents.length === 0) { listDiv.style.display = 'none'; return; }
+    listDiv.style.display = '';
+    itemsDiv.innerHTML = _epPendingComponents.map((name, i) => `
+        <div class="ac-pending-item">
+            <span class="ac-pending-name">${esc(name)}</span>
+            <button class="btn-trash" onclick="epRemovePending(${i})" title="Remove">&#x1F5D1;</button>
+        </div>`).join('');
+}
+
+function epRemovePending(index) {
+    _epPendingComponents.splice(index, 1);
+    epRenderPending();
+}
+
+async function epAddComponent() {
+    const name = document.getElementById('ep-comp-name').value.trim();
+    const err  = document.getElementById('ep-detail-error');
     err.textContent = '';
-
-    const projectName = document.getElementById('ac-project').value;
-    if (!projectName) { err.textContent = 'Select a project first.'; return; }
-    if (!name)        { err.textContent = 'Enter a component name.'; return; }
+    if (!name) { err.textContent = 'Enter a component name.'; return; }
 
     const nameLower = name.toLowerCase();
 
-    const project = _projectData.find(p => p.name === projectName);
+    if (_epProject === null) {
+        // New-project mode: validate the project name is filled, then stage
+        const projectName = document.getElementById('ep-project-name').value.trim();
+        if (!projectName) { err.textContent = 'Enter a project name first.'; return; }
+        if (_epPendingComponents.some(c => c.toLowerCase() === nameLower)) {
+            err.textContent = `"${name}" is already in the list.`;
+            return;
+        }
+        _epPendingComponents.push(name);
+        document.getElementById('ep-comp-name').value = '';
+        document.getElementById('ep-comp-name').focus();
+        epRenderPending();
+        return;
+    }
+
+    // Existing project: duplicate check, then POST immediately
+    const project = _projectData.find(p => p.name === _epProject);
     if (project && project.components.some(c => c.toLowerCase() === nameLower)) {
         err.textContent = `"${name}" already exists in this project.`;
         return;
     }
-    if (_pendingComponents.some(c => c.toLowerCase() === nameLower)) {
-        err.textContent = `"${name}" is already in the list.`;
-        return;
+    try {
+        await apiPost(`/api/projects/${encodeURIComponent(_epProject)}/components`, { name });
+        await populateProjectDropdowns();
+        document.getElementById('ep-comp-name').value = '';
+        document.getElementById('ep-comp-name').focus();
+        epRenderComponents();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to add component.';
     }
-
-    _pendingComponents.push(name);
-    document.getElementById('ac-name').value = '';
-    document.getElementById('ac-name').focus();
-    renderPendingComponents();
 }
 
-function removePendingComponent(index) {
-    _pendingComponents.splice(index, 1);
-    renderPendingComponents();
-}
-
-function renderPendingComponents() {
-    const listDiv = document.getElementById('ac-pending-list');
-    const itemsDiv = document.getElementById('ac-pending-items');
-    const btn = document.getElementById('ac-submit-btn');
-
-    if (_pendingComponents.length === 0) {
-        listDiv.style.display = 'none';
-        btn.disabled = true;
-        return;
-    }
-    listDiv.style.display = '';
-    btn.disabled = false;
-    itemsDiv.innerHTML = _pendingComponents.map((name, i) => `
-        <div class="ac-pending-item">
-            <span class="ac-pending-name">${esc(name)}</span>
-            <button class="btn-trash" onclick="removePendingComponent(${i})" title="Remove">&#x1F5D1;</button>
-        </div>`).join('');
-}
-
-async function submitAddComponent() {
-    const project = document.getElementById('ac-project').value;
-    const err     = document.getElementById('ac-error');
-    const btn     = document.getElementById('ac-submit-btn');
-
+async function epDeleteComponent(componentName, event) {
+    event.stopPropagation();
+    if (!confirm(`Delete component "${componentName}" from project "${_epProject}"? This cannot be undone.`)) return;
+    const err = document.getElementById('ep-detail-error');
     err.textContent = '';
-    if (!project)                    { err.textContent = 'Select a project.'; return; }
-    if (_pendingComponents.length === 0) { err.textContent = 'Add at least one component.'; return; }
+    try {
+        await apiDelete(`/api/projects/${encodeURIComponent(_epProject)}/components/${encodeURIComponent(componentName)}`);
+        await populateProjectDropdowns();
+        epRenderComponents();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
+    }
+}
+
+async function epDeleteProject() {
+    if (!_epProject) return;
+    if (!confirm(`Delete project "${_epProject}" and all its components? This cannot be undone.`)) return;
+    const err = document.getElementById('ep-detail-error');
+    err.textContent = '';
+    try {
+        await apiDelete(`/api/projects/${encodeURIComponent(_epProject)}`);
+        await populateProjectDropdowns();
+        hideProjectDetail();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
+    }
+}
+
+async function epSaveNewProject() {
+    const name = document.getElementById('ep-project-name').value.trim();
+    const err  = document.getElementById('ep-detail-error');
+    const btn  = document.getElementById('ep-create-btn');
+    err.textContent = '';
+
+    if (!name) { err.textContent = 'Project name is required.'; return; }
+    if (_projectData.some(p => p.name.toLowerCase() === name.toLowerCase())) {
+        err.textContent = `Project "${name}" already exists.`;
+        return;
+    }
 
     btn.disabled = true;
-    btn.textContent = 'Saving…';
+    btn.textContent = 'Creating…';
+    try {
+        await apiPost('/api/projects', { name });
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to create project.';
+        btn.disabled = false;
+        btn.textContent = 'Create Project';
+        return;
+    }
 
-    const failures = {};
-    for (const name of [..._pendingComponents]) {
+    // Project created — now POST any staged components
+    const failures = [];
+    for (const comp of _epPendingComponents) {
         try {
-            await apiPost(`/api/projects/${encodeURIComponent(project)}/components`, { name });
+            await apiPost(`/api/projects/${encodeURIComponent(name)}/components`, { name: comp });
         } catch (e) {
-            if (e.message === 'Unauthorized') { btn.textContent = 'Save'; return; }
-            failures[name] = e.message || 'failed';
+            if (e.message === 'Unauthorized') { btn.disabled = false; btn.textContent = 'Create Project'; return; }
+            failures.push(comp);
         }
     }
 
     await populateProjectDropdowns();
 
-    if (Object.keys(failures).length > 0) {
-        _pendingComponents = Object.keys(failures);
-        renderPendingComponents();
-        err.textContent = 'Some components could not be added: ' +
-            Object.entries(failures).map(([n, m]) => `${n} (${m})`).join('; ');
-        btn.disabled = false;
-        btn.textContent = 'Save';
-    } else {
-        hideAddComponent();
+    // Transition to existing-project detail view
+    _epProject = name;
+    _epPendingComponents = failures;
+    document.getElementById('ep-detail-title').textContent         = name;
+    document.getElementById('ep-name-group').style.display         = 'none';
+    document.getElementById('ep-delete-project-btn').style.display = '';
+    document.getElementById('ep-create-btn').style.display         = 'none';
+    epRenderComponents();
+    epRenderPending();
+    if (failures.length > 0) {
+        err.textContent = `Project created, but ${failures.length} component(s) could not be added.`;
     }
-}
-
-function openManageProjects() {
-    _closeMenuOnOutside();
-    document.getElementById('mp-error').textContent = '';
-    const projSel = document.getElementById('mp-project');
-    projSel.innerHTML = ['<option value="">Choose project…</option>']
-        .concat(_projectData.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`))
-        .join('');
-    projSel.value = '';
-    const compSel = document.getElementById('mp-component');
-    compSel.innerHTML = '<option value="">Choose component…</option>';
-    compSel.disabled = true;
-    document.getElementById('manage-projects-overlay').style.display = 'flex';
-}
-
-function hideManageProjects() {
-    document.getElementById('manage-projects-overlay').style.display = 'none';
-}
-
-function onMpProjectChange() {
-    const projectName = document.getElementById('mp-project').value;
-    const sel = document.getElementById('mp-component');
-    document.getElementById('mp-error').textContent = '';
-    if (!projectName) {
-        sel.innerHTML = '<option value="">Choose component…</option>';
-        sel.disabled = true;
-        return;
-    }
-    const project = _projectData.find(p => p.name === projectName);
-    sel.innerHTML = ['<option value="">Choose component…</option>',
-        '<option value="__all__">All components (delete entire project)</option>']
-        .concat((project ? project.components : []).map(c => `<option value="${esc(c)}">${esc(c)}</option>`))
-        .join('');
-    sel.disabled = false;
-}
-
-async function confirmDeleteProjectOrComponent() {
-    const project   = document.getElementById('mp-project').value;
-    const component = document.getElementById('mp-component').value;
-    const err       = document.getElementById('mp-error');
-    const btn       = document.getElementById('mp-delete-btn');
-
-    err.textContent = '';
-    if (!project)   { err.textContent = 'Select a project.'; return; }
-    if (!component) { err.textContent = 'Select a component (or "All components" to delete the project).'; return; }
-
-    const isAll = component === '__all__';
-    const msg = isAll
-        ? `Delete project "${project}" and all its components? This cannot be undone.`
-        : `Delete component "${component}" from project "${project}"? This cannot be undone.`;
-    if (!confirm(msg)) return;
-
-    btn.disabled = true;
-    try {
-        if (isAll) {
-            await apiDelete(`/api/projects/${encodeURIComponent(project)}`);
-        } else {
-            await apiDelete(`/api/projects/${encodeURIComponent(project)}/components/${encodeURIComponent(component)}`);
-        }
-        await populateProjectDropdowns();
-        hideManageProjects();
-    } catch (e) {
-        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
-    } finally {
-        btn.disabled = false;
-    }
+    btn.disabled = false;
+    btn.textContent = 'Create Project';
 }
 
 // =====================================================================
