@@ -257,19 +257,21 @@ be revoked immediately by signing out on the compromised device.
 
 **Severity:** Low  
 **File:** `server/auth_handlers.go` (`handleStatus`), `db/users.go` (`HasUsers`)  
-**Status:** Not fixed
+**Fixed:** 2026-05-17
 
-`GET /api/status` requires no authentication and executes `SELECT COUNT(*) FROM
-users` on every call. There is no caching and no rate limit. A sustained flood
-of status requests forces repeated DB reads and JSON serialization. Because this
-endpoint also generates or returns the onboarding UUID under a mutex when no
-users exist, a burst of concurrent requests all hitting the mutex in onboarding
-mode adds lock contention.
+`GET /api/status` requires no authentication and executed `SELECT COUNT(*) FROM
+users` on every call, with no caching or rate limit. A sustained flood of status
+requests forced repeated DB reads and JSON serialization.
 
-**Fix (short term):** Cache the `hasUsers` result on the `srv` struct with a
-short TTL (e.g. 5 seconds) — it rarely changes in normal operation.
-
-**Fix (longer term):** Same per-IP rate limiting as S-03.
+**Fix applied:** Added `hasUsersCached()` to `server/auth_handlers.go`. The method
+holds `s.mu` while reading or refreshing a cached `bool` + `time.Time` pair on the
+`srv` struct (`statusHasUsers` / `statusCachedAt`). The DB is queried at most once
+every 5 seconds (`statusCacheTTL`); subsequent calls within the window return the
+cached value without touching SQLite. `handleStatus` now calls `s.hasUsersCached()`
+instead of `db.HasUsers` directly. `handleOnboarding` zeroes `statusCachedAt`
+under the same mutex after successfully creating the first user, so the next
+status call immediately sees the updated state rather than waiting for the TTL
+to expire.
 
 ---
 
@@ -277,40 +279,48 @@ short TTL (e.g. 5 seconds) — it rarely changes in normal operation.
 
 **Severity:** Low  
 **Files:** `server/issues.go`, `db/issues.go`  
-**Status:** Not fixed
+**Fixed:** 2026-05-17
 
-The `search` query parameter is passed to a `LIKE '%...%'` clause without any
-length restriction. A very long search pattern forces SQLite to evaluate a
-leading-wildcard pattern across all rows' text columns, which cannot use an
-index. At scale this becomes a full table scan on every request.
+The `search` query parameter was passed to a `LIKE '%...%'` clause without any
+length restriction, allowing arbitrarily long patterns that force a full table
+scan on every indexed column.
 
-**Fix:** Truncate or reject the search parameter above a reasonable length
-(e.g. 200 characters) in `handleListIssues` before passing it to `db.ListIssues`.
+**Fix applied:** Added `maxSearchLen = 200` in `server/issues.go`.
+`handleListIssues` rejects any `search` value longer than 200 characters with
+`400 Bad Request` before passing the parameter to `db.ListIssues`. The limit is
+generous for any legitimate search while preventing intentionally overlong
+patterns.
 
 ---
 
 ## S-11 — No `Content-Type` validation on incoming JSON requests
 
 **Severity:** Low  
-**Files:** All handlers that decode a request body  
-**Status:** Not fixed
+**Files:** `server/middleware.go` (new `requireJSON`), `server/server.go` (route wiring)  
+**Fixed:** 2026-05-17
 
-No handler verifies that the incoming `Content-Type` is `application/json`
-before decoding. While `json.Decoder` will fail on non-JSON bodies regardless,
-the absence of this check:
+No handler verified that the incoming `Content-Type` was `application/json`
+before decoding. This allowed form-encoded POST bodies to be silently treated
+as an empty JSON object and weakened defence against certain CSRF-style attacks.
 
-- Allows form-encoded POST bodies to be silently ignored (decoder sees `{}`).
-- Weakens defence against certain CSRF-style attacks that rely on the server
-  accepting a form submission as if it were JSON.
+**Fix applied:** Added a `requireJSON` middleware in `server/middleware.go` that
+rejects requests with a non-`application/json` Content-Type with
+`415 Unsupported Media Type`. It is wired in `server/server.go` around every
+route that decodes a JSON request body:
 
-**Fix:** In a middleware or per handler, check:
+- `POST /api/login`, `POST /api/onboarding`
+- `POST /api/users`, `PUT /api/users/{username}`
+- `POST /api/projects`, `POST /api/projects/{project}/components`
+- `POST /api/issues`, `PUT /api/issues/{id}`
+- `POST /api/issues/{id}/comments`
 
-```go
-if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-    jsonError(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
-    return
-}
-```
+Bodyless endpoints (`GET`, `DELETE`, `POST /api/logout`) are intentionally
+excluded so clients do not need to send a Content-Type header for requests
+with no body.
+
+Note: with `SameSite=Strict` session cookies (S-07) already providing strong
+CSRF protection, this fix adds defence-in-depth rather than being the primary
+CSRF control.
 
 ---
 
@@ -385,9 +395,9 @@ descriptive error if they are the last admin.
 | S-06 | Internal DB errors returned to clients | Medium | **Fixed 2026-05-17** |
 | S-07 | Unsalted SHA-256 password storage | Medium | **Fixed 2026-05-17** |
 | S-08 | Long-lived localStorage credentials | Medium | **Fixed 2026-05-17** |
-| S-09 | Unauthenticated status endpoint hits DB | Low | Open |
-| S-10 | Unbounded search parameter | Low | Open |
-| S-11 | No Content-Type validation | Low | Open |
+| S-09 | Unauthenticated status endpoint hits DB | Low | **Fixed 2026-05-17** |
+| S-10 | Unbounded search parameter | Low | **Fixed 2026-05-17** |
+| S-11 | No Content-Type validation | Low | **Fixed 2026-05-17** |
 | S-12 | Comment creation ignores missing issue | Low | Open |
 | S-13 | `addColumnIfMissing` DDL interpolation | Info | Open |
 | S-14 | Last admin can self-demote | Info | Open |

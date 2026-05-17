@@ -8,16 +8,28 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
+// maxSearchLen caps the search query parameter to prevent callers from sending
+// arbitrarily long patterns that force a full table scan on every column (S-10).
+const maxSearchLen = 200
+
 // handleListIssues reads optional query parameters and delegates filtering and
 // sorting to db.ListIssues. All filtering is done in SQL rather than in Go to
 // keep memory usage low for large issue lists.
 func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+
+	search := q.Get("search")
+	if len(search) > maxSearchLen {
+		jsonError(w, "search parameter exceeds maximum length of 200 characters", http.StatusBadRequest)
+
+		return
+	}
+
 	issues, err := db.ListIssues(
 		s.database,
 		q.Get("status"),
 		q.Get("priority"),
-		q.Get("search"),
+		search,
 		q.Get("sort"),
 		q.Get("order"),
 	)

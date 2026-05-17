@@ -15,6 +15,35 @@ import (
 // importing the time package name at the call site.
 type duration = time.Duration
 
+// statusCacheTTL caps how often GET /api/status queries the database. A
+// 5-second window is short enough that normal usage (login, onboarding) sees
+// fresh data within one cache cycle, while sustained unauthenticated polling
+// hits the DB at most once every 5 seconds rather than on every request (S-09).
+const statusCacheTTL = 5 * time.Second
+
+// hasUsersCached returns the most recent HasUsers result if it is no older
+// than statusCacheTTL; otherwise it queries the DB and refreshes the cache.
+// The result is stored on the srv struct under s.mu so the write is safe for
+// concurrent callers.
+func (s *srv) hasUsersCached() (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.statusCachedAt.IsZero() && time.Since(s.statusCachedAt) < statusCacheTTL {
+		return s.statusHasUsers, nil
+	}
+
+	result, err := db.HasUsers(s.database)
+	if err != nil {
+		return false, err
+	}
+
+	s.statusHasUsers = result
+	s.statusCachedAt = time.Now()
+
+	return result, nil
+}
+
 // handleVersion is a public (no-auth) endpoint that returns the server's
 // version string and build timestamp. Useful for health checks and debugging.
 func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +54,7 @@ func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
-	hasUsers, err := db.HasUsers(s.database)
+	hasUsers, err := s.hasUsersCached()
 	if err != nil {
 		internalError(w, err)
 
@@ -140,6 +169,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.onboardingToken = ""
+	s.statusCachedAt = time.Time{} // invalidate HasUsers cache so next status call sees the new user
 	s.mu.Unlock()
 
 	db.RecordLogin(s.database, body.Username)
