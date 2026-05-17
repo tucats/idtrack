@@ -77,11 +77,15 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`, `1h`, `90s`. Use `0` to disable. |
 | `--app-name TEXT` | Custom application name shown in the header and About dialog |
 | `--app-description TEXT` | Custom tagline shown under the name on the login screen and About dialog |
+| `--backup-interval DURATION` | How often to create a backup, e.g. `1h`, `30m`. Use `0` to disable backups entirely. |
+| `--backup-count N` | Maximum number of backup files to keep. Oldest files are deleted first when the count is exceeded. `0` means no limit. |
+| `--backup-age DURATION` | Delete backup files whose name-embedded timestamp is older than this duration, e.g. `168h` (7 days). `0` means no age limit. |
 
 ```sh
 idtrack default --port 9000 --database ~/myproject/issues.db
 idtrack default --idle-timeout 30m
 idtrack default --app-name "ACME Tracker" --app-description "ACME Engineering Issues"
+idtrack default --backup-interval 1h --backup-count 24 --backup-age 168h
 ```
 
 ---
@@ -358,6 +362,66 @@ When viewing an issue in the detail panel, admins see a **Delete** button in the
 
 Each comment has a trash-can icon (🗑) visible only to admins. Clicking it prompts for confirmation, then permanently removes that comment.
 
+### Backups
+
+Backups are controlled entirely via the CLI and are not configurable from the web UI. When backups are enabled the server automatically maintains copies of the SQLite database file in an `idtrack-backups/` directory placed alongside the database file.
+
+#### Enabling backups
+
+Set `--backup-interval` to a non-zero duration with `idtrack default`:
+
+```sh
+idtrack default --backup-interval 1h
+```
+
+You can combine all three backup settings in one command:
+
+```sh
+idtrack default --backup-interval 1h --backup-count 24 --backup-age 168h
+```
+
+This example creates a backup every hour, retains the 24 most recent backups, and deletes any backup whose timestamp is older than 7 days (168 hours).
+
+To disable backups, set the interval back to zero:
+
+```sh
+idtrack default --backup-interval 0
+```
+
+#### How backups work
+
+When the server starts with a non-zero backup interval it:
+
+1. Creates an `idtrack-backups/` directory next to the database file (if it does not already exist).
+2. Writes an initial backup immediately, before serving any requests.
+3. Writes a new backup automatically every `--backup-interval` thereafter.
+
+Backup files are named `idtrack-YYYYMMDDTHHMMSS.db` (UTC timestamp embedded in the filename). Alphabetical order equals chronological order, which makes it easy to identify the most recent backup.
+
+While a backup copy is in progress the server briefly pauses new requests so the database file is stable. In-flight requests complete normally; any requests that arrive during the copy wait a fraction of a second and then proceed without error. No data is lost and clients see no visible interruption.
+
+#### Retention policy
+
+After each backup the server applies the configured retention rules:
+
+- **Count limit** (`--backup-count N`): If there are more than N backup files, the oldest are deleted until only N remain.
+- **Age limit** (`--backup-age DURATION`): Any backup file whose name-embedded timestamp is older than `now − DURATION` is deleted. The filename is used as the age source, not the file system modification time.
+
+Both limits can be active simultaneously. Count pruning runs first, then age pruning.
+
+#### Restoring from a backup
+
+To restore the database to a previous state:
+
+1. Stop the server: `idtrack stop`
+2. Replace the live database file with the desired backup:
+   ```sh
+   cp /path/to/idtrack-backups/idtrack-20260517T120000.db /path/to/idtrack.db
+   ```
+3. Restart the server: `idtrack serve`
+
+Backup files are complete, self-contained SQLite databases and can be opened with any SQLite-compatible tool for inspection or data recovery.
+
 ---
 
 ## 5. Settings and Preferences {#settings}
@@ -370,11 +434,13 @@ Toggle **Dark Mode** on or off. This preference is saved in your browser's `loca
 
 ### Keep me logged in
 
-When enabled, your credentials are stored in your browser's `localStorage` so that the next time you open the app you are signed in automatically without having to enter your password.
+When enabled, the server issues a 30-day session cookie and stores your user display information in `localStorage` so the next time you open the app you are signed in automatically without re-entering your password. No password or credential is stored in the browser — only your display name and username.
 
-Choosing **Sign out** always clears the stored credentials, regardless of this setting. The next visit will require a manual login.
+If the 30-day session cookie has expired, the first page load will redirect you to the login screen regardless of this setting.
 
-> **Note:** Stored credentials persist until you sign out. Use this setting only on devices you trust and control.
+Choosing **Sign out** always clears the stored information and invalidates the session, regardless of this setting. The next visit will require a manual login.
+
+> **Note:** The long-lived session persists until you sign out or the 30-day cookie expires. Use this setting only on devices you trust and control.
 
 ### Sign Out
 

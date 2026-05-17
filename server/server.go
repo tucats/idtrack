@@ -29,9 +29,14 @@ type srv struct {
 	loginLimiter    *rateLimiter
 	sessions        *sessionStore
 	mu              sync.Mutex
+	backupMu        sync.RWMutex
 	onboardingToken string
-	statusHasUsers  bool      // cached result of db.HasUsers (S-09)
-	statusCachedAt  time.Time // zero value forces refresh on first call
+	statusHasUsers  bool          // cached result of db.HasUsers (S-09)
+	statusCachedAt  time.Time     // zero value forces refresh on first call
+	dbPath          string        // absolute path to the SQLite database file
+	backupInterval  time.Duration // 0 = backups disabled
+	backupCount     int           // 0 = no count limit
+	backupAge       time.Duration // 0 = no age limit
 }
 
 // Start wires up all routes, loads the TLS certificate, opens a TCP listener,
@@ -42,7 +47,7 @@ type srv struct {
 // Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string) error {
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration) error {
 	s := &srv{
 		database:       database,
 		static:         static,
@@ -53,6 +58,10 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		appDescription: appDescription,
 		loginLimiter:   newRateLimiter(),
 		sessions:       newSessionStore(),
+		dbPath:         dbPath,
+		backupInterval: backupInterval,
+		backupCount:    backupCount,
+		backupAge:      backupAge,
 	}
 
 	mux := http.NewServeMux()
@@ -131,11 +140,17 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	tlsLn := tls.NewListener(ln, tlsCfg)
 
+	if s.backupInterval > 0 {
+		s.startBackups()
+	}
+
 	log.Printf("idtrack listening on https://localhost%s", addr)
 
 	// secureHeaders and limitBody wrap the entire mux so every response gets
 	// security headers and every request body is capped before any handler runs.
-	handler := secureHeaders(limitBody(mux))
+	// quiesce holds a read-lock on backupMu for each request so that the backup
+	// goroutine can pause the server briefly by acquiring the write lock.
+	handler := secureHeaders(limitBody(s.quiesce(mux)))
 
 	// Use an explicit http.Server so we can set read/write/idle timeouts.
 	// Without timeouts, slow-loris clients can hold goroutines open indefinitely.
