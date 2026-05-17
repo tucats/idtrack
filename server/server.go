@@ -30,7 +30,9 @@ type contextKey string
 
 // ctxUser is the specific key under which the authenticated *db.User is stored
 // in the request context by the auth middleware.
-const ctxUser contextKey = "user"
+const (
+	ctxUser   contextKey = "user"
+)
 
 // srv holds the shared dependencies that all handler methods need. Attaching
 // handlers as methods on a struct (rather than using global variables) keeps
@@ -105,6 +107,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	if err != nil {
 		return fmt.Errorf("reading TLS cert: %w", err)
 	}
+
 	keyData, err := fs.ReadFile(static, "resources/https-server.key")
 	if err != nil {
 		return fmt.Errorf("reading TLS key: %w", err)
@@ -127,9 +130,11 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
+
 	tlsLn := tls.NewListener(ln, tlsCfg)
 
 	log.Printf("idtrack listening on https://localhost%s", addr)
+
 	return http.Serve(tlsLn, mux)
 }
 
@@ -146,13 +151,16 @@ func (s *srv) auth(next http.Handler) http.Handler {
 		username, hash, ok := r.BasicAuth()
 		if !ok {
 			jsonError(w, "authentication required", http.StatusUnauthorized)
+
 			return
 		}
+
 		username = strings.ToLower(username)
 
 		user, err := db.FindUser(s.database, username)
 		if err != nil || user == nil || user.PasswordHash != hash {
 			jsonError(w, "invalid credentials", http.StatusUnauthorized)
+
 			return
 		}
 
@@ -171,6 +179,7 @@ func (s *srv) auth(next http.Handler) http.Handler {
 // using the two-value form here makes nil the safe zero value on failure.
 func currentUser(r *http.Request) *db.User {
 	u, _ := r.Context().Value(ctxUser).(*db.User)
+
 	return u
 }
 
@@ -182,8 +191,10 @@ func currentUser(r *http.Request) *db.User {
 func (s *srv) serveRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "" {
 		http.Redirect(w, r, "/idtrack", http.StatusFound)
+
 		return
 	}
+
 	http.NotFound(w, r)
 }
 
@@ -194,8 +205,10 @@ func (s *srv) serveHTML(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.html")
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
+
 		return
 	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(data)
 }
@@ -204,8 +217,10 @@ func (s *srv) serveCSS(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.css")
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
+
 		return
 	}
+
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
 	w.Write(data)
 }
@@ -214,8 +229,10 @@ func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.js")
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
+
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Write(data)
 }
@@ -226,13 +243,16 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	hasUsers, err := db.HasUsers(s.database)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	if hasUsers {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"onboarding":   false,
 			"idle_timeout": s.idleTimeout,
 		})
+
 		return
 	}
 
@@ -240,6 +260,7 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.onboardingToken == "" {
 		s.onboardingToken = uuid.New().String()
 	}
+
 	token := s.onboardingToken
 	s.mu.Unlock()
 
@@ -254,6 +275,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 	marker, token, ok := r.BasicAuth()
 	if !ok || marker != "onboarding" {
 		jsonError(w, "invalid token", http.StatusUnauthorized)
+
 		return
 	}
 
@@ -263,19 +285,23 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	if !valid {
 		jsonError(w, "invalid or expired onboarding token", http.StatusUnauthorized)
+
 		return
 	}
 
 	hasUsers, err := db.HasUsers(s.database)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	if hasUsers {
 		s.mu.Lock()
 		s.onboardingToken = ""
 		s.mu.Unlock()
 		jsonError(w, "onboarding already complete", http.StatusConflict)
+
 		return
 	}
 
@@ -284,19 +310,26 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 		DisplayName  string `json:"display_name"`
 		PasswordHash string `json:"password_hash"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	body.Username = strings.ToLower(strings.TrimSpace(body.Username))
 	if body.Username == "" {
 		jsonError(w, "username is required", http.StatusBadRequest)
+
 		return
 	}
+
 	if body.PasswordHash == "" {
 		jsonError(w, "password is required", http.StatusBadRequest)
+
 		return
 	}
+
 	displayName := strings.TrimSpace(body.DisplayName)
 	if displayName == "" {
 		displayName = body.Username
@@ -304,6 +337,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, true); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
+
 		return
 	}
 
@@ -341,17 +375,22 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 	username, hash, ok := r.BasicAuth()
 	if !ok {
 		jsonError(w, "authentication required", http.StatusUnauthorized)
+
 		return
 	}
+
 	username = strings.ToLower(username)
 
 	user, err := db.FindUser(s.database, username)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	if user == nil || user.PasswordHash != hash {
 		jsonError(w, "invalid credentials", http.StatusUnauthorized)
+
 		return
 	}
 
@@ -373,8 +412,10 @@ func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	projects, err := db.ListProjects(s.database)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"projects": projects})
 }
 
@@ -383,23 +424,32 @@ func (s *srv) handleListProjects(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	var body struct {
 		Name string `json:"name"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	if strings.TrimSpace(body.Name) == "" {
 		jsonError(w, "name is required", http.StatusBadRequest)
+
 		return
 	}
+
 	if err := db.CreateProject(s.database, body.Name); err != nil {
 		jsonError(w, err.Error(), http.StatusConflict)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
@@ -409,24 +459,34 @@ func (s *srv) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	project := r.PathValue("project")
+
 	var body struct {
 		Name string `json:"name"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	if strings.TrimSpace(body.Name) == "" {
 		jsonError(w, "name is required", http.StatusBadRequest)
+
 		return
 	}
+
 	if err := db.AddComponent(s.database, project, body.Name); err != nil {
 		jsonError(w, err.Error(), http.StatusConflict)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
@@ -436,13 +496,17 @@ func (s *srv) handleCreateComponent(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	project := r.PathValue("project")
 	if err := db.DeleteProject(s.database, project); err != nil {
 		jsonError(w, err.Error(), http.StatusConflict)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -451,14 +515,19 @@ func (s *srv) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	project := r.PathValue("project")
 	component := r.PathValue("component")
+
 	if err := db.DeleteComponent(s.database, project, component); err != nil {
 		jsonError(w, err.Error(), http.StatusConflict)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -469,46 +538,62 @@ func (s *srv) handleDeleteComponent(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	var body struct {
 		Username     string `json:"username"`
 		DisplayName  string `json:"display_name"`
 		PasswordHash string `json:"password_hash"` // pre-hashed by the browser
 		IsAdmin      bool   `json:"is_admin"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	body.Username = strings.ToLower(strings.TrimSpace(body.Username))
 	if body.Username == "" {
 		jsonError(w, "username is required", http.StatusBadRequest)
+
 		return
 	}
+
 	if body.PasswordHash == "" {
 		jsonError(w, "password is required", http.StatusBadRequest)
+
 		return
 	}
+
 	// Prevent duplicate usernames via the API (the DB layer's upsert is only
 	// used by the CLI; the API enforces strict create semantics).
 	existing, err := db.FindUser(s.database, body.Username)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	if existing != nil {
 		jsonError(w, "username already exists", http.StatusConflict)
+
 		return
 	}
+
 	displayName := strings.TrimSpace(body.DisplayName)
 	if displayName == "" {
 		displayName = body.Username // default display name to login name
 	}
+
 	if err := db.AddUser(s.database, body.Username, displayName, body.PasswordHash, body.IsAdmin); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
@@ -519,23 +604,31 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	username := strings.ToLower(r.PathValue("username"))
+
 	var body struct {
 		DisplayName  string `json:"display_name"`
 		PasswordHash string `json:"password_hash"`
 		IsAdmin      bool   `json:"is_admin"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	isAdmin := body.IsAdmin
 	if err := db.UpdateUser(s.database, username, body.DisplayName, body.PasswordHash, &isAdmin); err != nil {
 		jsonError(w, err.Error(), http.StatusNotFound)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -544,17 +637,23 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	username := strings.ToLower(r.PathValue("username"))
 	if username == currentUser(r).Username {
 		jsonError(w, "cannot delete your own account", http.StatusBadRequest)
+
 		return
 	}
+
 	if err := db.DeleteUser(s.database, username); err != nil {
 		jsonError(w, err.Error(), http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -565,8 +664,10 @@ func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := db.ListUsers(s.database)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"users": users})
 }
 
@@ -585,10 +686,13 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		q.Get("sort"),
 		q.Get("order"),
 	)
+
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"issues": issues,
 		"total":  len(issues), // included so the client can show a count without iterating
@@ -606,21 +710,28 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Project     string `json:"project"`
 		Component   string `json:"component"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	if strings.TrimSpace(body.Title) == "" {
 		jsonError(w, "title is required", http.StatusBadRequest)
+
 		return
 	}
 
 	reporter := currentUser(r).Username
+
 	issue, err := db.CreateIssue(s.database, body.Title, body.Description, reporter, body.Assignee, body.Priority, body.Project, body.Component)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"issue": issue})
 }
 
@@ -638,16 +749,20 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	issue, err := db.GetIssue(s.database, id)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	if issue == nil {
 		jsonError(w, "issue not found", http.StatusNotFound)
+
 		return
 	}
 
 	comments, err := db.ListComments(s.database, id)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
 
@@ -675,24 +790,32 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		Project     string `json:"project"`
 		Component   string `json:"component"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	if strings.TrimSpace(body.Title) == "" {
 		jsonError(w, "title is required", http.StatusBadRequest)
+
 		return
 	}
 
 	issue, err := db.UpdateIssue(s.database, id, body.Title, body.Description, body.Priority, body.Status, body.Assignee, body.Project, body.Component)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	if issue == nil {
 		jsonError(w, "issue not found", http.StatusNotFound)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})
 }
 
@@ -701,16 +824,21 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	id, ok := issueID(w, r)
 	if !ok {
 		return
 	}
+
 	if err := db.DeleteIssue(s.database, id); err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -727,21 +855,28 @@ func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Body string `json:"body"`
 	}
+
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
+
 	if strings.TrimSpace(body.Body) == "" {
 		jsonError(w, "comment body is required", http.StatusBadRequest)
+
 		return
 	}
 
 	author := currentUser(r).Username
+
 	comment, err := db.CreateComment(s.database, id, author, body.Body)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"comment": comment})
 }
 
@@ -750,18 +885,25 @@ func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 func (s *srv) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
+
 	raw := r.PathValue("cid")
+
 	cid, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || cid <= 0 {
 		jsonError(w, "invalid comment id", http.StatusBadRequest)
+
 		return
 	}
+
 	if err := db.DeleteComment(s.database, cid); err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -775,14 +917,17 @@ func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 	src, err := fs.ReadFile(s.static, "resources/MANUAL.md")
 	if err != nil {
 		http.Error(w, "manual not found", http.StatusNotFound)
+
 		return
 	}
 
 	// goldmark.Convert renders the Markdown source into HTML, writing the
 	// output into the bytes.Buffer. A bytes.Buffer satisfies io.Writer.
 	var body bytes.Buffer
+
 	if err := goldmark.Convert(src, &body); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
+
 		return
 	}
 
@@ -835,11 +980,14 @@ func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 // when ok is false — the error response has already been sent.
 func issueID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	raw := r.PathValue("id")
+
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
 		jsonError(w, "invalid issue id", http.StatusBadRequest)
+
 		return 0, false
 	}
+
 	return id, true
 }
 

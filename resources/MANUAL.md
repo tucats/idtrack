@@ -22,7 +22,7 @@ A fresh idtrack installation is up and running in three steps.
 
 Save your preferred port and database path so you don't need to specify them every time:
 
-```
+```sh
 idtrack default --port 8443 --database /var/data/idtrack.db
 ```
 
@@ -30,7 +30,7 @@ These values are written to `~/.idtrack/defaults.json` and used as fallbacks by 
 
 ### Step 2 — Start the server
 
-```
+```sh
 idtrack serve
 ```
 
@@ -48,23 +48,23 @@ When no users exist in the database, the web app detects this automatically and 
 
 Click **Create Account**. The account is created with full admin privileges and you are logged in immediately.
 
-> **Alternative:** If you prefer to create the first user from the command line rather than the browser, you can run `idtrack user --add username:password --admin true` before starting the server. The onboarding dialog only appears when the database has no users.
+> **Alternative:** If you prefer to create the first user from the command line rather than the browser, you can run `idtrack user add username:password --admin true` before starting the server. The onboarding dialog only appears when the database has no users.
 
 ### Step 4 — Define at least one project
 
 Issues must belong to a project and component. You can define them from the web UI (via the admin hamburger menu) or the CLI:
 
-```
-idtrack define --project "My Project"
-idtrack define --project "My Project" --component "Backend"
-idtrack define --project "My Project" --component "Frontend"
+```sh
+idtrack define project "My Project"
+idtrack define component "My Project" Backend
+idtrack define component "My Project" Frontend
 ```
 
 ---
 
 ## 2. CLI Reference {#cli-reference}
 
-All CLI commands follow the form `idtrack <verb> [flags]`.
+All CLI commands follow the form `idtrack <command> [subcommand] [options]`.
 
 ### `idtrack default`
 
@@ -74,9 +74,11 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | --- | --- |
 | `--port N` | Default HTTPS port (default: 8443) |
 | `--database PATH` | Default path to the SQLite database file |
+| `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`, `1h`, `90s`. Use `0` to disable. |
 
-```
+```sh
 idtrack default --port 9000 --database ~/myproject/issues.db
+idtrack default --idle-timeout 30m
 ```
 
 ---
@@ -104,7 +106,7 @@ Stop the running server. Reads the PID from `~/.idtrack/idtrack.pid` and sends S
 
 Print the version number and build timestamp.
 
-```
+```text
 idtrack version
 Version: 1.0-8
 Built:   2025-05-15 14:32:00 UTC
@@ -114,48 +116,49 @@ Built:   2025-05-15 14:32:00 UTC
 
 ### `idtrack user`
 
-Manage user accounts. All `user` commands accept an optional `--database PATH` flag.
+Manage user accounts. The first argument after `user` is a subcommand: `list`, `add`, `update`, or `delete`. All variants accept an optional `--database PATH` flag.
 
 #### List users
 
-```
-idtrack user --list
+```sh
+idtrack user list
 ```
 
 Prints a table showing USERNAME, DISPLAY NAME, ADMIN status, and LAST LOGIN time.
 
 #### Add a user
 
-```
-idtrack user --add username:password [--name "Display Name"] [--admin true|false]
+```sh
+idtrack user add <username:password> [--name "Display Name"] [--admin true|false]
 ```
 
+- The argument is `username:password` as a single token separated by `:`.
 - If `--name` is omitted, the username is used as the display name.
 - If `--admin` is omitted, the user is created as a non-admin.
 - If the username already exists, the record is updated (upsert).
 
-```
-idtrack user --add bob:password123 --name "Bob Jones"
-idtrack user --add carol:pass --name "Carol" --admin true
+```sh
+idtrack user add bob:password123 --name "Bob Jones"
+idtrack user add carol:pass --name "Carol" --admin true
 ```
 
 #### Update a user
 
-```
-idtrack user --update username [--name "New Name"] [--password newpass] [--admin true|false]
+```sh
+idtrack user update <username> [--name "New Name"] [--password newpass] [--admin true|false]
 ```
 
 Only the fields you specify are changed; omitted fields are left unchanged. The user must already exist.
 
-```
-idtrack user --update bob --name "Robert Jones"
-idtrack user --update bob --password newpass --admin true
+```sh
+idtrack user update bob --name "Robert Jones"
+idtrack user update bob --password newpass --admin true
 ```
 
 #### Delete a user
 
-```
-idtrack user --delete username
+```sh
+idtrack user delete <username>
 ```
 
 Permanently removes the user record. Issues and comments that reference the username retain the username string.
@@ -164,40 +167,46 @@ Permanently removes the user record. Issues and comments that reference the user
 
 ### `idtrack define`
 
-Create a new project or add a component to an existing project.
+Create a new project or add a component to an existing project. The first argument after `define` is a subcommand: `project` or `component`. Both variants accept an optional `--database PATH` flag.
 
 #### Create a project
 
-```
-idtrack define --project "Project Name"
+```sh
+idtrack define project <name>
 ```
 
 #### Add a component to a project
 
-```
-idtrack define --project "Project Name" --component "Component Name"
+```sh
+idtrack define component <project-name> <component-name>
 ```
 
 The project must exist before a component can be added to it.
+
+```sh
+idtrack define project "My Project"
+idtrack define component "My Project" Backend
+idtrack define component "My Project" Frontend
+```
 
 ---
 
 ### `idtrack delete`
 
-Remove a project (and all its components) or remove a single component.
+Remove a project (and all its components) or remove a single component. The first argument after `delete` is a subcommand: `project` or `component`. Both variants accept an optional `--database PATH` flag.
 
 #### Delete a project
 
-```
-idtrack delete --project "Project Name"
+```sh
+idtrack delete project <name>
 ```
 
 This also deletes all components belonging to that project. **This operation fails if any open or resolved issues reference the project.** The error message lists the affected issue IDs.
 
 #### Delete a component
 
-```
-idtrack delete --project "Project Name" --component "Component Name"
+```sh
+idtrack delete component <project-name> <component-name>
 ```
 
 **This operation fails if any issues reference that component.** The error message lists the affected issue IDs.
@@ -249,9 +258,22 @@ Click any row in the issue list to open the detail panel on the right. The detai
 - Created and Updated timestamps (read-only)
 - Comments thread
 
-If you edit any field, a **Save Changes** button appears at the bottom of the detail panel. Click it to persist your changes, or click **Cancel** to discard them.
+If you edit any field, a **Save Changes** button appears. Click it to persist your changes, or click **← Back** to discard them.
 
 > **Note:** If you switch the **Project**, the **Component** resets to *Choose component…*. You must select a new component before saving.
+
+#### Changing Status
+
+**Open → Resolved:** When you save an issue with status changed to *Resolved*, a dialog appears asking for optional resolution details:
+
+- **Fixed Version** — the version in which the fix was delivered (optional, e.g. `1.2-34`).
+- **Comment** — a free-text description of the resolution (optional).
+
+If either field is filled in, the information is posted as a comment at the same time the status change is saved. A non-empty **Fixed Version** appears as *Fixed in \<version\>* at the top of the comment, followed by any free-text comment.
+
+> **Note:** An **Assignee** is required before an issue can be saved as *Resolved*. The save is blocked with an error if the assignee field is empty.
+
+**Resolved → Open:** Reopening a resolved issue always requires a comment — the dialog will not confirm until a reason is entered. The reason is posted as a comment at the same time the status is changed back to *Open*.
 
 ### Adding a Comment
 
@@ -282,7 +304,7 @@ Opens a panel listing all current user accounts — username, display name, admi
 
 **To add a user**, click **Add User…**. Fill in:
 
-- **Username** — must be unique
+- **Username** — must be unique; automatically converted to lower-case
 - **Display Name** — shown in the UI; defaults to username if left blank
 - **Password** / **Confirm Password** — must match; minimum one character
 - **Admin privileges** — toggle to grant full admin access
@@ -301,34 +323,33 @@ Click **Save Changes** to apply.
 
 After any add, edit, or delete operation — and when cancelled — the overlay automatically returns to the refreshed user list.
 
-### Add Project
+### Edit Projects…
 
-Opens a form to create a new project. Enter the project name and click **Add Project**. The new project is immediately available in issue dropdowns and the project filter.
+Opens a two-screen interface for managing all projects and their components.
 
-### Add Components
+**Project list** — The first screen lists all defined projects, each row showing the project name and component count. Click a row to open its detail screen. Click **+ New Project** to create a project.
 
-Opens a multi-add form for adding one or more components to an existing project:
+**Project detail — existing project**
 
-1. Select the **Project** from the dropdown.
-2. Type a component name and click **Add to List** (or press Enter). Duplicate names (case-insensitive) are rejected.
-3. Repeat to build up a list of components.
-4. Click the **×** next to any list item to remove it before saving.
-5. Click **Save Components** to add all listed components at once.
+Click a project row to view and manage its components:
 
-If any component fails to save (e.g., a race condition where another admin created the same name), the failed items remain in the list and an error is shown.
+- Each existing component has a trash-can icon (🗑). Click it to permanently delete that component (confirmation required). The deletion is refused if any issues still reference the component; affected issue IDs are shown.
+- Type a name in the **Add Component** field and click **Add** (or press Enter) to immediately add a component to the project. Duplicate names are rejected (case-insensitive check).
+- Click **Delete Project** to permanently remove the project and all its components. The deletion is refused if any issues reference the project.
 
-### Delete Project / Component
+**Project detail — new project**
 
-Opens a form to remove a project or a single component:
+Click **+ New Project** to open the new-project form:
 
-- To **delete a component**: choose the project and the specific component, then click **Delete**.
-- To **delete an entire project** (including all its components): choose the project and select **All components**, then click **Delete**.
+- Enter the **Project Name** (must be unique; case-insensitive duplicate check is applied).
+- Optionally stage components before creating: type a name and click **Add**; duplicate names are rejected.
+- Click **Create Project** to create the project and all staged components at once. On success the view switches to the existing-project detail for the new project, where you can continue adding components.
 
-If any issues reference the project or component being deleted, the deletion is refused and the affected issue IDs are displayed. Re-assign or delete those issues first, then retry.
+Click **← Back** to return to the project list from any detail screen.
 
 ### Delete Issue
 
-When viewing an issue in the detail panel, admins see a **Delete Issue** button in the panel header. Clicking it prompts for confirmation, then permanently removes the issue and all its comments.
+When viewing an issue in the detail panel, admins see a **Delete** button in the panel header. Clicking it prompts for confirmation, then permanently removes the issue and all its comments.
 
 ### Delete Comment
 
@@ -364,4 +385,4 @@ Open the hamburger menu and choose **About** to see the version number, build da
 
 ---
 
-*idtrack — lightweight self-hosted issue tracking*
+idtrack — lightweight self-hosted issue tracking
