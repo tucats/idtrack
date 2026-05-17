@@ -8,7 +8,7 @@ import (
 	"github.com/yuin/goldmark"
 )
 
-// serveRoot redirects bare "/" to the app page. Any other unrecognised path
+// serveRoot redirects bare "/" to the app page. Any other unrecognized path
 // returns 404 rather than silently serving the app, which avoids confusing the
 // browser when a sub-path is requested.
 func (s *srv) serveRoot(w http.ResponseWriter, r *http.Request) {

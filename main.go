@@ -53,6 +53,37 @@ type defaults struct {
 	AppDescription string `json:"app_description,omitempty"` // custom branding tagline
 }
 
+// pidRecord is the structure written to ~/.idtrack/idtrack.pid. Storing the
+// serve args alongside the PID allows "idtrack restart" to relaunch the server
+// with exactly the same flags that were passed to the original "idtrack serve".
+type pidRecord struct {
+	PID  int      `json:"pid"`
+	Args []string `json:"args"` // passArgs forwarded to the background child
+}
+
+// readPidFile reads and parses the PID file. It understands both the current
+// JSON format and the legacy plain-integer format, so existing PID files from
+// older builds remain usable (they just have no saved args for restart).
+func readPidFile() (pidRecord, error) {
+	data, err := os.ReadFile(serverPidPath())
+	if err != nil {
+		return pidRecord{}, err
+	}
+
+	var record pidRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		// Legacy format: just a bare PID integer with no JSON wrapper.
+		pid, err2 := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err2 != nil {
+			return pidRecord{}, fmt.Errorf("unreadable pid file")
+		}
+
+		return pidRecord{PID: pid}, nil
+	}
+
+	return record, nil
+}
+
 // main is the program entry point. os.Args[0] is the program name, so we skip
 // it and inspect the first real argument (args[0]) to decide which sub-command
 // to run. Each case delegates to a dedicated function, keeping main small and
@@ -68,11 +99,12 @@ func main() {
 	case "help", "--help", "-h":
 		usage()
 		os.Exit(0)
-
 	case "serve", "start", "run":
 		runServe(args[1:])
 	case "stop":
 		runStop()
+	case "restart":
+		runRestart()
 	case "default", "config":
 		runDefault(args[1:])
 	case "user", "users":
@@ -132,6 +164,11 @@ Commands:
 
 	stop
 		Stop the running idtrack server.
+
+	restart
+		Stop the running server and immediately restart it using the same
+		command-line arguments it was originally started with. Useful after
+		installing a new binary.
 
 	user [subcommand] [options]
 		Manage user accounts.
@@ -251,13 +288,11 @@ func launchBackground(serveArgs []string) {
 
 	// Check if a server is already running. Signal 0 tests process existence
 	// without actually sending a signal — if it succeeds, the process is alive.
-	if data, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
-			if proc, err := os.FindProcess(pid); err == nil {
-				if proc.Signal(syscall.Signal(0)) == nil {
-					fmt.Fprintf(os.Stderr, "server already running (pid %d)\n", pid)
-					os.Exit(1)
-				}
+	if record, err := readPidFile(); err == nil {
+		if proc, err := os.FindProcess(record.PID); err == nil {
+			if proc.Signal(syscall.Signal(0)) == nil {
+				fmt.Fprintf(os.Stderr, "server already running (pid %d)\n", record.PID)
+				os.Exit(1)
 			}
 		}
 
@@ -305,9 +340,13 @@ func launchBackground(serveArgs []string) {
 
 	logFile.Close() // parent no longer needs the file; child inherited its own fd
 
-	// Record the child's PID so "idtrack stop" can find and terminate it later.
-	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
-		fmt.Fprintf(os.Stderr, "cannot write pid file: %v\n", err)
+	// Record the child's PID and the serve args so "idtrack stop" can find and
+	// terminate the process, and "idtrack restart" can relaunch with the same flags.
+	record := pidRecord{PID: cmd.Process.Pid, Args: serveArgs}
+	if pidData, err := json.Marshal(record); err == nil {
+		if err := os.WriteFile(pidFile, pidData, 0600); err != nil {
+			fmt.Fprintf(os.Stderr, "cannot write pid file: %v\n", err)
+		}
 	}
 
 	fmt.Printf("idtrack server started (pid %d)\n", cmd.Process.Pid)
@@ -320,33 +359,75 @@ func launchBackground(serveArgs []string) {
 func runStop() {
 	pidFile := serverPidPath()
 
-	data, err := os.ReadFile(pidFile)
+	record, err := readPidFile()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "no server running (pid file not found)")
 		os.Exit(1)
 	}
 
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	proc, err := os.FindProcess(record.PID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "invalid pid file")
-		os.Remove(pidFile)
-		os.Exit(1)
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "process %d not found\n", pid)
+		fmt.Fprintf(os.Stderr, "process %d not found\n", record.PID)
 		os.Remove(pidFile)
 		os.Exit(1)
 	}
 
 	if err := proc.Signal(syscall.SIGTERM); err != nil {
-		fmt.Fprintf(os.Stderr, "error stopping server (pid %d): %v\n", pid, err)
+		fmt.Fprintf(os.Stderr, "error stopping server (pid %d): %v\n", record.PID, err)
 		os.Exit(1)
 	}
 
 	os.Remove(pidFile)
-	fmt.Printf("idtrack server stopped (pid %d)\n", pid)
+	fmt.Printf("idtrack server stopped (pid %d)\n", record.PID)
+}
+
+// runRestart stops the currently running server and immediately relaunches it
+// with the same command-line arguments recorded in the PID file. It waits for
+// the old process to exit before starting the new one so the port is free.
+func runRestart() {
+	pidFile := serverPidPath()
+
+	record, err := readPidFile()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "no server running (pid file not found)")
+		os.Exit(1)
+	}
+
+	proc, err := os.FindProcess(record.PID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "process %d not found\n", record.PID)
+		os.Remove(pidFile)
+		os.Exit(1)
+	}
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		fmt.Fprintf(os.Stderr, "error stopping server (pid %d): %v\n", record.PID, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("idtrack server stopped (pid %d)\n", record.PID)
+
+	// Wait for the old process to fully exit before relaunching. Without this,
+	// the new child may fail to bind the same port while the old one still holds it.
+	// We poll with signal 0 (existence check) up to a 10-second deadline.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(250 * time.Millisecond)
+
+		if proc.Signal(syscall.Signal(0)) != nil {
+			break // non-nil error means the process no longer exists
+		}
+	}
+
+	os.Remove(pidFile)
+
+	if len(record.Args) > 0 {
+		fmt.Printf("restarting with args: %s\n", strings.Join(record.Args, " "))
+	} else {
+		fmt.Println("restarting...")
+	}
+
+	launchBackground(record.Args)
 }
 
 // serverPidPath returns the full path of the PID file used to track the
