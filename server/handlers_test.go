@@ -29,6 +29,7 @@ func TestHandleVersion(t *testing.T) {
 	}
 
 	var resp map[string]string
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	if resp["version"] != "1.2-3" {
@@ -49,6 +50,7 @@ func TestHandleStatus_NoUsers(t *testing.T) {
 	s.handleStatus(w, r)
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	if resp["onboarding"] != true {
@@ -70,6 +72,7 @@ func TestHandleStatus_WithUsers(t *testing.T) {
 	s.handleStatus(w, r)
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	if resp["onboarding"] != false {
@@ -97,6 +100,7 @@ func TestHandleLogin_Success(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	if resp["username"] != "alice" {
@@ -105,9 +109,11 @@ func TestHandleLogin_Success(t *testing.T) {
 
 	// Check session cookie was set.
 	found := false
+
 	for _, c := range w.Result().Cookies() {
 		if c.Name == sessionCookieName {
 			found = true
+
 			break
 		}
 	}
@@ -176,6 +182,7 @@ func TestHandleLogout_ClearsCookie(t *testing.T) {
 
 	r := httptest.NewRequest(http.MethodPost, "/api/logout", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+
 	w := httptest.NewRecorder()
 
 	s.handleLogout(w, r)
@@ -204,12 +211,14 @@ func TestHandleOnboarding_Success(t *testing.T) {
 	s.handleStatus(statusRec, statusReq)
 
 	var statusResp map[string]interface{}
+
 	json.NewDecoder(statusRec.Body).Decode(&statusResp)
 	onboardToken := statusResp["token"].(string)
 
 	body := `{"username":"admin","password":"adminpw","display_name":"Admin"}`
 	r := jsonReq(t, http.MethodPost, "/api/onboarding", body, "")
 	r.SetBasicAuth("onboarding", onboardToken)
+
 	w := httptest.NewRecorder()
 
 	s.handleOnboarding(w, r)
@@ -225,6 +234,7 @@ func TestHandleOnboarding_WrongToken(t *testing.T) {
 	body := `{"username":"admin","password":"adminpw"}`
 	r := jsonReq(t, http.MethodPost, "/api/onboarding", body, "")
 	r.SetBasicAuth("onboarding", "bad-token")
+
 	w := httptest.NewRecorder()
 
 	s.handleOnboarding(w, r)
@@ -248,6 +258,7 @@ func TestHandleOnboarding_AlreadyHasUsers(t *testing.T) {
 	body := `{"username":"admin","password":"pw"}`
 	r := jsonReq(t, http.MethodPost, "/api/onboarding", body, "")
 	r.SetBasicAuth("onboarding", "test-token")
+
 	w := httptest.NewRecorder()
 
 	s.handleOnboarding(w, r)
@@ -274,6 +285,7 @@ func TestHandleListUsers(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	users, ok := resp["users"].([]interface{})
@@ -480,6 +492,7 @@ func TestHandleListProjects(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	projects, _ := resp["projects"].([]interface{})
@@ -559,6 +572,7 @@ func TestHandleCreateIssue(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+	
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	issue, _ := resp["issue"].(map[string]interface{})
@@ -590,6 +604,7 @@ func TestHandleGetIssue(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	issueObj, _ := resp["issue"].(map[string]interface{})
@@ -677,6 +692,7 @@ func TestHandleListIssues(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	issues, _ := resp["issues"].([]interface{})
@@ -715,6 +731,7 @@ func TestHandleListChanges(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	issues, _ := resp["issues"].([]interface{})

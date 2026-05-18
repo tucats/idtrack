@@ -210,6 +210,7 @@ func writeBackupFile(t *testing.T, dir string, ts time.Time, sizeBytes int) stri
 
 	name := fmt.Sprintf("idtrack-%s.db", ts.Format(backupTimeLayout))
 	data := make([]byte, sizeBytes)
+
 	if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
 		t.Fatalf("writeBackupFile: %v", err)
 	}
@@ -357,6 +358,7 @@ func TestCopyFile_SrcMissing(t *testing.T) {
 // newBackupPathForTime generates the backup path for a specific time (test helper).
 func newBackupPathForTime(dir string, t time.Time) string {
 	name := backupFilePrefix + t.UTC().Format(backupTimeLayout) + backupFileSuffix
+
 	return filepath.Join(dir, name)
 }
 
@@ -368,6 +370,7 @@ func contains(s, sub string) bool {
 					return true
 				}
 			}
+			
 			return false
 		}())
 }
