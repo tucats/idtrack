@@ -1568,7 +1568,7 @@ function epRenderComponents() {
     list.innerHTML = project.components.map(c => `
         <div class="ep-comp-item">
             <span class="ep-comp-name">${esc(c)}</span>
-            <button class="btn-trash" onclick="epDeleteComponent('${esc(c).replace(/'/g,"\\'")}', event)" title="Delete component">&#x1F5D1;</button>
+            <button class="btn-trash" data-component="${esc(c)}" onclick="epDeleteComponent(this.dataset.component, event)" title="Delete component">&#x1F5D1;</button>
         </div>`).join('');
 }
 
