@@ -21,6 +21,7 @@ func TestRequireJSON_Accepts(t *testing.T) {
 	h := requireJSON(okHandler)
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.Header.Set("Content-Type", "application/json")
+
 	w := httptest.NewRecorder()
 
 	h.ServeHTTP(w, r)
@@ -34,6 +35,7 @@ func TestRequireJSON_Rejects_WrongContentType(t *testing.T) {
 	h := requireJSON(okHandler)
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.Header.Set("Content-Type", "text/plain")
+
 	w := httptest.NewRecorder()
 
 	h.ServeHTTP(w, r)
@@ -59,6 +61,7 @@ func TestRequireJSON_AcceptsWithCharset(t *testing.T) {
 	h := requireJSON(okHandler)
 	r := httptest.NewRequest(http.MethodPost, "/", nil)
 	r.Header.Set("Content-Type", "application/json; charset=utf-8")
+
 	w := httptest.NewRecorder()
 
 	h.ServeHTTP(w, r)
@@ -188,6 +191,7 @@ func TestAuth_InvalidToken(t *testing.T) {
 	h := s.auth(okHandler)
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.Header.Set("Authorization", "Bearer invalid_token_value")
+
 	w := httptest.NewRecorder()
 
 	h.ServeHTTP(w, r)
@@ -204,6 +208,7 @@ func TestAuth_ValidToken(t *testing.T) {
 	token := s.sessions.create("alice", defaultSessionTTL)
 
 	var gotUser string
+
 	h := s.auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u := currentUser(r)
 		if u != nil {
@@ -212,7 +217,9 @@ func TestAuth_ValidToken(t *testing.T) {
 	}))
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
 	r.Header.Set("Authorization", "Bearer "+token)
+
 	w := httptest.NewRecorder()
 
 	h.ServeHTTP(w, r)
@@ -238,7 +245,9 @@ func TestAuth_CookieToken(t *testing.T) {
 	}))
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	
 	w := httptest.NewRecorder()
 
 	h.ServeHTTP(w, r)

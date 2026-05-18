@@ -103,6 +103,7 @@ func TestSessionStore_UniqueTokens(t *testing.T) {
 	ss := newSessionStore()
 
 	tokens := make(map[string]struct{}, 10)
+	
 	for i := 0; i < 10; i++ {
 		tok := ss.create("u", time.Hour)
 		if _, dup := tokens[tok]; dup {

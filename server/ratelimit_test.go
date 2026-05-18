@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -80,7 +81,7 @@ func TestRateLimiter_DifferentIPsIndependent(t *testing.T) {
 }
 
 func TestClientIP_WithPort(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "1.2.3.4:5678"
 
 	ip := clientIP(r)
@@ -90,7 +91,7 @@ func TestClientIP_WithPort(t *testing.T) {
 }
 
 func TestClientIP_NoPort(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "1.2.3.4"
 
 	ip := clientIP(r)
@@ -101,7 +102,7 @@ func TestClientIP_NoPort(t *testing.T) {
 }
 
 func TestClientIP_IPv6(t *testing.T) {
-	r := httptest.NewRequest("GET", "/", nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "[::1]:9000"
 
 	ip := clientIP(r)

@@ -25,6 +25,7 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HasUsers after Open: %v", err)
 	}
+	
 	if has {
 		t.Error("fresh database should have no users")
 	}

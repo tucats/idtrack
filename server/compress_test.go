@@ -10,12 +10,14 @@ import (
 	"testing"
 )
 
+const gzipEncoding = "gzip"
+
 // newGzipRequest builds a GET request with Accept-Encoding: gzip.
 func newGzipRequest(t *testing.T) *http.Request {
 	t.Helper()
 
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.Header.Set("Accept-Encoding", "gzip")
+	r.Header.Set("Accept-Encoding", gzipEncoding)
 
 	return r
 }
@@ -55,7 +57,7 @@ func TestGzipHandler_SmallBodyNotCompressed(t *testing.T) {
 
 	h.ServeHTTP(w, r)
 
-	if enc := w.Header().Get("Content-Encoding"); enc == "gzip" {
+	if enc := w.Header().Get("Content-Encoding"); enc == gzipEncoding {
 		t.Error("small body should not be gzip-encoded")
 	}
 
@@ -74,7 +76,7 @@ func TestGzipHandler_LargeBodyCompressed(t *testing.T) {
 
 	h.ServeHTTP(w, r)
 
-	if enc := w.Header().Get("Content-Encoding"); enc != "gzip" {
+	if enc := w.Header().Get("Content-Encoding"); enc != gzipEncoding {
 		t.Errorf("large body should be gzip-encoded, got Content-Encoding: %q", enc)
 	}
 
@@ -94,7 +96,7 @@ func TestGzipHandler_NoAcceptEncoding_Passthrough(t *testing.T) {
 
 	h.ServeHTTP(w, r)
 
-	if enc := w.Header().Get("Content-Encoding"); enc == "gzip" {
+	if enc := w.Header().Get("Content-Encoding"); enc == gzipEncoding {
 		t.Error("should not compress when Accept-Encoding: gzip absent")
 	}
 
@@ -138,7 +140,7 @@ func TestGzipHandler_ExactThresholdNotCompressed(t *testing.T) {
 
 	h.ServeHTTP(w, r)
 
-	if w.Header().Get("Content-Encoding") == "gzip" {
+	if w.Header().Get("Content-Encoding") == gzipEncoding {
 		t.Error("body at threshold-1 should not be compressed")
 	}
 }
@@ -164,6 +166,7 @@ func TestGzipHandler_ContentLengthRemovedOnCompress(t *testing.T) {
 	// When compressed, Content-Length must be removed (size changes).
 	h := gzipHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := strings.Repeat("y", gzipThreshold+1)
+		
 		w.Header().Set("Content-Length", "9999")
 		io.WriteString(w, body)
 	}))
@@ -230,7 +233,7 @@ func TestBufferingWriter_Flush_Small(t *testing.T) {
 		t.Errorf("small body: got %q, want %q", inner.Body.String(), "tiny")
 	}
 
-	if inner.Header().Get("Content-Encoding") == "gzip" {
+	if inner.Header().Get("Content-Encoding") == gzipEncoding {
 		t.Error("small body should not be compressed")
 	}
 }
