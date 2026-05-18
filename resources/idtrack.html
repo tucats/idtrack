@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>idtrack — Issue Tracker</title>
   <link rel="stylesheet" href="/assets/idtrack/idtrack.css">
-  <script>try{const p=JSON.parse(localStorage.getItem('idtrack_prefs')||'{}');if(p.desktopMode)document.documentElement.classList.add('desktop-mode');}catch(e){}</script>
+  <script>try{const p=JSON.parse(localStorage.getItem('idtrack_prefs')||'{}');if(p.desktopMode)document.documentElement.classList.add('desktop-mode');const _cd={project:true,component:true,status:true,priority:true,reporter:false,assignee:true,date:true,resolved:false,comments:false};const _cv=p.colVisibility||{};Object.keys(_cd).forEach(c=>{if(!(_cv[c]!==undefined?_cv[c]:_cd[c]))document.documentElement.classList.add('hide-col-'+c);});}catch(e){}</script>
 </head>
 <body>
 
@@ -372,6 +372,20 @@
     </div>
     <div class="header-right">
       <button class="btn btn-primary btn-sm" onclick="showNewIssue()">+ New Issue</button>
+      <div class="col-picker-wrap" id="col-picker-wrap">
+        <button class="btn btn-ghost btn-sm" onclick="toggleColPicker(event)" title="Choose visible columns">Columns &#9662;</button>
+        <div id="col-picker-panel" class="col-picker-panel" style="display:none">
+          <label class="col-picker-item"><input type="checkbox" id="colchk-project"   onchange="toggleColumn('project',this.checked)">   Project</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-component" onchange="toggleColumn('component',this.checked)"> Component</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-status"    onchange="toggleColumn('status',this.checked)">    Status</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-priority"  onchange="toggleColumn('priority',this.checked)">  Priority</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-reporter"  onchange="toggleColumn('reporter',this.checked)">  Reporter</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-assignee"  onchange="toggleColumn('assignee',this.checked)">  Assigned To</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-date"      onchange="toggleColumn('date',this.checked)">      Created</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-resolved"  onchange="toggleColumn('resolved',this.checked)">  Resolved</label>
+          <label class="col-picker-item"><input type="checkbox" id="colchk-comments"  onchange="toggleColumn('comments',this.checked)">  Comments</label>
+        </div>
+      </div>
       <span class="user-badge" id="user-badge" title="Logged in user"></span>
       <div class="menu-wrap">
         <button class="btn btn-ghost btn-sm hamburger-btn" onclick="toggleMenu(event)" title="Menu" aria-label="Menu">&#9776;</button>
@@ -408,12 +422,15 @@
           <tr>
             <th class="col-id sortable" onclick="toggleSort('id')" title="Sort by ID">#</th>
             <th class="col-title sortable" onclick="toggleSort('title')" title="Sort by title">Title</th>
-            <th class="col-project sortable" onclick="toggleSort('project')" title="Sort by project">Project</th>
-            <th class="col-component sortable" onclick="toggleSort('component')" title="Sort by component">Component</th>
-            <th class="col-priority sortable" onclick="toggleSort('priority')" title="Sort by priority">Priority</th>
-            <th class="col-status sortable" onclick="toggleSort('status')" title="Sort by status">Status</th>
-            <th class="col-assignee sortable" onclick="toggleSort('assignee')" title="Sort by assignee">Assignee</th>
-            <th class="col-date sortable" onclick="toggleSort('created_at')" title="Sort by date">Created</th>
+            <th class="col-project sortable"   onclick="toggleSort('project')"     title="Sort by project">Project</th>
+            <th class="col-component sortable" onclick="toggleSort('component')"   title="Sort by component">Component</th>
+            <th class="col-priority sortable"  onclick="toggleSort('priority')"   title="Sort by priority">Priority</th>
+            <th class="col-status sortable"    onclick="toggleSort('status')"     title="Sort by status">Status</th>
+            <th class="col-reporter sortable"  onclick="toggleSort('reporter')"   title="Sort by reporter">Reporter</th>
+            <th class="col-assignee sortable"  onclick="toggleSort('assignee')"   title="Sort by assignee">Assignee</th>
+            <th class="col-date sortable"      onclick="toggleSort('created_at')" title="Sort by date created">Created</th>
+            <th class="col-resolved sortable"  onclick="toggleSort('resolved_at')" title="Sort by date resolved">Resolved</th>
+            <th class="col-comments" title="Number of comments">&#128172;</th>
           </tr>
         </thead>
         <tbody id="issues-tbody"></tbody>

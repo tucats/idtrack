@@ -336,6 +336,6 @@ func launchBackground(serveArgs []string) {
 		}
 	}
 
-	fmt.Printf("idtrack server started (pid %d)\n", cmd.Process.Pid)
+	fmt.Printf("idtrack server %s started (pid %d)\n", BuildVersion, cmd.Process.Pid)
 	fmt.Printf("log: %s\n", logPath)
 }

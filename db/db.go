@@ -108,6 +108,24 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	if err := addColumnIfMissing(database, "issues", "resolved_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	// Backfill resolved_at for existing Resolved issues that have no value yet.
+	// The most recent comment timestamp is used as the best available proxy —
+	// it is typically the "Fixed in version X" comment posted when the issue was
+	// closed. Issues with no comments keep resolved_at = '' (unknown).
+	if _, err := database.Exec(`
+		UPDATE issues
+		SET    resolved_at = (SELECT MAX(created_at) FROM comments WHERE issue_id = issues.id)
+		WHERE  status      = 'Resolved'
+		AND    resolved_at = ''
+		AND    EXISTS (SELECT 1 FROM comments WHERE issue_id = issues.id)
+	`); err != nil {
+		return err
+	}
+
 	// Create covering indexes for the most common filter and sort columns.
 	// CREATE INDEX IF NOT EXISTS is a no-op when the index already exists,
 	// so this runs safely against both new and already-upgraded databases.
@@ -117,6 +135,8 @@ func initSchema(database *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_issues_updated_at ON issues (updated_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_issues_assignee   ON issues (assignee)`,
 		`CREATE INDEX IF NOT EXISTS idx_issues_reporter   ON issues (reporter)`,
+		// Used by the comment_count correlated subquery in ListIssues / GetIssue.
+		`CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments (issue_id)`,
 	} {
 		if _, err := database.Exec(ddl); err != nil {
 			return err
