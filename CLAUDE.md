@@ -217,6 +217,7 @@ Authenticated endpoints require a valid session token delivered as an `HttpOnly;
 | DELETE | `/api/projects/{project}` | yes | **yes** |
 | DELETE | `/api/projects/{project}/components/{component}` | yes | **yes** |
 | GET | `/api/issues` | yes | no |
+| GET | `/api/issues/changes` | yes | no |
 | POST | `/api/issues` | yes | no |
 | GET | `/api/issues/{id}` | yes | no |
 | PUT | `/api/issues/{id}` | yes | reporter/assignee/admin |
@@ -249,7 +250,9 @@ Authorization header: `Basic base64("onboarding:<uuid>")`. Body: `{ username, di
 
 ### Issue list query params
 
-`GET /api/issues?status=open|resolved&priority=High|Medium|Low&search=text&sort=col&order=asc|desc`
+`GET /api/issues?status=open|resolved&priority=High|Medium|Low&project=<name>&search=text&sort=col&order=asc|desc&limit=N&offset=N`
+
+When `limit > 0` the response envelope is `{ issues: [...], total: N, offset: N, limit: N }` where `total` is the full count of matching rows (for displaying "N of M issues"). When `limit == 0` (legacy / return-all) `total` equals `len(issues)`. `sort` accepts: `id`, `title`, `priority`, `status`, `assignee`, `project`, `component`, `created_at`, `updated_at`. Unknown columns fall back to `id DESC`.
 
 ## Frontend Architecture
 
@@ -388,5 +391,11 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **Last-admin guard blocks lockout (S-14).** `db.CountAdmins` counts rows with `is_admin = 1`. Both `handleDeleteUser` and `handleUpdateUser` call it when the operation would leave no admin: deletion of the last admin returns 400 with a message directing the operator to use the CLI; demotion of the last admin is blocked the same way. The last-admin check runs before the self-deletion check in `handleDeleteUser` so the more informative message takes priority when both conditions apply.
 
 **Full-screen detail panel on mobile uses a CSS class, not JS visibility logic.** At ≤900px, when an issue is selected the JS adds `has-detail` to `#main-layout`; closing removes it. The CSS rule `.main-layout.has-detail .list-panel { display: none }` handles the panel switch. This keeps the responsive behaviour entirely in CSS — the class is harmless above 900px where no matching media-query rule exists, so no viewport-width check is needed in JS.
+
+**Server-side pagination, filtering, sorting, and background polling.** The issue list uses a server-driven append-only window model (`_issueWindow`) rather than loading all issues into memory. `loadIssueWindow()` resets the window and fetches the first page; an `IntersectionObserver` on a bottom sentinel `<div>` calls `loadNextPage()` to fetch subsequent pages as the user scrolls. All filtering (status, priority, project, search), sorting (column + direction), and pagination (LIMIT/OFFSET) are sent to the server as query parameters — the client does no in-memory filtering. The server runs a `SELECT COUNT(*)` with the same WHERE clause when `limit > 0` so the client knows the total without fetching all rows. A `_fetchGen` counter lets `loadIssueWindow()` discard the response of a superseded request when filters change rapidly. `_fetchLock` prevents concurrent `loadNextPage` calls. After a save, the matching `_issueWindow` entry and DOM row are updated in-place via `data-id` attribute lookup — no full re-fetch. A 30-second `setInterval` polling loop (`pollForChanges`) calls `GET /api/issues/changes?since=<timestamp>` to detect changes made by other users; issues already in the window are updated in-place, new external changes show a fixed-position toast (`#refresh-hint`) with a "Refresh" button that calls `loadIssueWindow()`. The page size (10/25/50/100/200, default 50) is configurable in Settings and persisted to `localStorage`. SQLite indexes on `status`, `(status, priority)`, `updated_at`, `assignee`, and `reporter` keep all filtered queries fast.
+
+**`GET /api/issues/changes?since=<RFC3339>`** returns `{ issues: [...] }` — all issues whose `updated_at` is strictly after the given timestamp, ordered by `updated_at ASC`. Used by the polling loop to detect mutations without fetching the entire list. Registered before the `/{id}` wildcard pattern in `server/server.go` so the literal path `/changes` takes priority.
+
+**`db.CountIssues` and `db.ListIssues` share a WHERE clause builder.** `buildWhereClause(status, priority, search, project string)` in `db/issues.go` returns a `(clause string, args []interface{})` pair that is reused by both functions, ensuring the count and the data query always agree. `ORDER BY` is constructed from a lookup table of hardcoded `"column ASC/DESC"` literals (keyed by column name) to prevent SQL injection via the `sort` and `order` query parameters.
 
 **Backup strategy: filesystem copy with RWMutex quiescing.** When `backupInterval > 0`, `server/backup.go` manages all backup logic. `startBackups()` is called in `Start()` before `httpSrv.Serve` (so the first backup is written before any requests are served). It creates an `idtrack-backups/` directory next to the database file, writes an initial backup synchronously, then launches a goroutine that fires `doBackup()` every `backupInterval`. `doBackup` takes `s.backupMu.Lock()` (write lock) to quiesce the server, calls `copyFile` (io.Copy + fsync), releases the lock, then runs `ageBackups` in a separate goroutine. Every HTTP request holds `s.backupMu.RLock()` via the `quiesce` middleware, which wraps the entire mux. The RWMutex ensures: in-flight requests finish before the backup copy starts; new requests block (briefly) while the copy is in progress; no 503 is returned to clients. `ageBackups` enforces count pruning first (delete oldest beyond limit), then age pruning (delete files whose name-embedded timestamp is before `now − backupAge`). Backup filenames embed the UTC timestamp (`idtrack-20060102T150405.db`) so alphabetical and chronological order coincide and the age can be recovered from the name without touching the filesystem mtime.

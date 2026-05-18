@@ -140,6 +140,16 @@
         <span class="toggle-track"></span>
       </label>
     </div>
+    <div class="settings-row">
+      <span class="settings-label">Issues per page</span>
+      <select id="page-size-select" class="settings-select" onchange="setPageSize(Number(this.value))">
+        <option value="10">10</option>
+        <option value="25">25</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+    </div>
     <div class="button-row">
       <button class="btn btn-primary" onclick="hideSettings()">Done</button>
     </div>
@@ -356,7 +366,8 @@
         </select>
         &nbsp;&nbsp;
         <input id="search-input" type="search" class="search-box" placeholder="Search…"
-               oninput="applyFilters()" onkeydown="if(event.key==='Escape'){this.value='';applyFilters();}">
+               oninput="applyFilters()" onkeydown="if(event.key==='Escape') clearSearch();">
+        <span id="search-status" class="search-status"></span>
       </div>
     </div>
     <div class="header-right">
@@ -376,10 +387,18 @@
     </div>
   </header>
 
+  <!-- Refresh hint toast — shown when background polling detects new changes -->
+  <div id="refresh-hint" class="refresh-hint" style="display:none">
+    <span id="refresh-hint-text"></span>
+    <button class="btn btn-primary btn-sm" onclick="applyRefreshHint()">Refresh</button>
+    <button class="btn btn-ghost btn-sm" onclick="dismissRefreshHint()" title="Dismiss">&#10005;</button>
+  </div>
+
   <div id="main-layout" class="main-layout" onclick="mainLayoutClick(event)">
 
     <!-- Issues List Panel -->
     <div id="list-panel" class="list-panel">
+      <div id="issue-counter" class="issue-counter" style="display:none"></div>
       <div id="issues-empty" class="empty-state" style="display:none">
         <p>No issues match the current filter.</p>
         <button class="btn btn-primary" onclick="showNewIssue()">Create the first issue</button>
@@ -399,6 +418,8 @@
         </thead>
         <tbody id="issues-tbody"></tbody>
       </table>
+      <!-- Sentinel observed by IntersectionObserver to trigger next-page fetch -->
+      <div id="issue-bottom-sentinel" class="issue-sentinel"></div>
     </div>
 
     <!-- Issue Detail Panel -->
