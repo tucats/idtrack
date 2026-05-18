@@ -188,6 +188,8 @@ Click the hamburger menu (☰) in the top-right corner to access Settings (dark 
 For developers who want to extend or self-host `idtrack`:
 
 - The server speaks HTTPS only. The TLS certificate and key are embedded in the binary at build time from `resources/https-server.crt` and `resources/https-server.key`. To use your own certificate, replace those files and rebuild.
-- Passwords are hashed with SHA-256 in the browser before transmission. The hash — not the plaintext — is stored in the database.
 - The SQLite database uses a single connection (`MaxOpenConns(1)`) to avoid write contention. This is intentional and appropriate for the expected scale of an internal issue tracker.
 - New database columns are added automatically on startup via `ALTER TABLE ... ADD COLUMN` migrations, so upgrading the binary against an existing database is safe.
+
+A much deeper dive into architectural issues, considerations, and roadmaps for extending the codebase can
+be found in the [docs/IDTRACK.md](docs/IDTRACK.md) file.
