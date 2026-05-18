@@ -11,12 +11,17 @@ goldmark
 HSTS
 idtrack
 isatty
+journalctl
 ldflags
 libc
 mathutil
 mattn
 modernc
+myorg
+myproject
+mysite
 ncruces
+newpass
 nolint
 nosniff
 prefs
@@ -28,4 +33,6 @@ sess
 strftime
 tucats
 upserts
+yourusername
 yuin
+YYYYMMDDTHHMMSS

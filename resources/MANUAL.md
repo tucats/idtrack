@@ -6,17 +6,17 @@
 
 ## Table of Contents
 
-1. [Bootstrapping the System](#bootstrapping)
-2. [CLI Reference](#cli-reference)
-3. [Web Application — Regular Users](#web-app-users)
-4. [Web Application — Admin Features](#web-app-admin)
-5. [Settings and Preferences](#settings)
-6. [Running as a System Service](#service)
-7. [Running in a Docker Container](#docker)
+1. [Bootstrapping the System](#1-bootstrapping-the-system)
+2. [CLI Reference](#2-cli-reference)
+3. [Web Application — Regular Users](#3-web-application--regular-users)
+4. [Web Application — Admin Features](#4-web-application--admin-features)
+5. [Settings and Preferences](#5-settings-and-preferences)
+6. [Running as a System Service](#6-running-as-a-system-service)
+7. [Running in a Docker Container](#7-running-in-a-docker-container)
 
 ---
 
-## 1. Bootstrapping the System {#bootstrapping}
+## 1. Bootstrapping the System
 
 A fresh idtrack installation is up and running in three steps.
 
@@ -64,7 +64,7 @@ idtrack define component "My Project" Frontend
 
 ---
 
-## 2. CLI Reference {#cli-reference}
+## 2. CLI Reference
 
 All CLI commands follow the form `idtrack <command> [subcommand] [options]`.
 
@@ -233,7 +233,7 @@ To proceed with a delete that has blocking issues, you must first re-assign or d
 
 ---
 
-## 3. Web Application — Regular Users {#web-app-users}
+## 3. Web Application — Regular Users
 
 Navigate to `https://localhost:8443` (or your configured host and port) to access the web interface.
 
@@ -330,7 +330,7 @@ Click **Create** to submit. The new issue appears in the list immediately.
 
 ---
 
-## 4. Web Application — Admin Features {#web-app-admin}
+## 4. Web Application — Admin Features
 
 Users with **Admin** privilege see additional items in the hamburger menu (☰, top right of the screen).
 
@@ -453,7 +453,7 @@ Backup files are complete, self-contained SQLite databases and can be opened wit
 
 ---
 
-## 5. Settings and Preferences {#settings}
+## 5. Settings and Preferences
 
 Open the hamburger menu (☰) and choose **Settings**.
 
@@ -491,7 +491,7 @@ Open the hamburger menu and choose **About** to see the version number, build da
 
 ---
 
-## 6. Running as a System Service {#service}
+## 6. Running as a System Service
 
 idtrack can be installed as an automatically started background service using the platform's native service manager. Two helper scripts in the `tools/` directory handle installation, configuration, and removal.
 
@@ -561,7 +561,7 @@ Running the install script a second time stops the running service, replaces the
 
 ### Linux — systemd
 
-Modern Linux distributions use **systemd** to manage services. Services are described by unit files that declare the command to run, the user to run it as, and restart behaviour.
+Modern Linux distributions use **systemd** to manage services. Services are described by unit files that declare the command to run, the user to run it as, and restart behavior.
 
 idtrack can be installed as either a **system service** or a **user service**:
 
@@ -664,7 +664,7 @@ Linux-only options:
 
 ---
 
-## 7. Running in a Docker Container {#docker}
+## 7. Running in a Docker Container
 
 idtrack can run inside a Docker container. The container image is built from source using the provided `Dockerfile` and helper scripts in the `tools/` directory. The SQLite database and backup files are stored on the host machine via a bind mount, so they survive container restarts and upgrades.
 
@@ -798,7 +798,7 @@ docker rm idtrack
 
 ### Technical Note on Foreground Mode
 
-`idtrack serve` normally re-executes the binary as a detached background process — a pattern that works well for direct installation on a host but is incompatible with containers, because the container's main process exits immediately, causing Docker to stop it. The scripts and Dockerfile both use the `--foreground` flag (an internal server flag) to bypass the re-exec mechanism and keep the server running as PID 1 in the container, which is the correct pattern for containerised services.
+`idtrack serve` normally re-executes the binary as a detached background process — a pattern that works well for direct installation on a host but is incompatible with containers, because the container's main process exits immediately, causing Docker to stop it. The scripts and Dockerfile both use the `--foreground` flag (an internal server flag) to bypass the re-exec mechanism and keep the server running as PID 1 in the container, which is the correct pattern for containerized services.
 
 ---
 
