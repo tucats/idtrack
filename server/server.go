@@ -181,11 +181,13 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	log.Printf("idtrack listening on https://localhost%s", addr)
 
-	// secureHeaders and limitBody wrap the entire mux so every response gets
-	// security headers and every request body is capped before any handler runs.
-	// quiesce holds a read-lock on backupMu for each request so that the backup
-	// goroutine can pause the server briefly by acquiring the write lock.
-	handler := secureHeaders(limitBody(s.quiesce(mux)))
+	// gzipHandler sits at the outermost layer so it can inspect and compress
+	// any response — JSON API payloads, static assets, the manual page — before
+	// it leaves the server. secureHeaders and limitBody sit inside it so their
+	// headers are set on the pre-compression ResponseWriter. quiesce holds a
+	// read-lock on backupMu for each request so the backup goroutine can pause
+	// the server briefly by acquiring the write lock.
+	handler := gzipHandler(secureHeaders(limitBody(s.quiesce(mux))))
 
 	// Use an explicit http.Server so we can set read/write/idle timeouts.
 	// Without timeouts, slow-loris clients can hold goroutines open indefinitely.

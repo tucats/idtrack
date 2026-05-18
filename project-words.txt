@@ -6,6 +6,7 @@ BUILDVERFILE
 buildvers
 creds
 DOINCREMENT
+FOUC
 GOARCH
 goldmark
 HSTS
@@ -24,6 +25,7 @@ ncruces
 newpass
 nolint
 nosniff
+omitempty
 prefs
 quiesces
 quiescing
@@ -31,6 +33,8 @@ remyoudompheng
 Roboto
 Segoe
 sess
+setsid
+stdlib
 strftime
 tucats
 upserts
