@@ -15,8 +15,10 @@ idtrack/
 ├── tools/
 │   ├── build             # Native build script (see Versioning section)
 │   ├── buildver.txt      # Current version string, e.g. "1.0-34"
-│   ├── build-container.sh  # Build the Docker image
-│   └── start-container.sh  # Start the container with all options
+│   ├── build-container.sh       # Build the Docker image
+│   ├── start-container.sh       # Start the container with all options
+│   ├── install-service-macos.sh # Install/remove as a launchd service (macOS)
+│   └── install-service-linux.sh # Install/remove as a systemd service (Linux)
 ├── commands/             # One exported function per CLI verb; main.go dispatches here
 │   ├── common.go         # Shared: defaults struct, loadDefaults(), Usage(), package vars
 │   ├── serve.go          # Serve(), Stop(), Restart(), launchBackground(), pid helpers
@@ -336,6 +338,8 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **"Always show desktop version" setting** — a toggle in Settings that adds the class `desktop-mode` to `<html>`. Every responsive CSS rule is gated on `html:not(.desktop-mode)`, so when the class is present all mobile/tablet overrides become inert and the app renders as a full desktop layout regardless of viewport width (the user will need to pinch-zoom or scroll horizontally). The preference is stored in `idtrack_prefs` under `desktopMode`. To prevent a flash of mobile layout on reload, a minified inline `<script>` in `<head>` reads `localStorage` and applies the class before the browser renders the first frame — the same class that `toggleDesktopMode()` and `loadPrefs()` manage at runtime.
 
 ## Important Implementation Decisions
+
+**Service managers (launchd, systemd) also require `--foreground`.** Both `install-service-macos.sh` and `install-service-linux.sh` embed `--foreground` in the generated plist/unit file. The reasoning is identical to the Docker case: without it, `idtrack serve` forks a background child and exits, and the service manager concludes the service failed and immediately tries to restart it in a tight loop. With `--foreground`, the process blocks in the HTTP server loop and the service manager tracks it correctly. The macOS script generates a plist with `RunAtLoad=true` and `KeepAlive=true`; the Linux script generates a unit file with `Type=simple` and `Restart=on-failure`. Both install to the appropriate directory (LaunchAgent `~/Library/LaunchAgents/` or LaunchDaemon `/Library/LaunchDaemons/`; systemd `/etc/systemd/system/` or `~/.config/systemd/user/`) and accept the full set of idtrack server options.
 
 **Docker containers require `--foreground` to stay alive.** `idtrack serve` without `--foreground` re-execs a background child and exits. In a container that exit kills the container because PID 1 has ended. The `Dockerfile` CMD and `tools/start-container.sh` always pass `--foreground`. The SQLite database and backup files are stored outside the container via a host bind mount at `/data`. The `tools/build-container.sh` script reads `tools/buildver.txt` and passes `--build-arg BUILD_VERSION` so the image's version output matches the tag. The binary is built with `CGO_ENABLED=0` inside the Docker builder stage (safe because `modernc.org/sqlite` is pure Go), producing a fully static binary that runs in the Alpine runtime image without any C runtime dependency.
 

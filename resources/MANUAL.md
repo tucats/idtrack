@@ -11,7 +11,8 @@
 3. [Web Application — Regular Users](#web-app-users)
 4. [Web Application — Admin Features](#web-app-admin)
 5. [Settings and Preferences](#settings)
-6. [Running in a Docker Container](#docker)
+6. [Running as a System Service](#service)
+7. [Running in a Docker Container](#docker)
 
 ---
 
@@ -490,7 +491,180 @@ Open the hamburger menu and choose **About** to see the version number, build da
 
 ---
 
-## 6. Running in a Docker Container {#docker}
+## 6. Running as a System Service {#service}
+
+idtrack can be installed as an automatically started background service using the platform's native service manager. Two helper scripts in the `tools/` directory handle installation, configuration, and removal.
+
+| Platform | Service manager | Script |
+| --- | --- | --- |
+| macOS | launchd | `tools/install-service-macos.sh` |
+| Linux (Ubuntu, Debian, Fedora, RHEL, Arch, …) | systemd | `tools/install-service-linux.sh` |
+
+Both scripts accept the same idtrack configuration options (database path, port, TLS certificate, backup settings, branding) and generate the appropriate service definition file from those values.
+
+### macOS — launchd
+
+macOS manages background services through **launchd**, its built-in service supervisor. Services are described by XML property list (`.plist`) files that specify the command to run, where to write logs, and whether to restart on failure.
+
+idtrack can be installed as either a **LaunchAgent** or a **LaunchDaemon**:
+
+- **LaunchAgent** (default) — runs as your user account, starts automatically when you log in. No `sudo` required. Suitable for a personal Mac.
+- **LaunchDaemon** (`--system`) — runs as a specified user, starts at boot before any login. Requires `sudo`. Suitable for a Mac serving as a shared team server.
+
+**Install as a LaunchAgent (personal use):**
+
+```sh
+./tools/install-service-macos.sh
+```
+
+The database defaults to `~/.idtrack/idtrack.db`. Log output goes to `~/.idtrack/idtrack.log`.
+
+**Install as a LaunchDaemon (shared server):**
+
+```sh
+sudo ./tools/install-service-macos.sh \
+  --system --run-as yourusername \
+  --database /var/lib/idtrack/idtrack.db
+```
+
+**With a custom TLS certificate and backup settings:**
+
+```sh
+./tools/install-service-macos.sh \
+  --cert /etc/ssl/certs/idtrack.crt \
+  --key  /etc/ssl/private/idtrack.key \
+  --backup-interval 1h \
+  --backup-count 48 \
+  --backup-age 168h
+```
+
+**Managing the service after installation:**
+
+```sh
+# Check whether the service is running
+launchctl list com.github.tucats.idtrack
+
+# Stop the service
+launchctl kill SIGTERM gui/$(id -u)/com.github.tucats.idtrack
+
+# Start the service
+launchctl kickstart gui/$(id -u)/com.github.tucats.idtrack
+
+# View logs
+tail -f ~/.idtrack/idtrack.log
+
+# Remove the service
+./tools/install-service-macos.sh --uninstall
+```
+
+Running the install script a second time stops the running service, replaces the plist, and restarts it — useful for updating the configuration without manually uninstalling first.
+
+### Linux — systemd
+
+Modern Linux distributions use **systemd** to manage services. Services are described by unit files that declare the command to run, the user to run it as, and restart behaviour.
+
+idtrack can be installed as either a **system service** or a **user service**:
+
+- **System service** (default) — runs as a dedicated `idtrack` system account (created automatically), starts at boot. Requires `sudo`. Suitable for a server.
+- **User service** (`--user-service`) — runs as your account, starts when your systemd session begins. No `sudo` required. Suitable for a personal workstation.
+
+**Install as a system service:**
+
+```sh
+sudo ./tools/install-service-linux.sh
+```
+
+The database defaults to `/var/lib/idtrack/idtrack.db` and is owned by the `idtrack` service account. The account is created automatically if it does not exist.
+
+**Install as a user service:**
+
+```sh
+./tools/install-service-linux.sh --user-service
+```
+
+The database defaults to `~/.idtrack/idtrack.db`.
+
+> **Note:** A user service only runs while your systemd session is active. To keep it running when you are not logged in, enable *lingering* for your account:
+> ```sh
+> loginctl enable-linger $USER
+> ```
+
+**With a custom TLS certificate and backup settings:**
+
+```sh
+sudo ./tools/install-service-linux.sh \
+  --cert /etc/ssl/certs/idtrack.crt \
+  --key  /etc/ssl/private/idtrack.key \
+  --backup-interval 1h \
+  --backup-count 48 \
+  --backup-age 168h
+```
+
+**Managing the service after installation:**
+
+```sh
+# Check status
+systemctl status idtrack
+
+# Stop / start / restart
+systemctl stop    idtrack
+systemctl start   idtrack
+systemctl restart idtrack
+
+# View logs (live)
+journalctl -u idtrack -f
+
+# Remove the service
+sudo ./tools/install-service-linux.sh --uninstall
+```
+
+For user services, prefix each `systemctl` command with `--user`:
+```sh
+systemctl --user status  idtrack
+systemctl --user restart idtrack
+journalctl --user -u idtrack -f
+```
+
+Running the install script again on an already-installed service stops it, updates the unit file, and restarts it.
+
+### All Options
+
+Both install scripts accept the same set of options:
+
+| Option | Description |
+| --- | --- |
+| `--binary PATH` | Path to the idtrack binary. Default: first `idtrack` in PATH, then `./idtrack`. |
+| `--database PATH` | Path to the SQLite database file. |
+| `--port PORT` | Server port. Default: 8443. |
+| `--cert PATH` | PEM TLS certificate file (optional). |
+| `--key PATH` | PEM TLS private key file (optional). |
+| `--backup-interval DURATION` | Backup frequency, e.g. `1h`. Use `off` to disable. |
+| `--backup-count N` | Maximum backups to keep. Use `off` for no limit. |
+| `--backup-age DURATION` | Delete backups older than this. Use `off` for no limit. |
+| `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`. Use `off` to disable. |
+| `--app-name TEXT` | Custom application name. |
+| `--app-description TEXT` | Custom tagline. |
+| `--uninstall` | Stop and remove the service. |
+
+macOS-only options:
+
+| Option | Description |
+| --- | --- |
+| `--system` | Install as a LaunchDaemon (requires sudo). |
+| `--run-as USERNAME` | User the daemon runs as (`--system` only). |
+| `--log PATH` | Log file path. Default: `~/.idtrack/idtrack.log`. |
+| `--label LABEL` | launchd service label. Default: `com.github.tucats.idtrack`. |
+
+Linux-only options:
+
+| Option | Description |
+| --- | --- |
+| `--user-service` | Install as a user service instead of a system service. |
+| `--service-user NAME` | System account to run the service as. Default: `idtrack`. |
+
+---
+
+## 7. Running in a Docker Container {#docker}
 
 idtrack can run inside a Docker container. The container image is built from source using the provided `Dockerfile` and helper scripts in the `tools/` directory. The SQLite database and backup files are stored on the host machine via a bind mount, so they survive container restarts and upgrades.
 

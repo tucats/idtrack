@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/tucats/idtrack/db"
@@ -72,6 +73,10 @@ func Define(args []string) {
 
 	if database == "" {
 		database = defaultDB
+	}
+
+	if abs, err := filepath.Abs(database); err == nil {
+		database = abs
 	}
 
 	d, err := db.Open(database)
@@ -164,6 +169,10 @@ func Delete(args []string) {
 
 	if database == "" {
 		database = defaultDB
+	}
+
+	if abs, err := filepath.Abs(database); err == nil {
+		database = abs
 	}
 
 	d, err := db.Open(database)
