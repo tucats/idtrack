@@ -10,9 +10,13 @@
 idtrack/
 ├── main.go               # Entry point: sets build vars, dispatches to commands.*
 ├── go.mod                # module: github.com/tucats/idtrack
-├── build                 # Build script (see Versioning section)
+├── Dockerfile            # Two-stage Docker build (builder → alpine runtime)
+├── .dockerignore         # Files excluded from the Docker build context
 ├── tools/
-│   └── buildvers.txt     # Current version string, e.g. "1.0-8"
+│   ├── build             # Native build script (see Versioning section)
+│   ├── buildver.txt      # Current version string, e.g. "1.0-34"
+│   ├── build-container.sh  # Build the Docker image
+│   └── start-container.sh  # Start the container with all options
 ├── commands/             # One exported function per CLI verb; main.go dispatches here
 │   ├── common.go         # Shared: defaults struct, loadDefaults(), Usage(), package vars
 │   ├── serve.go          # Serve(), Stop(), Restart(), launchBackground(), pid helpers
@@ -165,7 +169,7 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - Writes child PID to `~/.idtrack/idtrack.pid`.
 - Default port: **8443**. Default database: `idtrack.db` in the working directory.
 - `--server-cert` / `--cert` / `--cert-file` and `--server-key` / `--key` / `--key-file` override the TLS credentials for this run only (do not persist to `defaults.json`). When absent, values from `defaults.json` are used; if those are also absent, the built-in self-signed cert/key are used.
-- The `--foreground` flag is **internal** — it tells the re-exec'd child to run the server directly. Do not expose it in docs.
+- The `--foreground` flag is **internal** for direct host usage — it tells the re-exec'd child to run the server directly. It is exposed and documented in the Docker section of MANUAL.md because containers require foreground operation (Docker manages the process lifecycle; the main process must not exit).
 
 ### `idtrack stop`
 
@@ -332,6 +336,8 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **"Always show desktop version" setting** — a toggle in Settings that adds the class `desktop-mode` to `<html>`. Every responsive CSS rule is gated on `html:not(.desktop-mode)`, so when the class is present all mobile/tablet overrides become inert and the app renders as a full desktop layout regardless of viewport width (the user will need to pinch-zoom or scroll horizontally). The preference is stored in `idtrack_prefs` under `desktopMode`. To prevent a flash of mobile layout on reload, a minified inline `<script>` in `<head>` reads `localStorage` and applies the class before the browser renders the first frame — the same class that `toggleDesktopMode()` and `loadPrefs()` manage at runtime.
 
 ## Important Implementation Decisions
+
+**Docker containers require `--foreground` to stay alive.** `idtrack serve` without `--foreground` re-execs a background child and exits. In a container that exit kills the container because PID 1 has ended. The `Dockerfile` CMD and `tools/start-container.sh` always pass `--foreground`. The SQLite database and backup files are stored outside the container via a host bind mount at `/data`. The `tools/build-container.sh` script reads `tools/buildver.txt` and passes `--build-arg BUILD_VERSION` so the image's version output matches the tag. The binary is built with `CGO_ENABLED=0` inside the Docker builder stage (safe because `modernc.org/sqlite` is pure Go), producing a fully static binary that runs in the Alpine runtime image without any C runtime dependency.
 
 **External TLS cert/key replaces the embedded self-signed certificate.** When `server_cert` and `server_key` are set in `defaults.json` (or passed directly to `idtrack serve`), `server.Start()` reads the PEM files from disk via `os.ReadFile` instead of from the embedded `embed.FS`. Both must be set together — the server will fail to start if only one is present (the cert and key must form a matching pair for `tls.X509KeyPair`). `idtrack default --server-cert` validates that the file exists and resolves it to an absolute path before saving, so a relative path at save time won't silently break after a working-directory change. Use `off` as the value to clear either setting and revert to the built-in certificate.
 

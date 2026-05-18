@@ -11,6 +11,7 @@
 3. [Web Application — Regular Users](#web-app-users)
 4. [Web Application — Admin Features](#web-app-admin)
 5. [Settings and Preferences](#settings)
+6. [Running in a Docker Container](#docker)
 
 ---
 
@@ -486,6 +487,144 @@ Open the hamburger menu and choose **Sign out**. This clears your session, remov
 ## About
 
 Open the hamburger menu and choose **About** to see the version number, build date, and a link to the project on GitHub.
+
+---
+
+## 6. Running in a Docker Container {#docker}
+
+idtrack can run inside a Docker container. The container image is built from source using the provided `Dockerfile` and helper scripts in the `tools/` directory. The SQLite database and backup files are stored on the host machine via a bind mount, so they survive container restarts and upgrades.
+
+### Prerequisites
+
+- Docker installed and running on the host.
+- The idtrack source repository (for building the image).
+
+### Building the Image
+
+```sh
+./tools/build-container.sh
+```
+
+This compiles the binary inside a Docker builder stage, then packages it into a minimal Alpine-based runtime image. The image is tagged with the current version number (from `tools/buildver.txt`) and also as `latest`:
+
+```
+idtrack:1.0-34
+idtrack:latest
+```
+
+Additional build options:
+
+```sh
+# Force a full rebuild (bypass the layer cache)
+./tools/build-container.sh --no-cache
+
+# Build for Linux arm64 (e.g. Raspberry Pi, AWS Graviton)
+./tools/build-container.sh --platform linux/arm64
+
+# Build and push to a registry
+./tools/build-container.sh --name ghcr.io/myorg/idtrack --push
+```
+
+### Starting the Container
+
+```sh
+./tools/start-container.sh --data /path/to/your/data
+```
+
+The `--data` flag is required. It specifies a directory on the **host** machine where the database and backup files will be stored. The directory must already exist.
+
+```sh
+# Create the data directory first if it doesn't exist
+mkdir -p /var/lib/idtrack
+
+# Start with default settings (port 8443, built-in self-signed certificate)
+./tools/start-container.sh --data /var/lib/idtrack
+```
+
+The container runs detached (in the background) by default. Open your browser to `https://localhost:8443` and complete the normal onboarding flow to create the first admin account.
+
+For first-run verification, use `--foreground` to watch the startup log directly in the terminal:
+
+```sh
+./tools/start-container.sh --data /var/lib/idtrack --foreground
+```
+
+### Data Persistence
+
+The database file (`idtrack.db`) and backup directory (`idtrack-backups/`) are written to the directory you specify with `--data`. This directory is bind-mounted at `/data` inside the container. The data is entirely outside the container's writable layer — it is safe to remove, upgrade, or recreate the container without losing any data.
+
+> **Backups** work identically inside the container. The `idtrack-backups/` directory will appear inside your `--data` directory alongside the database file.
+
+### Using a Custom TLS Certificate
+
+By default, idtrack uses its built-in self-signed certificate. To avoid browser security warnings, provide a certificate from a trusted authority:
+
+```sh
+./tools/start-container.sh \
+  --data /var/lib/idtrack \
+  --cert /etc/ssl/certs/tracker.example.com.crt \
+  --key  /etc/ssl/private/tracker.example.com.key
+```
+
+The certificate and key files are mounted read-only inside the container. Both flags must always be supplied together.
+
+### Common Options
+
+| Option | Description |
+| --- | --- |
+| `--data DIR` | Host directory for the database and backups (required) |
+| `--port PORT` | Host port to expose (default: 8443) |
+| `--name NAME` | Container name (default: `idtrack`) |
+| `--image IMAGE` | Image to run (default: `idtrack:latest`) |
+| `--restart POLICY` | Docker restart policy (default: `unless-stopped`) |
+| `--cert PATH` | Host path to a TLS certificate PEM file |
+| `--key PATH` | Host path to the matching TLS private key PEM file |
+| `--backup-interval DURATION` | How often to back up, e.g. `1h`, `30m`. Use `off` to disable. |
+| `--backup-count N` | Maximum number of backups to keep (`off` = no limit) |
+| `--backup-age DURATION` | Delete backups older than this, e.g. `168h` (`off` = no limit) |
+| `--idle-timeout DURATION` | Idle logout timer, e.g. `30m` (`off` = disabled) |
+| `--app-name TEXT` | Custom application name shown in the header |
+| `--app-description TEXT` | Custom tagline on the login screen |
+| `--foreground` | Run in the terminal foreground instead of detached |
+
+### Example: Full Production Setup
+
+```sh
+./tools/start-container.sh \
+  --data    /var/lib/idtrack \
+  --port    443 \
+  --name    idtrack \
+  --cert    /etc/ssl/certs/tracker.example.com.crt \
+  --key     /etc/ssl/private/tracker.example.com.key \
+  --backup-interval 1h \
+  --backup-count    48 \
+  --backup-age      168h \
+  --idle-timeout    30m \
+  --app-name        "ACME Tracker"
+```
+
+### Managing a Running Container
+
+```sh
+# View live logs
+docker logs -f idtrack
+
+# Stop the container (data is preserved)
+docker stop idtrack
+
+# Remove the container (data is preserved — it lives in --data)
+docker rm idtrack
+
+# Upgrade to a new image
+docker stop idtrack
+docker rm idtrack
+./tools/build-container.sh        # or pull the new image
+./tools/start-container.sh --data /var/lib/idtrack   # restart with same options
+```
+
+### Technical Note on Foreground Mode
+
+`idtrack serve` normally re-executes the binary as a detached background process — a pattern that works well for direct installation on a host but is incompatible with containers, because the container's main process exits immediately, causing Docker to stop it. The scripts and Dockerfile both use the `--foreground` flag (an internal server flag) to bypass the re-exec mechanism and keep the server running as PID 1 in the container, which is the correct pattern for containerised services.
 
 ---
 

@@ -28,7 +28,9 @@ func Default(args []string) {
 		backupCountSet bool
 		backupAge      string
 		serverCert     string
+		serverCertSet  bool
 		serverKey      string
+		serverKeySet   bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -36,24 +38,23 @@ func Default(args []string) {
 		case "--server-cert", "--cert", "--cert-file":
 			if i+1 < len(args) {
 				i++
-				serverCert = args[i]
+				serverCertSet = true
 
-				if serverCert == offValue {
-					serverCert = "" // empty = disabled
-
+				if args[i] == offValue {
+					serverCert = "" // empty = revert to built-in cert
 					continue
 				}
 
 				// Ensure this file exists, and make the absolute path to
 				// the file.
-				if _, err := os.Stat(serverCert); err != nil {
-					fmt.Fprintf(os.Stderr, "cannot access server cert file %q: %v\n", serverCert, err)
+				if _, err := os.Stat(args[i]); err != nil {
+					fmt.Fprintf(os.Stderr, "cannot access server cert file %q: %v\n", args[i], err)
 					os.Exit(1)
 				}
 
-				abs, err := filepath.Abs(serverCert)
+				abs, err := filepath.Abs(args[i])
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "cannot resolve path to server cert file %q: %v\n", serverCert, err)
+					fmt.Fprintf(os.Stderr, "cannot resolve path to server cert file %q: %v\n", args[i], err)
 					os.Exit(1)
 				}
 
@@ -63,24 +64,23 @@ func Default(args []string) {
 		case "--server-key", "--key", "--key-file":
 			if i+1 < len(args) {
 				i++
-				serverKey = args[i]
+				serverKeySet = true
 
-				if serverKey == offValue {
-					serverKey = "" // empty = disabled
-
+				if args[i] == offValue {
+					serverKey = "" // empty = revert to built-in key
 					continue
 				}
 
 				// Ensure this file exists, and make the absolute path to
 				// the file.
-				if _, err := os.Stat(serverKey); err != nil {
-					fmt.Fprintf(os.Stderr, "cannot access server key file %q: %v\n", serverKey, err)
+				if _, err := os.Stat(args[i]); err != nil {
+					fmt.Fprintf(os.Stderr, "cannot access server key file %q: %v\n", args[i], err)
 					os.Exit(1)
 				}
 
-				abs, err := filepath.Abs(serverKey)
+				abs, err := filepath.Abs(args[i])
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "cannot resolve path to server key file %q: %v\n", serverKey, err)
+					fmt.Fprintf(os.Stderr, "cannot resolve path to server key file %q: %v\n", args[i], err)
 					os.Exit(1)
 				}
 
@@ -201,7 +201,7 @@ func Default(args []string) {
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
-		backupInterval != "" || backupCountSet || backupAge != "" || serverCert != "" || serverKey != ""
+		backupInterval != "" || backupCountSet || backupAge != "" || serverCertSet || serverKeySet
 	if !anySet {
 		showDefaults()
 
@@ -211,12 +211,12 @@ func Default(args []string) {
 	// Load current saved defaults so we preserve any keys we are not updating.
 	defs := loadDefaults()
 
-	if serverCert != "" {
-		defs.ServerCert = serverCert
+	if serverCertSet {
+		defs.ServerCert = serverCert // "" clears the setting (reverts to built-in)
 	}
 
-	if serverKey != "" {
-		defs.ServerKey = serverKey
+	if serverKeySet {
+		defs.ServerKey = serverKey // "" clears the setting (reverts to built-in)
 	}
 
 	if port != 0 {
