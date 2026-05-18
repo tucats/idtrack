@@ -42,6 +42,7 @@ func Default(args []string) {
 
 				if args[i] == offValue {
 					serverCert = "" // empty = revert to built-in cert
+
 					continue
 				}
 
@@ -68,6 +69,7 @@ func Default(args []string) {
 
 				if args[i] == offValue {
 					serverKey = "" // empty = revert to built-in key
+
 					continue
 				}
 
@@ -229,6 +231,7 @@ func Default(args []string) {
 		if abs, err := filepath.Abs(database); err == nil {
 			database = abs
 		}
+		
 		defs.Database = database
 	}
 

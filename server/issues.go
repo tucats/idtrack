@@ -25,7 +25,7 @@ const maxSearchLen = 200
 //	search   <text>                 — full-text substring match
 //	sort     <column>               — column to sort by
 //	order    asc|desc               — sort direction
-//	limit    <n>                    — page size (0 = return all, legacy behaviour)
+//	limit    <n>                    — page size (0 = return all, legacy behavior)
 //	offset   <n>                    — rows to skip for pagination
 func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -33,24 +33,31 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	search := q.Get("search")
 	if len(search) > maxSearchLen {
 		jsonError(w, "search parameter exceeds maximum length of 200 characters", http.StatusBadRequest)
+
 		return
 	}
 
 	limit, offset := 0, 0
+
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
 			jsonError(w, "invalid limit parameter", http.StatusBadRequest)
+
 			return
 		}
+
 		limit = n
 	}
+
 	if v := q.Get("offset"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
 			jsonError(w, "invalid offset parameter", http.StatusBadRequest)
+
 			return
 		}
+
 		offset = n
 	}
 
@@ -63,11 +70,14 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	// When paginating, run a COUNT query first so the client knows the total
 	// number of matching rows without fetching them all.
 	total := 0
+
 	if limit > 0 {
 		var err error
+
 		total, err = db.CountIssues(s.database, status, priority, search, project)
 		if err != nil {
 			jsonError(w, "server error", http.StatusInternalServerError)
+
 			return
 		}
 	}
@@ -75,6 +85,7 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	issues, err := db.ListIssues(s.database, status, priority, search, project, sortCol, sortDir, limit, offset)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
 
@@ -98,12 +109,14 @@ func (s *srv) handleListChanges(w http.ResponseWriter, r *http.Request) {
 	since := r.URL.Query().Get("since")
 	if since == "" {
 		jsonError(w, "since parameter is required", http.StatusBadRequest)
+
 		return
 	}
 
 	issues, err := db.ListChanges(s.database, since)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
 
@@ -126,11 +139,13 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
 
 	if strings.TrimSpace(body.Title) == "" {
 		jsonError(w, "title is required", http.StatusBadRequest)
+
 		return
 	}
 
@@ -139,6 +154,7 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	issue, err := db.CreateIssue(s.database, body.Title, body.Description, reporter, body.Assignee, body.Priority, body.Project, body.Component)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
 
@@ -157,17 +173,20 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	issue, err := db.GetIssue(s.database, id)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
 
 	if issue == nil {
 		jsonError(w, "issue not found", http.StatusNotFound)
+
 		return
 	}
 
 	comments, err := db.ListComments(s.database, id)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
+
 		return
 	}
 
@@ -177,7 +196,7 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// issueModifier returns true when the user is authorised to edit or delete the
+// issueModifier returns true when the user is authorized to edit or delete the
 // given issue. Admins, the original reporter, and the current assignee may all
 // make changes; any other authenticated user is a read-only third party.
 func issueModifier(u *db.User, issue *db.Issue) bool {
@@ -194,21 +213,24 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch the current record before decoding the body so we can authorise
+	// Fetch the current record before decoding the body so we can authorize
 	// against the current reporter and assignee fields.
 	existing, err := db.GetIssue(s.database, id)
 	if err != nil {
 		internalError(w, err)
+
 		return
 	}
 
 	if existing == nil {
 		jsonError(w, "issue not found", http.StatusNotFound)
+
 		return
 	}
 
 	if !issueModifier(currentUser(r), existing) {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
 
@@ -224,22 +246,26 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonError(w, "invalid request body", http.StatusBadRequest)
+
 		return
 	}
 
 	if strings.TrimSpace(body.Title) == "" {
 		jsonError(w, "title is required", http.StatusBadRequest)
+
 		return
 	}
 
 	issue, err := db.UpdateIssue(s.database, id, body.Title, body.Description, body.Priority, body.Status, body.Assignee, body.Project, body.Component)
 	if err != nil {
 		internalError(w, err)
+
 		return
 	}
 
 	if issue == nil {
 		jsonError(w, "issue not found", http.StatusNotFound)
+
 		return
 	}
 
@@ -257,21 +283,25 @@ func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 	existing, err := db.GetIssue(s.database, id)
 	if err != nil {
 		internalError(w, err)
+
 		return
 	}
 
 	if existing == nil {
 		jsonError(w, "issue not found", http.StatusNotFound)
+
 		return
 	}
 
 	if !issueModifier(currentUser(r), existing) {
 		jsonError(w, "forbidden", http.StatusForbidden)
+
 		return
 	}
 
 	if err := db.DeleteIssue(s.database, id); err != nil {
 		internalError(w, err)
+
 		return
 	}
 
