@@ -174,6 +174,13 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 
 	db.RecordLogin(s.database, body.Username)
 
+	// Log that someone new was created and logged in.
+	if body.DisplayName != "" {
+		log.Printf("onboarding user %s (%s)", body.Username, body.DisplayName)
+	} else {
+		log.Printf("onboarding user %s", body.Username)
+	}
+
 	sessToken := s.sessions.create(body.Username, defaultSessionTTL)
 	http.SetCookie(w, sessionCookie(sessToken, false))
 
@@ -240,6 +247,13 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	s.loginLimiter.clear(ip)
 	db.RecordLogin(s.database, user.Username)
+
+	// Log that someone new logged in.
+	if user.DisplayName != "" {
+		log.Printf("login user %s (%s)", user.Username, user.DisplayName)
+	} else {
+		log.Printf("login user %s", user.Username)
+	}
 
 	sessToken := s.sessions.create(user.Username, sessionTTL(body.KeepLoggedIn))
 	http.SetCookie(w, sessionCookie(sessToken, body.KeepLoggedIn))

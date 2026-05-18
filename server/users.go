@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"strings"
 
@@ -68,6 +69,13 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 
 		return
+	}
+
+	// Log that someone new was added.
+	if body.DisplayName != "" {
+		log.Printf("added user %s (%s)", body.Username, body.DisplayName)
+	} else {
+		log.Printf("added user %s", body.Username)
 	}
 
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
@@ -140,6 +148,13 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Log that a user record was modified.
+	if body.DisplayName != "" {
+		log.Printf("modified user %s (%s)", username, body.DisplayName)
+	} else {
+		log.Printf("modified user %s", username)
+	}
+
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -195,6 +210,13 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		internalError(w, err)
 
 		return
+	}
+
+	// Log that a user record was deleted.
+	if target.DisplayName != "" {
+		log.Printf("deleted user %s (%s)", username, target.DisplayName)
+	} else {
+		log.Printf("deleted user %s", username)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})

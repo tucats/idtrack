@@ -36,7 +36,7 @@ idtrack serve
 
 The server starts in the background, listening on HTTPS port 8443 by default. Open your browser to `https://localhost:8443`.
 
-> **Note:** idtrack uses a self-signed TLS certificate. Your browser will show a security warning on first visit. Accept the exception to proceed — this is expected for an internal tool.
+> **Note:** By default, idtrack uses a built-in self-signed TLS certificate. Your browser will show a security warning on first visit. Accept the exception to proceed — this is expected for an internal tool. If you have a certificate from a trusted authority, you can configure it with `idtrack default --server-cert` and `--server-key`.
 
 ### Step 3 — Create the first admin account
 
@@ -68,24 +68,29 @@ All CLI commands follow the form `idtrack <command> [subcommand] [options]`.
 
 ### `idtrack default`
 
-Save default settings to `~/.idtrack/defaults.json`. At least one flag is required.
+Save default settings to `~/.idtrack/defaults.json`. At least one flag is required. Running `idtrack default` with no flags prints the current saved defaults.
 
 | Flag | Description |
 | --- | --- |
 | `--port N` | Default HTTPS port (default: 8443) |
 | `--database PATH` | Default path to the SQLite database file |
-| `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`, `1h`, `90s`. Use `0` to disable. |
+| `--server-cert PATH` | Path to a PEM-encoded TLS certificate file. If omitted, the built-in self-signed certificate is used. Use `off` to revert to the built-in certificate. |
+| `--server-key PATH` | Path to a PEM-encoded TLS private key file. If omitted, the built-in self-signed key is used. Use `off` to revert to the built-in key. |
+| `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`, `1h`, `90s`. Use `0` or `off` to disable. |
 | `--app-name TEXT` | Custom application name shown in the header and About dialog |
 | `--app-description TEXT` | Custom tagline shown under the name on the login screen and About dialog |
-| `--backup-interval DURATION` | How often to create a backup, e.g. `1h`, `30m`. Use `0` to disable backups entirely. |
-| `--backup-count N` | Maximum number of backup files to keep. Oldest files are deleted first when the count is exceeded. `0` means no limit. |
-| `--backup-age DURATION` | Delete backup files whose name-embedded timestamp is older than this duration, e.g. `168h` (7 days). `0` means no age limit. |
+| `--backup-interval DURATION` | How often to create a backup, e.g. `1h`, `30m`. Use `0` or `off` to disable backups entirely. |
+| `--backup-count N` | Maximum number of backup files to keep. Oldest files are deleted first when the count is exceeded. Use `0` or `off` for no limit. |
+| `--backup-age DURATION` | Delete backup files whose name-embedded timestamp is older than this duration, e.g. `168h` (7 days). Use `0` or `off` for no age limit. |
+
+The path given to `--server-cert` and `--server-key` must already exist; the command validates the file before saving and stores its absolute path.
 
 ```sh
 idtrack default --port 9000 --database ~/myproject/issues.db
 idtrack default --idle-timeout 30m
 idtrack default --app-name "ACME Tracker" --app-description "ACME Engineering Issues"
 idtrack default --backup-interval 1h --backup-count 24 --backup-age 168h
+idtrack default --server-cert /etc/ssl/certs/mysite.crt --server-key /etc/ssl/private/mysite.key
 ```
 
 ---
@@ -98,8 +103,12 @@ Start the server in the background.
 | --- | --- |
 | `--port N` | Override the port for this run |
 | `--database PATH` | Override the database path for this run |
+| `--server-cert PATH` | Override the TLS certificate file for this run |
+| `--server-key PATH` | Override the TLS private key file for this run |
 
 The server process is detached from the terminal. Its PID is written to `~/.idtrack/idtrack.pid` and its output is logged to `~/.idtrack/idtrack.log`.
+
+If `--server-cert` and `--server-key` are not specified (either on the command line or via `idtrack default`), the server uses its built-in self-signed certificate. Your browser will show a security warning for self-signed certificates — this is expected. To avoid the warning, configure a certificate from a trusted authority using the flags above.
 
 ---
 

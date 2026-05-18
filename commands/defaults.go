@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const offValue = "off"
+
 // Default saves one or more settings into ~/.idtrack/defaults.json. When
 // called with no arguments it prints the current defaults as a table instead.
 // Unspecified keys in the file are left unchanged — existing values are loaded
@@ -25,10 +27,66 @@ func Default(args []string) {
 		backupCount    int
 		backupCountSet bool
 		backupAge      string
+		serverCert     string
+		serverKey      string
 	)
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--server-cert", "--cert", "--cert-file":
+			if i+1 < len(args) {
+				i++
+				serverCert = args[i]
+
+				if serverCert == offValue {
+					serverCert = "" // empty = disabled
+
+					continue
+				}
+
+				// Ensure this file exists, and make the absolute path to
+				// the file.
+				if _, err := os.Stat(serverCert); err != nil {
+					fmt.Fprintf(os.Stderr, "cannot access server cert file %q: %v\n", serverCert, err)
+					os.Exit(1)
+				}
+
+				abs, err := filepath.Abs(serverCert)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "cannot resolve path to server cert file %q: %v\n", serverCert, err)
+					os.Exit(1)
+				}
+
+				serverCert = abs
+			}
+
+		case "--server-key", "--key", "--key-file":
+			if i+1 < len(args) {
+				i++
+				serverKey = args[i]
+
+				if serverKey == offValue {
+					serverKey = "" // empty = disabled
+
+					continue
+				}
+
+				// Ensure this file exists, and make the absolute path to
+				// the file.
+				if _, err := os.Stat(serverKey); err != nil {
+					fmt.Fprintf(os.Stderr, "cannot access server key file %q: %v\n", serverKey, err)
+					os.Exit(1)
+				}
+
+				abs, err := filepath.Abs(serverKey)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "cannot resolve path to server key file %q: %v\n", serverKey, err)
+					os.Exit(1)
+				}
+
+				serverKey = abs
+			}
+
 		case "--port", "-p":
 			if i+1 < len(args) {
 				i++
@@ -53,7 +111,7 @@ func Default(args []string) {
 				i++
 
 				val := args[i]
-				if val == "0" || val == "0s" || val == "0m" || val == "0h" {
+				if val == "0" || val == "0s" || val == "0m" || val == "0h" || val == offValue {
 					idleTimeout = 0
 				} else {
 					d, err := time.ParseDuration(val)
@@ -85,7 +143,7 @@ func Default(args []string) {
 				i++
 
 				val := args[i]
-				if val == "0" || val == "0s" {
+				if val == "0" || val == "0s" || val == offValue {
 					backupInterval = "" // empty = disabled
 				} else {
 					if _, err := time.ParseDuration(val); err != nil {
@@ -100,6 +158,13 @@ func Default(args []string) {
 		case "--backup-count":
 			if i+1 < len(args) {
 				i++
+
+				if args[i] == offValue {
+					backupCount = 0
+					backupCountSet = true
+
+					continue
+				}
 
 				n, err := strconv.Atoi(args[i])
 				if err != nil || n < 0 {
@@ -116,7 +181,7 @@ func Default(args []string) {
 				i++
 
 				val := args[i]
-				if val == "0" || val == "0s" {
+				if val == "0" || val == "0s" || val == "0m" || val == "0h" || val == offValue {
 					backupAge = "" // empty = disabled
 				} else {
 					if _, err := time.ParseDuration(val); err != nil {
@@ -136,7 +201,7 @@ func Default(args []string) {
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
-		backupInterval != "" || backupCountSet || backupAge != ""
+		backupInterval != "" || backupCountSet || backupAge != "" || serverCert != "" || serverKey != ""
 	if !anySet {
 		showDefaults()
 
@@ -145,6 +210,14 @@ func Default(args []string) {
 
 	// Load current saved defaults so we preserve any keys we are not updating.
 	defs := loadDefaults()
+
+	if serverCert != "" {
+		defs.ServerCert = serverCert
+	}
+
+	if serverKey != "" {
+		defs.ServerKey = serverKey
+	}
 
 	if port != 0 {
 		defs.Port = port
@@ -265,8 +338,20 @@ func showDefaults() {
 		row("database", `"idtrack.db" in working directory (default)`)
 	}
 
+	if defs.ServerCert != "" {
+		row("server-cert", defs.ServerCert)
+	} else {
+		row("server-cert", "(embedded self-signed)")
+	}
+
+	if defs.ServerKey != "" {
+		row("server-key", defs.ServerKey)
+	} else {
+		row("server-key", "(embedded self-signed)")
+	}
+
 	if defs.IdleTimeout > 0 {
-		row("idle-timeout", (time.Duration(defs.IdleTimeout)*time.Second).String())
+		row("idle-timeout", (time.Duration(defs.IdleTimeout) * time.Second).String())
 	} else {
 		row("idle-timeout", "disabled")
 	}
