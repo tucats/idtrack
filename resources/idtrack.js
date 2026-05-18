@@ -61,9 +61,41 @@ let _epProject          = null;
 // When the user clicks "Create Project" these are POSTed one by one.
 let _epPendingComponents = [];
 
-// Every issue returned by the most recent GET /api/issues call.
-// Filtering and sorting are applied to this array client-side.
-let _allIssues         = [];
+// Paginated issue window — replaces the old _allIssues flat array.
+//
+// Rather than loading every issue at once, we fetch one page at a time and
+// accumulate results in _issueWindow as the user scrolls down.
+//
+// _issueWindow  — the issues fetched so far for the current filter/sort.
+//                 Grows page-by-page; never trimmed (append-only scroll model).
+// _totalIssues  — the server-reported count of ALL matching rows (not just the
+//                 loaded ones). Used to know when there are no more pages to fetch.
+// _lastSeenAt   — the maximum updated_at timestamp seen in _issueWindow. Sent to
+//                 the server as a cursor when polling: "give me anything newer than this."
+// _fetchGen     — "generation counter" to prevent stale responses from landing.
+//                 Each call to loadIssueWindow() increments this before the fetch.
+//                 When the response arrives we check if the counter still matches;
+//                 if the user changed a filter while the request was in flight the
+//                 counter will have advanced and we simply discard the old result.
+// _fetchLock    — prevents loadNextPage() from launching two page-fetches at once.
+//                 The IntersectionObserver can fire multiple times before the first
+//                 response arrives; the lock ensures only one is in flight.
+// _searchTimer  — setTimeout handle used to debounce the search field: we wait
+//                 300 ms after the last keystroke before sending a server request.
+// _scrollObserver — the IntersectionObserver that watches the invisible sentinel
+//                 element at the bottom of the list and triggers loadNextPage().
+// _pollTimer    — handle for the 30-second setInterval background polling loop.
+// _refreshHintOn — true while the "new issues available" toast is visible.
+let _issueWindow    = [];
+let _totalIssues    = 0;
+let _pageSize       = 50;      // from prefs; changed via Settings
+let _lastSeenAt     = '';
+let _fetchGen       = 0;
+let _fetchLock      = false;
+let _searchTimer    = null;
+let _scrollObserver = null;
+let _pollTimer      = null;
+let _refreshHintOn  = false;
 
 // The id of the issue currently open in the detail panel. null = none open.
 let _currentId         = null;
@@ -327,15 +359,25 @@ async function fetchUsers() {
 }
 
 // GET /api/issues
-// Returns every issue the server has. Filtering and sorting happen
-// client-side on the returned array; we do not send filter params to
-// the server.
-// Response shape: { issues: [{ id, title, description, reporter, assignee,
-//                               priority, status, created_at, updated_at,
-//                               project, component }, ...] }
-async function fetchIssues() {
-    const data = await apiGet('/api/issues');
-    return data.issues || [];
+// fetchIssuePage fetches one page of issues from the server using the current
+// filter/sort state. Returns { issues, total } where total is the count of all
+// matching rows (not just this page). limit defaults to _pageSize.
+//
+// Response shape: { issues: [...], total: N, offset: N, limit: N }
+async function fetchIssuePage(offset, limit) {
+    limit = limit || _pageSize;
+    const params = new URLSearchParams();
+    if (_statusFilter !== 'all')   params.set('status',   _statusFilter);
+    if (_priorityFilter !== 'all') params.set('priority', _priorityFilter);
+    if (_projectFilter !== 'all')  params.set('project',  _projectFilter);
+    const q = (document.getElementById('search-input') || {}).value || '';
+    if (q) params.set('search', q);
+    params.set('sort',   _sortCol);
+    params.set('order',  _sortAsc ? 'asc' : 'desc');
+    params.set('limit',  String(limit));
+    params.set('offset', String(offset || 0));
+    const data = await apiGet('/api/issues?' + params);
+    return { issues: data.issues || [], total: data.total || 0 };
 }
 
 // GET /api/issues/{id}
@@ -486,9 +528,10 @@ async function launchApp() {
     // Reset the idle timer so it starts fresh from this login event.
     stopIdleTracking();
     startIdleTracking();
-    await refreshIssues();
     await populateAssigneeDropdowns();
     await populateProjectDropdowns();
+    await loadIssueWindow();
+    startPolling();
 }
 
 // doLogout is triggered by "Sign out" in the menu and by the idle-
@@ -501,10 +544,14 @@ async function launchApp() {
 //   in the Set-Cookie response header.
 async function doLogout() {
     stopIdleTracking();
+    stopPolling();
+    dismissRefreshHint();
     // Fire-and-forget: if the network call fails we still clear local
     // state so the user is at least logged out on this device.
     try { await fetch('/api/logout', { method: 'POST' }); } catch {}
     _currentUser = null;
+    _issueWindow = [];
+    _totalIssues = 0;
     sessionStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(PERSIST_KEY);
     _keepLoggedIn = false;
@@ -522,49 +569,62 @@ async function doLogout() {
 // =====================================================================
 // UI — FILTERS & SORT
 // =====================================================================
-// The issue list is filtered and sorted entirely on the client side.
-// The full issue list is fetched once (stored in _allIssues) and all
-// filter/sort changes re-run filteredAndSorted() over that cached list
-// rather than making new server requests on every keystroke or click.
+// Filters and sort are sent to the server on every change; the server
+// handles all filtering, sorting, and pagination. Each change below
+// resets the issue window and re-fetches from offset 0.
 
-// setStatusFilter / setPriorityFilter / setProjectFilter are the
-// onchange handlers for the three filter <select> elements in the
-// header bar. They update the relevant state variable and re-render.
 function setStatusFilter(val) {
     _statusFilter = val;
-    renderIssues(_allIssues);
+    loadIssueWindow();
 }
 
 function setPriorityFilter(val) {
     _priorityFilter = val;
-    renderIssues(_allIssues);
+    loadIssueWindow();
 }
 
 function setProjectFilter(val) {
     _projectFilter = val;
-    renderIssues(_allIssues);
+    loadIssueWindow();
 }
 
-// applyFilters is the oninput handler for the search box. It fires on
-// every keystroke. Re-running the filter over the cached array is fast
-// enough that live search feels instant.
+// applyFilters is the oninput handler for the search box. It debounces
+// the server fetch by 300 ms so rapid typing doesn't fire a request on
+// every keystroke. A "Searching…" indicator is shown during the wait.
 function applyFilters() {
-    renderIssues(_allIssues);
+    const ss = document.getElementById('search-status');
+    const q  = (document.getElementById('search-input') || {}).value || '';
+    if (ss) ss.textContent = q ? 'Searching…' : '';
+    if (_searchTimer) clearTimeout(_searchTimer);
+    _searchTimer = setTimeout(async () => {
+        if (ss) ss.textContent = '';
+        await loadIssueWindow();
+    }, 300);
 }
 
-// toggleSort is called when the user clicks a column header. If they
-// click the already-active column the direction is reversed; clicking a
-// new column sorts ascending (except 'id', which defaults to descending
-// so the newest issues appear first).
+// clearSearch immediately clears the search box and reloads (no debounce).
+// Bound to the Escape key on the search input.
+function clearSearch() {
+    const input = document.getElementById('search-input');
+    if (input) input.value = '';
+    if (_searchTimer) { clearTimeout(_searchTimer); _searchTimer = null; }
+    const ss = document.getElementById('search-status');
+    if (ss) ss.textContent = '';
+    loadIssueWindow();
+}
+
+// toggleSort is called when the user clicks a column header. Clicking the
+// active column reverses direction; a new column sorts ascending (except
+// 'id', which defaults to descending so the newest issues appear first).
 function toggleSort(col) {
     if (_sortCol === col) {
         _sortAsc = !_sortAsc;
     } else {
         _sortCol = col;
-        _sortAsc = (col === 'id') ? false : true;
+        _sortAsc = (col !== 'id');
     }
     updateSortUI();
-    renderIssues(_allIssues);
+    loadIssueWindow();
 }
 
 // updateSortUI decorates the active column header with a sort arrow
@@ -597,105 +657,169 @@ function updateSortUI() {
 // UI — ISSUES LIST
 // =====================================================================
 
-// refreshIssues fetches a fresh copy of all issues from the server and
-// re-renders the table. Called on login and after any mutation (create,
-// update, delete) to keep the list in sync with the server.
+// loadIssueWindow resets the issue window and fetches the first page from the
+// server using the current filter/sort/search state. It is called whenever
+// those inputs change (filter dropdowns, search box, sort headers) and at
+// login time.
 //
-// GET /api/issues → { issues: [...] }
-async function refreshIssues() {
+// The generation counter trick: we capture the current _fetchGen value in a
+// local variable `gen` before the async fetch begins. When the response
+// arrives we compare `gen` to the (possibly incremented) _fetchGen. If they
+// differ it means the user changed a filter while this request was in flight —
+// we silently discard the result so it never overwrites a newer page.
+async function loadIssueWindow() {
+    const gen = ++_fetchGen;
+    _issueWindow  = [];
+    _totalIssues  = 0;
+    _lastSeenAt   = '';
+    _fetchLock    = false;
+    renderIssueWindow();     // immediately shows the empty state / clears old rows
+    updateIssueCounter();
     try {
-        _allIssues = await fetchIssues();
-        renderIssues(_allIssues);
+        const { issues, total } = await fetchIssuePage(0);
+        if (gen !== _fetchGen) return; // a newer filter change superseded this fetch
+        _issueWindow = issues;
+        _totalIssues = total;
+        _updateLastSeenAt(issues);
+        renderIssueWindow();
+        updateIssueCounter();
+        setupScrollObserver();
     } catch (e) {
-        if (e.message !== 'Unauthorized') console.error('refreshIssues:', e);
+        if (e.message !== 'Unauthorized') console.error('loadIssueWindow:', e);
     }
 }
 
-// filteredAndSorted applies the current filter and sort state to the
-// provided array and returns a new filtered+sorted array. The original
-// _allIssues array is never mutated. Given the same inputs and state
-// variables this function always returns the same result — it has no
-// side effects.
-function filteredAndSorted(issues) {
-    const search = (document.getElementById('search-input') || {}).value || '';
-    const q = search.toLowerCase();
-
-    let result = issues.filter(issue => {
-        // Status filter: 'open' matches only Open issues, 'resolved' only Resolved.
-        if (_statusFilter !== 'all') {
-            const wantOpen = _statusFilter === 'open';
-            if (wantOpen && issue.status !== 'Open') return false;
-            if (!wantOpen && issue.status !== 'Resolved') return false;
-        }
-        if (_priorityFilter !== 'all' && issue.priority !== _priorityFilter) return false;
-        if (_projectFilter !== 'all' && issue.project !== _projectFilter) return false;
-        if (q) {
-            // Text search: join all searchable fields into one string and
-            // check whether the query appears anywhere in it.
-            const haystack = [issue.title, issue.description, issue.reporter, issue.assignee, issue.project, issue.component].join(' ').toLowerCase();
-            if (!haystack.includes(q)) return false;
-        }
-        return true;
-    });
-
-    // Priority is an ordered enum, not a string, so we map it to a number
-    // before sorting. Without this, "High" < "Low" < "Medium" alphabetically,
-    // which is wrong. The ?? 99 fallback handles unknown values gracefully.
-    const priOrder = { High:0, Medium:1, Low:2 };
-    result.sort((a, b) => {
-        let va = a[_sortCol], vb = b[_sortCol];
-        if (_sortCol === 'priority') { va = priOrder[va] ?? 99; vb = priOrder[vb] ?? 99; }
-        // IDs are integers stored as strings in the JSON; coerce to Number
-        // so "10" sorts after "9" rather than before it.
-        if (_sortCol === 'id')       { va = Number(va); vb = Number(vb); }
-        if (va < vb) return _sortAsc ? -1 : 1;
-        if (va > vb) return _sortAsc ?  1 : -1;
-        return 0;
-    });
-
-    return result;
+// loadNextPage appends the next page to _issueWindow. Called by the
+// IntersectionObserver when the bottom sentinel div scrolls into view.
+//
+// _fetchLock is set to true for the duration of the network request. Without
+// it the observer could fire again before the first response arrives (e.g.
+// the user scrolls quickly) and we would launch duplicate overlapping fetches
+// that each try to append the same page of rows.
+async function loadNextPage() {
+    if (_fetchLock) return;                            // already fetching a page
+    if (_issueWindow.length >= _totalIssues) return;  // all pages already loaded
+    _fetchLock = true;
+    const gen    = _fetchGen;
+    const offset = _issueWindow.length;
+    try {
+        const { issues, total } = await fetchIssuePage(offset);
+        if (gen !== _fetchGen) { _fetchLock = false; return; }
+        _issueWindow  = _issueWindow.concat(issues);
+        _totalIssues  = total;
+        _updateLastSeenAt(issues);
+        _appendIssueRows(issues);
+        updateIssueCounter();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') console.error('loadNextPage:', e);
+    }
+    _fetchLock = false;
 }
 
-// renderIssues rebuilds the entire issue table body from scratch. It
-// calls filteredAndSorted() on the provided array, then replaces the
-// tbody innerHTML with one row per visible issue. Building the HTML as
-// a single string and setting innerHTML once is much faster than
-// creating individual DOM nodes in a loop.
-//
-// It also handles the empty-state message shown when no issues match
-// the current filters.
-function renderIssues(issues) {
-    const visible = filteredAndSorted(issues);
-    const tbody   = document.getElementById('issues-tbody');
-    const empty   = document.getElementById('issues-empty');
-    const table   = document.getElementById('issues-table');
+// _updateLastSeenAt advances the polling cursor to the maximum updated_at
+// timestamp seen across all issues in the batch. Timestamps are RFC3339
+// strings (e.g. "2026-05-17T14:23:00Z") so lexicographic comparison is
+// equivalent to chronological comparison — no Date parsing needed.
+function _updateLastSeenAt(issues) {
+    for (const iss of issues) {
+        if (!_lastSeenAt || iss.updated_at > _lastSeenAt) _lastSeenAt = iss.updated_at;
+    }
+}
 
-    if (visible.length === 0) {
+// issueRow returns the HTML string for a single table row. The data-id
+// attribute embeds the issue id directly on the DOM element so we can later
+// find and update a specific row with:
+//   document.querySelector('#issues-tbody tr[data-id="42"]')
+// without iterating over every row or keeping a separate id→element map.
+// esc() is called on every user-supplied string to prevent XSS — it converts
+// characters like < > & " into safe HTML entities before they reach innerHTML.
+function issueRow(issue) {
+    const sel = issue.id === _currentId ? ' selected' : '';
+    return `<tr class="issue-row${sel}" data-id="${issue.id}" onclick="selectIssue(${issue.id})">
+        <td class="col-id">#${esc(String(issue.id))}</td>
+        <td class="col-title issue-title-cell">${esc(issue.title)}</td>
+        <td class="col-project">${esc(issue.project || '—')}</td>
+        <td class="col-component">${esc(issue.component || '—')}</td>
+        <td class="col-priority">${priorityBadge(issue.priority)}</td>
+        <td class="col-status">${statusBadge(issue.status)}</td>
+        <td class="col-assignee">${esc(issue.assignee ? displayName(issue.assignee) : '—')}</td>
+        <td class="col-date">${fmtDate(issue.created_at)}</td>
+    </tr>`;
+}
+
+// renderIssueWindow rebuilds the entire tbody from _issueWindow. Used when the
+// window is first loaded (or reloaded after a filter change). For appending
+// additional pages use _appendIssueRows, which is faster because it only
+// touches the new rows rather than replacing everything.
+function renderIssueWindow() {
+    const tbody = document.getElementById('issues-tbody');
+    const empty = document.getElementById('issues-empty');
+    const table = document.getElementById('issues-table');
+    if (!tbody) return;
+
+    if (_issueWindow.length === 0) {
         table.style.display = 'none';
         empty.style.display = '';
         return;
     }
     table.style.display = '';
     empty.style.display = 'none';
-
-    // Template literals (backtick strings) allow embedded expressions
-    // inside ${ }. The map() + join('') pattern builds one big string
-    // from an array without repeatedly writing to innerHTML.
-    tbody.innerHTML = visible.map(issue => {
-        const sel = issue.id === _currentId ? ' selected' : '';
-        return `<tr class="issue-row${sel}" onclick="selectIssue(${issue.id})">
-            <td class="col-id">#${esc(String(issue.id))}</td>
-            <td class="col-title issue-title-cell">${esc(issue.title)}</td>
-            <td class="col-project">${esc(issue.project || '—')}</td>
-            <td class="col-component">${esc(issue.component || '—')}</td>
-            <td class="col-priority">${priorityBadge(issue.priority)}</td>
-            <td class="col-status">${statusBadge(issue.status)}</td>
-            <td class="col-assignee">${esc(issue.assignee ? displayName(issue.assignee) : '—')}</td>
-            <td class="col-date">${fmtDate(issue.created_at)}</td>
-        </tr>`;
-    }).join('');
-
+    tbody.innerHTML = _issueWindow.map(issueRow).join('');
     updateSortUI();
+}
+
+// _appendIssueRows appends a new batch of rows to the tbody without
+// rebuilding rows that are already on screen. insertAdjacentHTML('beforeend')
+// is equivalent to tbody.innerHTML += html but avoids the browser re-parsing
+// the existing content, making it faster and preserving any event state on
+// already-rendered rows.
+function _appendIssueRows(issues) {
+    const tbody = document.getElementById('issues-tbody');
+    const table = document.getElementById('issues-table');
+    const empty = document.getElementById('issues-empty');
+    if (!tbody) return;
+    if (issues.length === 0) return;
+    table.style.display = '';
+    empty.style.display = 'none';
+    tbody.insertAdjacentHTML('beforeend', issues.map(issueRow).join(''));
+}
+
+// updateIssueCounter updates the sticky "N of M issues" badge above the list.
+// When all pages are loaded it shows the total count; while more pages remain
+// it shows "Showing X of Y issues" so users know scrolling will reveal more.
+// The `_totalIssues === 1 ? '' : 's'` ternary is a simple pluralisation guard
+// so the label reads "1 issue" rather than "1 issues".
+function updateIssueCounter() {
+    const el = document.getElementById('issue-counter');
+    if (!el) return;
+    if (_totalIssues === 0) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    const loaded = _issueWindow.length;
+    el.textContent = loaded < _totalIssues
+        ? `Showing ${loaded} of ${_totalIssues} issues`
+        : `${_totalIssues} issue${_totalIssues === 1 ? '' : 's'}`;
+}
+
+// setupScrollObserver wires an IntersectionObserver to the invisible sentinel
+// <div> that sits just below the last table row. IntersectionObserver is a
+// browser API that fires a callback whenever a watched element enters or leaves
+// the viewport — far more efficient than attaching a scroll event listener and
+// checking element positions on every scroll event.
+//
+// rootMargin: '0px 0px 300px 0px' expands the "visible" zone 300px below the
+// actual viewport bottom, so the next page starts loading before the user
+// reaches the very last row rather than only after they hit the bottom.
+//
+// We disconnect and recreate the observer on each call so stale observers from
+// a previous filter/load cycle don't accumulate in the background.
+function setupScrollObserver() {
+    if (_scrollObserver) { _scrollObserver.disconnect(); _scrollObserver = null; }
+    const sentinel = document.getElementById('issue-bottom-sentinel');
+    if (!sentinel) return;
+    _scrollObserver = new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) loadNextPage();
+    }, { rootMargin: '0px 0px 300px 0px' });
+    _scrollObserver.observe(sentinel);
 }
 
 // =====================================================================
@@ -721,9 +845,10 @@ async function selectIssue(id) {
     _currentId   = id;
     _detailDirty = false;
 
-    // Re-render the list immediately so the clicked row gets the
-    // 'selected' highlight class and the previously selected row loses it.
-    renderIssues(_allIssues);
+    // Update selected-row highlight without a full re-render.
+    document.querySelectorAll('#issues-tbody .issue-row').forEach(tr => {
+        tr.classList.toggle('selected', Number(tr.dataset.id) === id);
+    });
 
     try {
         const { issue, comments } = await fetchIssue(id);
@@ -794,7 +919,7 @@ function closeDetail() {
     document.getElementById('detail-panel').style.display = 'none';
     const layout = document.getElementById('main-layout');
     if (layout) layout.classList.remove('has-detail');
-    renderIssues(_allIssues);
+    document.querySelectorAll('#issues-tbody .issue-row').forEach(tr => tr.classList.remove('selected'));
 }
 
 // markDetailDirty is called by the oninput / onchange handlers on all
@@ -872,15 +997,23 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
         _originalStatus = status;
         _detailDirty = false;
         btn.style.display = 'none';
-        // Update only the "Updated" timestamp rather than re-fetching the
-        // whole issue — the other fields are already correct in the form.
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
-        // Refresh the list so the row reflects the new status / priority.
-        _allIssues = await fetchIssues();
-        renderIssues(_allIssues);
+        // Update the window entry and the DOM row in-place so the list reflects
+        // the new status/priority/assignee without reloading the entire page.
+        // _issueWindow[idx] = issue replaces the JS object in our local array.
+        // tr.outerHTML = issueRow(issue) replaces the entire <tr> element in the
+        // DOM with a freshly rendered string — the browser parses and inserts the
+        // new HTML in place of the old element, so the surrounding rows are
+        // untouched. We also advance _lastSeenAt so the polling loop won't report
+        // this save as an "external change" on the next 30-second tick.
+        const idx = _issueWindow.findIndex(i => i.id === issue.id);
+        if (idx !== -1) {
+            _issueWindow[idx] = issue;
+            const tr = document.querySelector(`#issues-tbody tr[data-id="${issue.id}"]`);
+            if (tr) tr.outerHTML = issueRow(issue);
+        }
+        if (issue.updated_at > (_lastSeenAt || '')) _lastSeenAt = issue.updated_at;
         if (commentBody) {
-            // Re-fetch the comment list so the new one appears with its
-            // server-assigned id and timestamp.
             const { comments } = await fetchIssue(_currentId);
             renderComments(comments);
         }
@@ -1029,19 +1162,22 @@ async function submitComment() {
 
 // confirmDeleteIssue is triggered by the Delete button in the detail
 // panel header (shown only to admins). After confirmation it deletes the
-// issue server-side, removes it from the local cache, and closes the panel.
+// issue server-side, removes it from _issueWindow and the DOM, and closes
+// the panel. We decrement _totalIssues so the counter stays accurate.
 //
 // DELETE /api/issues/{id}
 async function confirmDeleteIssue() {
     if (!_currentId) return;
     if (!confirm(`Delete Issue #${_currentId}? This cannot be undone.`)) return;
     try {
-        await deleteIssue(_currentId);
-        // Remove from the local cache so the list updates immediately
-        // without a full re-fetch from the server.
-        _allIssues = _allIssues.filter(i => i.id !== _currentId);
+        const deletedId = _currentId;
+        await deleteIssue(deletedId);
+        _issueWindow = _issueWindow.filter(i => i.id !== deletedId);
+        _totalIssues = Math.max(0, _totalIssues - 1);
+        const tr = document.querySelector(`#issues-tbody tr[data-id="${deletedId}"]`);
+        if (tr) tr.remove();
+        updateIssueCounter();
         closeDetail();
-        renderIssues(_allIssues);
     } catch (e) {
         if (e.message !== 'Unauthorized') alert('Failed to delete issue: ' + (e.message || 'unknown error'));
     }
@@ -1118,17 +1254,11 @@ async function submitNewIssue() {
     btn.textContent = 'Creating…';
 
     try {
-        await createIssue(title, desc, priority, assignee, project, component);
+        const { issue: newIssue } = await createIssue(title, desc, priority, assignee, project, component);
         hideNewIssue();
-        _allIssues = await fetchIssues();
-        renderIssues(_allIssues);
-
-        // Auto-open the newly created issue. Because ids are auto-increment
-        // integers, the newest issue has the highest id in the list.
-        if (_allIssues.length > 0) {
-            const newest = _allIssues.reduce((a, b) => Number(a.id) > Number(b.id) ? a : b);
-            selectIssue(newest.id);
-        }
+        // Reload the full window (server determines sort order).
+        await loadIssueWindow();
+        if (newIssue) selectIssue(newIssue.id);
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to create issue.';
     } finally {
@@ -1824,6 +1954,8 @@ function openSettings() {
     document.getElementById('dark-mode-toggle').checked = _darkMode;
     document.getElementById('keep-logged-in-toggle').checked = _keepLoggedIn;
     document.getElementById('desktop-mode-toggle').checked = _desktopMode;
+    const psSel = document.getElementById('page-size-select');
+    if (psSel) psSel.value = String(_pageSize);
     document.getElementById('settings-overlay').style.display = 'flex';
 }
 
@@ -1901,7 +2033,11 @@ function toggleKeepLoggedIn(on) {
 // timing out even on a slow connection.
 async function idleLogout() {
     stopIdleTracking();
+    stopPolling();
+    dismissRefreshHint();
     _currentUser = null;
+    _issueWindow = [];
+    _totalIssues = 0;
     _detailDirty = false;
     closeDetail();
     document.getElementById('app').style.display = 'none';
@@ -1949,6 +2085,110 @@ function stopIdleTracking() {
     events.forEach(ev => document.removeEventListener(ev, _resetIdleTimer));
 }
 
+// =====================================================================
+// BACKGROUND POLLING
+// =====================================================================
+
+// startPolling begins 30-second background polling for changes made by
+// other users. Changes found in the window are applied in-place; new or
+// externally modified issues trigger the refresh hint toast.
+function startPolling() {
+    stopPolling();
+    _pollTimer = setInterval(pollForChanges, 30000);
+}
+
+// stopPolling cancels the background polling interval.
+function stopPolling() {
+    if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+// pollForChanges is called every 30 seconds by the setInterval timer. It
+// asks the server for any issues updated after _lastSeenAt and handles them:
+//
+//   • Issues already in _issueWindow are updated in-place (same technique as
+//     doSaveIssue: replace the JS object in the array and swap the DOM row).
+//     We skip the currently-open issue so we don't clobber a user's in-progress
+//     edits with a change another user just made.
+//
+//   • Issues not in the window (new issues, or issues on pages not yet loaded)
+//     are counted. If any are found we show the refresh-hint toast so the user
+//     can choose to reload the list without losing their scroll position.
+//
+//   • _lastSeenAt is advanced after each batch so the next poll only requests
+//     changes that occurred since this poll ran.
+//
+// Errors are silently swallowed — a network blip shouldn't pop an alert; the
+// next poll will pick up any missed changes. 401 Unauthorized (expired session)
+// is handled centrally by apiGet().
+async function pollForChanges() {
+    if (!_lastSeenAt) return;
+    try {
+        const data = await apiGet('/api/issues/changes?since=' + encodeURIComponent(_lastSeenAt));
+        const changed = data.issues || [];
+        if (changed.length === 0) return;
+        let externalChanges = 0;
+        for (const iss of changed) {
+            const idx = _issueWindow.findIndex(i => i.id === iss.id);
+            if (idx !== -1) {
+                // Already in the window: update in-place unless the user is
+                // currently editing it (don't stomp unsaved changes).
+                if (iss.id !== _currentId) {
+                    _issueWindow[idx] = iss;
+                    const tr = document.querySelector(`#issues-tbody tr[data-id="${iss.id}"]`);
+                    if (tr) tr.outerHTML = issueRow(iss);
+                }
+            } else {
+                externalChanges++;
+            }
+            if (iss.updated_at > (_lastSeenAt || '')) _lastSeenAt = iss.updated_at;
+        }
+        if (externalChanges > 0) {
+            showRefreshHint(externalChanges + ' new or updated issue' + (externalChanges === 1 ? '' : 's') + ' available.');
+        }
+    } catch (e) {
+        // Silently ignore: network blips, session expiry handled elsewhere.
+    }
+}
+
+// showRefreshHint displays the fixed-position toast at the bottom of the
+// screen informing the user that new issues are available outside the current
+// window. The toast has two buttons: "Refresh" (calls applyRefreshHint) and
+// "✕" (calls dismissRefreshHint).
+function showRefreshHint(msg) {
+    _refreshHintOn = true;
+    const el = document.getElementById('refresh-hint');
+    const txt = document.getElementById('refresh-hint-text');
+    if (txt) txt.textContent = msg;
+    if (el) el.style.display = 'flex';
+}
+
+// dismissRefreshHint hides the toast without reloading. The user has
+// acknowledged that there may be unseen changes but chosen not to reload now.
+function dismissRefreshHint() {
+    _refreshHintOn = false;
+    const el = document.getElementById('refresh-hint');
+    if (el) el.style.display = 'none';
+}
+
+// applyRefreshHint is called when the user clicks "Refresh" in the toast.
+// It hides the toast and reloads the full issue window from the server.
+async function applyRefreshHint() {
+    dismissRefreshHint();
+    await loadIssueWindow();
+}
+
+// setPageSize updates the page size, persists it, and reloads the window.
+function setPageSize(val) {
+    if (![10,25,50,100,200].includes(val)) return;
+    _pageSize = val;
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.pageSize = val;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
+    loadIssueWindow();
+}
+
 // loadPrefs reads the saved user preferences from localStorage and
 // applies them immediately. Called at the very start of init() before
 // any network requests, so dark mode and desktop mode are active before
@@ -1975,6 +2215,9 @@ function loadPrefs() {
                 _desktopMode = true;
                 // Class already set by the <head> inline script; no-op if already present.
                 document.documentElement.classList.add('desktop-mode');
+            }
+            if (p.pageSize && [10,25,50,100,200].includes(p.pageSize)) {
+                _pageSize = p.pageSize;
             }
         }
     } catch {}

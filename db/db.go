@@ -104,7 +104,26 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
-	return addColumnIfMissing(database, "issues", "component", "TEXT NOT NULL DEFAULT ''")
+	if err := addColumnIfMissing(database, "issues", "component", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	// Create covering indexes for the most common filter and sort columns.
+	// CREATE INDEX IF NOT EXISTS is a no-op when the index already exists,
+	// so this runs safely against both new and already-upgraded databases.
+	for _, ddl := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_issues_status     ON issues (status)`,
+		`CREATE INDEX IF NOT EXISTS idx_issues_status_pri ON issues (status, priority)`,
+		`CREATE INDEX IF NOT EXISTS idx_issues_updated_at ON issues (updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_issues_assignee   ON issues (assignee)`,
+		`CREATE INDEX IF NOT EXISTS idx_issues_reporter   ON issues (reporter)`,
+	} {
+		if _, err := database.Exec(ddl); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // addColumnIfMissing adds a column to a table if it does not already exist.
