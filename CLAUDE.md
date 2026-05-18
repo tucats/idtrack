@@ -38,7 +38,7 @@ idtrack/
 │   ├── helpers.go        # issueID(), jsonResponse(), jsonError()
 │   ├── static.go         # static file handlers + handleManual()
 │   ├── sessions.go       # sessionStore — create/lookup/delete session tokens
-│   ├── backup.go         # startBackups(), doBackup(), quiesce(), ageBackups()
+│   ├── backup.go         # startBackups(), doBackup(), quiesce(), sizeBackups(), ageBackups()
 │   ├── auth_handlers.go  # handleVersion, handleStatus, handleOnboarding, handleLogin, handleLogout
 │   ├── users.go          # user CRUD handlers
 │   ├── projects.go       # project/component CRUD handlers
@@ -142,7 +142,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h"}` — persisted defaults; all fields are omitempty |
+| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb"}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -152,7 +152,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration]`
+### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag. Running with no flags prints a two-column table of the current defaults.
 
@@ -165,6 +165,7 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--backup-interval` accepts any Go duration string (`1h`, `30m`). Use `0` or `off` to disable backups. Stored as a string in `defaults.json` and parsed to `time.Duration` in `commands.Serve`.
 - `--backup-count` is a non-negative integer. Use `0` or `off` for no count limit.
 - `--backup-age` accepts any Go duration string. Use `0` or `off` to disable age-based pruning. Stored as a string in `defaults.json`.
+- `--backup-size` accepts a number with optional unit suffix (`b`, `kb`, `mb`, `gb`, `tb`, case-insensitive); decimal values like `.5gb` are accepted. Use `0` or `off` to disable size-based thinning. Stored as a raw string in `defaults.json` (e.g. `"500mb"`) and parsed to `int64` bytes by `parseBackupSize()` in `commands/common.go` before being passed to `server.Start()`.
 
 ### `idtrack serve [--port n] [--database path] [--server-cert path] [--server-key path]`
 
@@ -351,7 +352,7 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 
 **External TLS cert/key replaces the embedded self-signed certificate.** When `server_cert` and `server_key` are set in `defaults.json` (or passed directly to `idtrack serve`), `server.Start()` reads the PEM files from disk via `os.ReadFile` instead of from the embedded `embed.FS`. Both must be set together — the server will fail to start if only one is present (the cert and key must form a matching pair for `tls.X509KeyPair`). `idtrack default --server-cert` validates that the file exists and resolves it to an absolute path before saving, so a relative path at save time won't silently break after a working-directory change. Use `off` as the value to clear either setting and revert to the built-in certificate.
 
-**`off` is a synonym for the zero/disabled value on duration and count flags.** `--idle-timeout off`, `--backup-interval off`, `--backup-count off`, and `--backup-age off` all behave identically to `0`. This makes the intent explicit in shell scripts or documentation where the word "off" reads more clearly than the number zero.
+**`off` is a synonym for the zero/disabled value on duration, count, and size flags.** `--idle-timeout off`, `--backup-interval off`, `--backup-count off`, `--backup-age off`, and `--backup-size off` all behave identically to `0`. This makes the intent explicit in shell scripts or documentation where the word "off" reads more clearly than the number zero.
 
 **Password hashing is server-side (bcrypt).** The browser sends the plaintext password over TLS to `POST /api/login`. The server hashes it with `bcrypt.GenerateFromPassword` (default cost) and compares against the stored bcrypt hash with `bcrypt.CompareHashAndPassword`. The DB stores the bcrypt hash string (begins with `$2a$`). Legacy SHA-256 hashes (64 lowercase hex chars, from the old client-side scheme) are detected by format in `db.IsLegacyHash` and verified via a constant-time SHA-256 comparison in `db.VerifyPassword`; they are transparently upgraded to bcrypt on next successful login via `db.UpgradePasswordHash`.
 
@@ -371,7 +372,7 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 
 **Onboarding uses a one-time in-memory UUID.** When `GET /api/status` detects an empty users table it generates a UUID, stores it on the `srv` struct behind a `sync.Mutex`, and returns it in the response. `POST /api/onboarding` validates `Authorization: Basic base64("onboarding:<uuid>")`, creates the first admin user, then clears the token. Because the token lives only in process memory it is lost on server restart — in that case the client simply receives a fresh UUID on the next status probe.
 
-**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, `appDescription`, and the backup params (`dbPath`, `backupInterval`, `backupCount`, `backupAge`) are all examples of the same pattern: add the field to the `defaults` struct in `commands/common.go` (with `omitempty`), add the flag to `commands.Default`, parse and pass the value through `server.Start()` from `commands.Serve`, and store it on the `srv` struct. Duration-type flags are stored as strings in `defaults.json` and parsed to `time.Duration` in `commands.Serve`. Follow this pattern for any future server-wide configuration values.
+**`server.Start()` signature pattern for server-wide config.** `idleTimeout`, `appName`, `appDescription`, and the backup params (`dbPath`, `backupInterval`, `backupCount`, `backupAge`, `backupSize`) are all examples of the same pattern: add the field to the `defaults` struct in `commands/common.go` (with `omitempty`), add the flag to `commands.Default`, parse and pass the value through `server.Start()` from `commands.Serve`, and store it on the `srv` struct. Duration-type flags are stored as strings in `defaults.json` and parsed to `time.Duration` in `commands.Serve`; size-type flags are stored as strings in `defaults.json` and parsed to `int64` bytes by `parseBackupSize()` in `commands.Serve`. Follow this pattern for any future server-wide configuration values.
 
 **"Keep me logged in" issues a 30-day session cookie.** When `keep_logged_in: true` is sent in the login body, the server creates a session with a 30-day TTL and sets `Max-Age=2592000` on the `idtrack_session` cookie. `localStorage` (under `PERSIST_KEY`) stores only the non-sensitive user display object `{ user }` — no credentials. On the next browser session `init()` restores `_currentUser` from this object and calls `launchApp()`; the browser sends the long-lived cookie automatically. If the session has expired or been invalidated, the first API call returns 401 and the user sees the login screen.
 
@@ -405,4 +406,6 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 
 **`db.CountIssues` and `db.ListIssues` share a WHERE clause builder.** `buildWhereClause(status, priority, search, project string)` in `db/issues.go` returns a `(clause string, args []interface{})` pair that is reused by both functions, ensuring the count and the data query always agree. `ORDER BY` is constructed from a lookup table of hardcoded `"column ASC/DESC"` literals (keyed by column name) to prevent SQL injection via the `sort` and `order` query parameters.
 
-**Backup strategy: filesystem copy with RWMutex quiescing.** When `backupInterval > 0`, `server/backup.go` manages all backup logic. `startBackups()` is called in `Start()` before `httpSrv.Serve` (so the first backup is written before any requests are served). It creates an `idtrack-backups/` directory next to the database file, writes an initial backup synchronously, then launches a goroutine that fires `doBackup()` every `backupInterval`. `doBackup` takes `s.backupMu.Lock()` (write lock) to quiesce the server, calls `copyFile` (io.Copy + fsync), releases the lock, then runs `ageBackups` in a separate goroutine. Every HTTP request holds `s.backupMu.RLock()` via the `quiesce` middleware, which wraps the entire mux. The RWMutex ensures: in-flight requests finish before the backup copy starts; new requests block (briefly) while the copy is in progress; no 503 is returned to clients. `ageBackups` enforces count pruning first (delete oldest beyond limit), then age pruning (delete files whose name-embedded timestamp is before `now − backupAge`). Backup filenames embed the UTC timestamp (`idtrack-20060102T150405.db`) so alphabetical and chronological order coincide and the age can be recovered from the name without touching the filesystem mtime.
+**Backup strategy: filesystem copy with RWMutex quiescing.** When `backupInterval > 0`, `server/backup.go` manages all backup logic. `startBackups()` is called in `Start()` before `httpSrv.Serve` (so the first backup is written before any requests are served). It creates an `idtrack-backups/` directory next to the database file, writes an initial backup synchronously, then launches a goroutine that fires `doBackup()` every `backupInterval`. `doBackup` takes `s.backupMu.Lock()` (write lock) to quiesce the server, calls `copyFile` (io.Copy + fsync), releases the lock, then runs `ageBackups` in a separate goroutine. Every HTTP request holds `s.backupMu.RLock()` via the `quiesce` middleware, which wraps the entire mux. The RWMutex ensures: in-flight requests finish before the backup copy starts; new requests block (briefly) while the copy is in progress; no 503 is returned to clients. `ageBackups` runs three thinning strategies in order: (1) `sizeBackups` — Time Machine-style density thinning to a total byte limit; (2) count pruning — delete oldest beyond the count limit; (3) age pruning — delete files whose embedded timestamp is before `now − backupAge`. Backup filenames embed the UTC timestamp (`idtrack-20060102T150405.db`) so alphabetical and chronological order coincide and the age can be recovered from the name without touching the filesystem mtime.
+
+**Size-based thinning uses four deletion phases.** `sizeBackups()` in `server/backup.go` categorises all backup files into hourly buckets (ages 1–23 h) and daily buckets (ages ≥ 24 h). When total size exceeds `s.backupSize` it deletes in order: (1) extras within hourly buckets, newest bucket first; (2) extras within daily buckets, newest day first; (3) the hourly-23 keeper if daily-1 already exists (pre-emptive aging); (4) the oldest daily keeper. Last-hour files (age < 1 h) are never touched. `parseBackupSize()` in `commands/common.go` converts human-readable strings (`500mb`, `.5gb`, `1tb`) to `int64` bytes; it is shared by `commands/defaults.go` (validation) and `commands/serve.go` (parsing for `server.Start()`).

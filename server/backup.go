@@ -12,6 +12,13 @@ import (
 	"time"
 )
 
+// bkp is a local helper for sizeBackups, holding a backup file's metadata.
+type bkp struct {
+	name string
+	t    time.Time
+	size int64
+}
+
 const (
 	backupDirName    = "idtrack-backups"
 	backupFilePrefix = "idtrack-"
@@ -64,7 +71,7 @@ func (s *srv) doBackup(backupDir string) error {
 	}
 
 	log.Printf("backup: created %s", filepath.Base(dst))
-	
+
 	go s.ageBackups(backupDir)
 
 	return nil
@@ -131,10 +138,150 @@ func parseBackupTime(name string) (time.Time, error) {
 	return time.ParseInLocation(backupTimeLayout, stripped, time.UTC)
 }
 
-// ageBackups enforces the backup-count and backup-age retention policies.
-// Count pruning runs first (oldest files deleted), then age pruning removes
-// any remaining files whose embedded timestamp predates the cutoff.
+// sizeBackups enforces the backup-size retention policy using a Time
+// Machine-style density thinning algorithm. It runs before count and age
+// pruning and is a no-op when s.backupSize == 0.
+//
+// Density rules (never violated by the thinning):
+//   - Last hour: every backup is kept.
+//   - Previous 23 hours: at most one backup per hour bucket (most recent).
+//   - Older: at most one backup per 24-hour day bucket (most recent).
+//
+// When the total backup size exceeds s.backupSize, candidates are deleted in
+// priority order until the limit is met:
+//  1. Extra files within each hourly bucket (bucket 1 first), oldest first.
+//  2. Extra files within each daily bucket (newest day first), oldest first.
+//  3. The hourly-23 keeper, if daily-1 already exists (it is about to age into
+//     the daily zone anyway).
+//  4. The oldest daily keeper, repeated until the limit is met.
+func (s *srv) sizeBackups(backupDir string) {
+	if s.backupSize <= 0 {
+		return
+	}
+
+	files, err := listBackups(backupDir)
+	if err != nil || len(files) == 0 {
+		return
+	}
+
+	// Build slice with timestamps and sizes; accumulate total.
+	backups := make([]bkp, 0, len(files))
+
+	var totalSize int64
+
+	for _, name := range files {
+		fi, statErr := os.Stat(filepath.Join(backupDir, name))
+		if statErr != nil {
+			continue
+		}
+
+		t, parseErr := parseBackupTime(name)
+		if parseErr != nil {
+			continue
+		}
+
+		backups = append(backups, bkp{name, t, fi.Size()})
+		totalSize += fi.Size()
+	}
+
+	if totalSize <= s.backupSize {
+		return
+	}
+
+	now := time.Now().UTC()
+
+	// Categorize into hourly[1..23] and daily[1..N] buckets.
+	// listBackups returns oldest-first, so slices within buckets are oldest-first.
+	hourly := make(map[int][]bkp)
+	daily := make(map[int][]bkp)
+
+	for _, b := range backups {
+		h := int(now.Sub(b.t) / time.Hour)
+
+		switch {
+		case h == 0:
+			continue // last hour — never touched
+		case h >= 1 && h <= 23:
+			hourly[h] = append(hourly[h], b)
+		case h >= 24:
+			daily[h/24] = append(daily[h/24], b)
+		}
+	}
+
+	remove := func(b bkp) {
+		if err := os.Remove(filepath.Join(backupDir, b.name)); err != nil {
+			log.Printf("backup: removing %s (size limit): %v", b.name, err)
+
+			return
+		}
+
+		totalSize -= b.size
+		log.Printf("backup: removed %s (size limit %d bytes)", b.name, s.backupSize)
+	}
+
+	// Phase 1: extras within hourly buckets, newest bucket first (1 → 23).
+	for h := 1; h <= 23 && totalSize > s.backupSize; h++ {
+		bucket := hourly[h]
+		// Keep bucket[last] (newest); delete bucket[0..last-1] oldest-first.
+		for i := 0; i < len(bucket)-1 && totalSize > s.backupSize; i++ {
+			remove(bucket[i])
+		}
+	}
+
+	if totalSize <= s.backupSize {
+		return
+	}
+
+	// Phase 2: extras within daily buckets, newest day first.
+	dayKeys := make([]int, 0, len(daily))
+	for d := range daily {
+		dayKeys = append(dayKeys, d)
+	}
+
+	sort.Ints(dayKeys) // ascending: day 1 (most recent) first
+
+	for _, d := range dayKeys {
+		if totalSize <= s.backupSize {
+			break
+		}
+
+		bucket := daily[d]
+		for i := 0; i < len(bucket)-1 && totalSize > s.backupSize; i++ {
+			remove(bucket[i])
+		}
+	}
+
+	if totalSize <= s.backupSize {
+		return
+	}
+
+	// Phase 3: hourly-to-daily bridge. The oldest hourly bucket (23) is about
+	// to age into daily-1. If daily-1 already has a backup, the hourly-23
+	// keeper is redundant and can be dropped.
+	if bucket23 := hourly[23]; len(bucket23) > 0 {
+		if _, hasDailyOne := daily[1]; hasDailyOne {
+			remove(bucket23[len(bucket23)-1]) // the remaining keeper
+		}
+	}
+
+	if totalSize <= s.backupSize {
+		return
+	}
+
+	// Phase 4: delete oldest daily keepers until the limit is met.
+	for i := len(dayKeys) - 1; i >= 0 && totalSize > s.backupSize; i-- {
+		bucket := daily[dayKeys[i]]
+		if len(bucket) > 0 {
+			remove(bucket[len(bucket)-1]) // keeper = newest remaining in bucket
+		}
+	}
+}
+
+// ageBackups enforces all active retention policies in priority order:
+// size-based thinning first, then count-based, then age-based.
 func (s *srv) ageBackups(backupDir string) {
+	s.sizeBackups(backupDir)
+
 	files, err := listBackups(backupDir)
 	if err != nil {
 		log.Printf("backup: listing backups for aging: %v", err)
@@ -164,8 +311,7 @@ func (s *srv) ageBackups(backupDir string) {
 		}
 	}
 
-	// Age-based pruning: delete files whose embedded timestamp is older than
-	// the cutoff. The filename is the authoritative age source, not the mtime.
+	// Age-based pruning: delete files whose embedded timestamp predates the cutoff.
 	if s.backupAge > 0 {
 		cutoff := time.Now().UTC().Add(-s.backupAge)
 

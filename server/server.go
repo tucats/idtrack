@@ -38,6 +38,7 @@ type srv struct {
 	backupInterval  time.Duration // 0 = backups disabled
 	backupCount     int           // 0 = no count limit
 	backupAge       time.Duration // 0 = no age limit
+	backupSize      int64         // 0 = no size limit
 	certFile        string        // absolute path to TLS cert file; empty = use embedded cert
 	keyFile         string        // absolute path to TLS key file; empty = use embedded key
 }
@@ -50,7 +51,7 @@ type srv struct {
 // Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, certFile, keyFile string) error {
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string) error {
 	s := &srv{
 		database:       database,
 		static:         static,
@@ -65,6 +66,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		backupInterval: backupInterval,
 		backupCount:    backupCount,
 		backupAge:      backupAge,
+		backupSize:     backupSize,
 		certFile:       certFile,
 		keyFile:        keyFile,
 	}

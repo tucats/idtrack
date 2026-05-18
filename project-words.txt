@@ -25,6 +25,7 @@ newpass
 nolint
 nosniff
 prefs
+quiesces
 quiescing
 remyoudompheng
 Roboto

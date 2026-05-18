@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +39,7 @@ type defaults struct {
 	BackupInterval string `json:"backup_interval,omitempty"` // Go duration string; empty = disabled
 	BackupCount    int    `json:"backup_count,omitempty"`    // max backups to retain; 0 = no limit
 	BackupAge      string `json:"backup_age,omitempty"`      // Go duration string; empty = no limit
+	BackupSize     string `json:"backup_size,omitempty"`     // human-readable size string, e.g. "500mb"; empty = disabled
 }
 
 // loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
@@ -81,6 +83,46 @@ func loadDefaults() defaults {
 	return d
 }
 
+// parseBackupSize converts a human-readable size string to bytes.
+// Accepted suffixes (case-insensitive): tb, gb, mb, kb, b.
+// Decimal values are supported (e.g. ".5gb"). "off" and "0" return 0 (disabled).
+func parseBackupSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" || s == "0" || s == "off" {
+		return 0, nil
+	}
+
+	units := []struct {
+		suffix string
+		bytes  int64
+	}{
+		{"tb", 1 << 40},
+		{"gb", 1 << 30},
+		{"mb", 1 << 20},
+		{"kb", 1 << 10},
+		{"b", 1},
+	}
+
+	scale := int64(1)
+	numStr := s
+
+	for _, u := range units {
+		if strings.HasSuffix(s, u.suffix) {
+			scale = u.bytes
+			numStr = strings.TrimSuffix(s, u.suffix)
+			
+			break
+		}
+	}
+
+	f, err := strconv.ParseFloat(strings.TrimSpace(numStr), 64)
+	if err != nil || f < 0 {
+		return 0, fmt.Errorf("invalid backup-size %q: use a number with optional suffix b/kb/mb/gb/tb", s)
+	}
+
+	return int64(f * float64(scale)), nil
+}
+
 // Usage prints a summary of available sub-commands to stderr. Called from
 // main.go when no arguments are given or an unknown verb is used, and from
 // within individual command functions when argument validation fails.
@@ -108,6 +150,7 @@ Commands:
 		 --backup-interval <duration>|off
 		 --backup-count <n> | off
 		 --backup-age <duration> | off
+		 --backup-size <size> | off
 
 	define [subcommand] [options]
 		Create projects and components.
