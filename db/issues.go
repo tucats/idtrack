@@ -34,8 +34,9 @@ const issueColumns = `id, title, description, reporter, assignee, priority, stat
 // ListIssues and CountIssues. "WHERE 1=1" lets us unconditionally append
 // "AND ..." clauses without tracking whether this is the first one.
 func buildWhereClause(status, priority, search, project string) (string, []interface{}) {
-	where := ` WHERE 1=1`
 	var args []interface{}
+
+	where := ` WHERE 1=1`
 
 	switch status {
 	case "open":
@@ -46,11 +47,13 @@ func buildWhereClause(status, priority, search, project string) (string, []inter
 
 	if priority != "" && priority != "all" {
 		where += ` AND priority = ?`
+
 		args = append(args, priority)
 	}
 
 	if project != "" && project != "all" {
 		where += ` AND project = ?`
+
 		args = append(args, project)
 	}
 
@@ -86,16 +89,16 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 	//
 	// Index 0 = ASC clause, index 1 = DESC clause.
 	validOrders := map[string][2]string{
-		"id":          {" ORDER BY id ASC",          " ORDER BY id DESC"},
-		"title":       {" ORDER BY title ASC",       " ORDER BY title DESC"},
-		"priority":    {" ORDER BY priority ASC",    " ORDER BY priority DESC"},
-		"status":      {" ORDER BY status ASC",      " ORDER BY status DESC"},
-		"reporter":    {" ORDER BY reporter ASC",    " ORDER BY reporter DESC"},
-		"assignee":    {" ORDER BY assignee ASC",    " ORDER BY assignee DESC"},
-		"created_at":  {" ORDER BY created_at ASC",  " ORDER BY created_at DESC"},
-		"updated_at":  {" ORDER BY updated_at ASC",  " ORDER BY updated_at DESC"},
-		"project":     {" ORDER BY project ASC",     " ORDER BY project DESC"},
-		"component":   {" ORDER BY component ASC",   " ORDER BY component DESC"},
+		"id":          {" ORDER BY id ASC", " ORDER BY id DESC"},
+		"title":       {" ORDER BY title ASC", " ORDER BY title DESC"},
+		"priority":    {" ORDER BY priority ASC", " ORDER BY priority DESC"},
+		"status":      {" ORDER BY status ASC", " ORDER BY status DESC"},
+		"reporter":    {" ORDER BY reporter ASC", " ORDER BY reporter DESC"},
+		"assignee":    {" ORDER BY assignee ASC", " ORDER BY assignee DESC"},
+		"created_at":  {" ORDER BY created_at ASC", " ORDER BY created_at DESC"},
+		"updated_at":  {" ORDER BY updated_at ASC", " ORDER BY updated_at DESC"},
+		"project":     {" ORDER BY project ASC", " ORDER BY project DESC"},
+		"component":   {" ORDER BY component ASC", " ORDER BY component DESC"},
 		"resolved_at": {" ORDER BY resolved_at ASC", " ORDER BY resolved_at DESC"},
 	}
 
@@ -113,6 +116,7 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 
 	if limit > 0 {
 		query += ` LIMIT ? OFFSET ?`
+
 		args = append(args, limit, offset)
 	}
 
@@ -144,9 +148,11 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 // It uses the same WHERE clause logic as ListIssues so the count always
 // corresponds to the paginated result set.
 func CountIssues(database *sql.DB, status, priority, search, project string) (int, error) {
-	where, args := buildWhereClause(status, priority, search, project)
 	var n int
+
+	where, args := buildWhereClause(status, priority, search, project)
 	err := database.QueryRow(`SELECT COUNT(*) FROM issues`+where, args...).Scan(&n)
+
 	return n, err
 }
 
@@ -155,6 +161,8 @@ func CountIssues(database *sql.DB, status, priority, search, project string) (in
 // returns no rows. Results are ordered oldest-first so the caller can
 // update _lastSeenAt incrementally.
 func ListChanges(database *sql.DB, since string) ([]Issue, error) {
+	var issues []Issue
+
 	if since == "" {
 		return []Issue{}, nil
 	}
@@ -169,12 +177,12 @@ func ListChanges(database *sql.DB, since string) ([]Issue, error) {
 
 	defer rows.Close()
 
-	var issues []Issue
 	for rows.Next() {
 		var i Issue
 		if err := rows.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.Project, &i.Component, &i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt, &i.CommentCount); err != nil {
 			return nil, err
 		}
+		
 		issues = append(issues, i)
 	}
 
@@ -243,7 +251,7 @@ func CreateIssue(database *sql.DB, title, description, reporter, assignee, prior
 //   - Transitioning to Resolved: set to now, but only if it is currently empty
 //     (preserves the original resolved timestamp if the issue is re-saved while
 //     already Resolved — e.g. editing the description without changing status).
-//   - Transitioning to Open: always cleared to '' so a later resolution gets a
+//   - Transitioning to Open: always cleared to ” so a later resolution gets a
 //     fresh timestamp.
 //   - Any other status change: ELSE branch leaves resolved_at unchanged.
 func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string) (*Issue, error) {
@@ -262,7 +270,7 @@ func UpdateIssue(database *sql.DB, id int64, title, description, priority, statu
 		title, description, priority, status, assignee, project, component,
 		now,
 		status, now, // CASE: set resolved_at when transitioning to Resolved
-		status,      // CASE: clear resolved_at when transitioning to Open
+		status, // CASE: clear resolved_at when transitioning to Open
 		id,
 	)
 	if err != nil {
