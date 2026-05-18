@@ -188,7 +188,12 @@ func Serve(args []string, static fs.FS) {
 		backupAge, _ = time.ParseDuration(defs.BackupAge)
 	}
 
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, certFile, keyFile); err != nil {
+	var backupSize int64
+	if defs.BackupSize != "" {
+		backupSize, _ = parseBackupSize(defs.BackupSize)
+	}
+
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}

@@ -84,6 +84,7 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--backup-interval DURATION` | How often to create a backup, e.g. `1h`, `30m`. Use `0` or `off` to disable backups entirely. |
 | `--backup-count N` | Maximum number of backup files to keep. Oldest files are deleted first when the count is exceeded. Use `0` or `off` for no limit. |
 | `--backup-age DURATION` | Delete backup files whose name-embedded timestamp is older than this duration, e.g. `168h` (7 days). Use `0` or `off` for no age limit. |
+| `--backup-size SIZE` | Maximum total disk space for backup files, e.g. `500mb`, `2gb`. Accepts suffixes `b`, `kb`, `mb`, `gb`, `tb` (case-insensitive); decimal values like `.5gb` are accepted. When the total size exceeds this limit, older backups are thinned using a Time Machine-style density algorithm — see [Retention policy](#retention-policy) below. Use `0` or `off` for no size limit. |
 
 The path given to `--server-cert` and `--server-key` must already exist; the command validates the file before saving and stores its absolute path.
 
@@ -92,6 +93,7 @@ idtrack default --port 9000 --database ~/myproject/issues.db
 idtrack default --idle-timeout 30m
 idtrack default --app-name "ACME Tracker" --app-description "ACME Engineering Issues"
 idtrack default --backup-interval 1h --backup-count 24 --backup-age 168h
+idtrack default --backup-interval 1h --backup-size 500mb
 idtrack default --server-cert /etc/ssl/certs/mysite.crt --server-key /etc/ssl/private/mysite.key
 ```
 
@@ -424,13 +426,15 @@ Set `--backup-interval` to a non-zero duration with `idtrack default`:
 idtrack default --backup-interval 1h
 ```
 
-You can combine all three backup settings in one command:
+You can combine backup settings in one command:
 
 ```sh
+# Keep the 24 most recent backups, discarding any older than 7 days
 idtrack default --backup-interval 1h --backup-count 24 --backup-age 168h
-```
 
-This example creates a backup every hour, retains the 24 most recent backups, and deletes any backup whose timestamp is older than 7 days (168 hours).
+# Cap total backup storage at 500 MB using density-aware thinning
+idtrack default --backup-interval 1h --backup-size 500mb
+```
 
 To disable backups, set the interval back to zero:
 
@@ -452,12 +456,18 @@ While a backup copy is in progress the server briefly pauses new requests so the
 
 #### Retention policy
 
-After each backup the server applies the configured retention rules:
+After each backup the server applies the configured retention rules in the following order. All three strategies can be active at the same time; each is applied only if its threshold is set.
 
-- **Count limit** (`--backup-count N`): If there are more than N backup files, the oldest are deleted until only N remain.
-- **Age limit** (`--backup-age DURATION`): Any backup file whose name-embedded timestamp is older than `now − DURATION` is deleted. The filename is used as the age source, not the file system modification time.
+1. **Size limit** (`--backup-size SIZE`): If the total disk space used by all backup files exceeds the configured size, older backups are thinned using a *density-aware* algorithm that preserves the most useful backups:
+   - Every backup from the **last hour** is kept.
+   - The **most recent backup per hour** is kept for each of the preceding 23 hours.
+   - The **most recent backup per day** is kept for older backups.
 
-Both limits can be active simultaneously. Count pruning runs first, then age pruning.
+   When trimming is needed, files are deleted in priority order: extra copies within each hourly slot first (newest slot first), then extra copies within each daily slot, then the hourly backup that is about to age into the daily range (if a daily backup already covers that day), and finally the oldest daily backup. This approach mirrors Apple Time Machine's philosophy of keeping denser recent history and sparser older history.
+
+2. **Count limit** (`--backup-count N`): If there are still more than N backup files after size thinning, the oldest are deleted until only N remain.
+
+3. **Age limit** (`--backup-age DURATION`): Any backup file whose name-embedded timestamp is older than `now − DURATION` is deleted. The filename is used as the age source, not the file-system modification time.
 
 #### Restoring from a backup
 
@@ -562,7 +572,8 @@ sudo ./tools/install-service-macos.sh \
   --key  /etc/ssl/private/idtrack.key \
   --backup-interval 1h \
   --backup-count 48 \
-  --backup-age 168h
+  --backup-age 168h \
+  --backup-size 2gb
 ```
 
 **Managing the service after installation:**
@@ -624,7 +635,8 @@ sudo ./tools/install-service-linux.sh \
   --key  /etc/ssl/private/idtrack.key \
   --backup-interval 1h \
   --backup-count 48 \
-  --backup-age 168h
+  --backup-age 168h \
+  --backup-size 2gb
 ```
 
 **Managing the service after installation:**
@@ -668,6 +680,7 @@ Both install scripts accept the same set of options:
 | `--backup-interval DURATION` | Backup frequency, e.g. `1h`. Use `off` to disable. |
 | `--backup-count N` | Maximum backups to keep. Use `off` for no limit. |
 | `--backup-age DURATION` | Delete backups older than this. Use `off` for no limit. |
+| `--backup-size SIZE` | Maximum total backup storage, e.g. `500mb`, `2gb`. Use `off` for no limit. |
 | `--idle-timeout DURATION` | Idle logout timer, e.g. `30m`. Use `off` to disable. |
 | `--app-name TEXT` | Custom application name. |
 | `--app-description TEXT` | Custom tagline. |
@@ -783,6 +796,7 @@ The certificate and key files are mounted read-only inside the container. Both f
 | `--backup-interval DURATION` | How often to back up, e.g. `1h`, `30m`. Use `off` to disable. |
 | `--backup-count N` | Maximum number of backups to keep (`off` = no limit) |
 | `--backup-age DURATION` | Delete backups older than this, e.g. `168h` (`off` = no limit) |
+| `--backup-size SIZE` | Maximum total backup storage, e.g. `500mb`, `2gb` (`off` = no limit) |
 | `--idle-timeout DURATION` | Idle logout timer, e.g. `30m` (`off` = disabled) |
 | `--app-name TEXT` | Custom application name shown in the header |
 | `--app-description TEXT` | Custom tagline on the login screen |
@@ -800,6 +814,7 @@ The certificate and key files are mounted read-only inside the container. Both f
   --backup-interval 1h \
   --backup-count    48 \
   --backup-age      168h \
+  --backup-size     2gb \
   --idle-timeout    30m \
   --app-name        "ACME Tracker"
 ```

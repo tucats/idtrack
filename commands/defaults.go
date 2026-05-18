@@ -27,6 +27,8 @@ func Default(args []string) {
 		backupCount    int
 		backupCountSet bool
 		backupAge      string
+		backupSize     string
+		backupSizeSet  bool
 		serverCert     string
 		serverCertSet  bool
 		serverKey      string
@@ -195,6 +197,25 @@ func Default(args []string) {
 				}
 			}
 
+		case "--backup-size":
+			if i+1 < len(args) {
+				i++
+
+				val := args[i]
+				if val == "0" || val == offValue {
+					backupSize = ""
+					backupSizeSet = true
+				} else {
+					if _, err := parseBackupSize(val); err != nil {
+						fmt.Fprintf(os.Stderr, "%v\n", err)
+						os.Exit(1)
+					}
+
+					backupSize = val
+					backupSizeSet = true
+				}
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			Usage()
@@ -203,7 +224,7 @@ func Default(args []string) {
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
-		backupInterval != "" || backupCountSet || backupAge != "" || serverCertSet || serverKeySet
+		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet
 	if !anySet {
 		showDefaults()
 
@@ -257,6 +278,10 @@ func Default(args []string) {
 
 	if backupAge != "" {
 		defs.BackupAge = backupAge
+	}
+
+	if backupSizeSet {
+		defs.BackupSize = backupSize
 	}
 
 	home, err := os.UserHomeDir()
@@ -318,6 +343,10 @@ func Default(args []string) {
 
 	if defs.BackupAge != "" {
 		fmt.Printf("  backup-age:      %s\n", defs.BackupAge)
+	}
+
+	if defs.BackupSize != "" {
+		fmt.Printf("  backup-size:     %s\n", defs.BackupSize)
 	}
 }
 
@@ -392,5 +421,11 @@ func showDefaults() {
 		row("backup-age", defs.BackupAge)
 	} else {
 		row("backup-age", "no limit")
+	}
+
+	if defs.BackupSize != "" {
+		row("backup-size", defs.BackupSize)
+	} else {
+		row("backup-size", "no limit")
 	}
 }
