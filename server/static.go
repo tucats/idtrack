@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/parser"
 )
 
 // serveRoot redirects bare "/" to the app page. Any other unrecognized path
@@ -77,11 +78,12 @@ func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// goldmark.Convert renders the Markdown source into HTML, writing the
-	// output into the bytes.Buffer. A bytes.Buffer satisfies io.Writer.
+	// goldmark renders the Markdown source into HTML. WithAutoHeadingID generates
+	// id attributes on heading elements so TOC anchor links work.
 	var body bytes.Buffer
 
-	if err := goldmark.Convert(src, &body); err != nil {
+	md := goldmark.New(goldmark.WithParserOptions(parser.WithAutoHeadingID()))
+	if err := md.Convert(src, &body); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 
 		return
