@@ -842,6 +842,12 @@ docker rm idtrack
 
 `idtrack serve` normally re-executes the binary as a detached background process — a pattern that works well for direct installation on a host but is incompatible with containers, because the container's main process exits immediately, causing Docker to stop it. The scripts and Dockerfile both use the `--foreground` flag (an internal server flag) to bypass the re-exec mechanism and keep the server running as PID 1 in the container, which is the correct pattern for containerized services.
 
+### Technical Note on Response Compression
+
+The idtrack server automatically compresses HTTP responses using gzip when the browser advertises `Accept-Encoding: gzip` support (all modern browsers do). Compression applies to all responses — static assets, API payloads, and the manual — but only when the response body is at least 1,400 bytes (one standard Ethernet MTU payload). Smaller responses are sent uncompressed because they already fit in a single TCP packet and compression overhead would not reduce transfer time.
+
+In practice, the JavaScript and CSS files are reduced by roughly 75–80% and issue-list API responses by 70–80%, which measurably reduces page-load time on VPN and remote connections. No configuration is needed; the server handles it transparently.
+
 ---
 
 idtrack — lightweight self-hosted issue tracking
