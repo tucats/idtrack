@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"fmt"
 	"time"
 )
 
@@ -59,23 +58,37 @@ func ListIssues(database *sql.DB, status, priority, search, sortCol, sortDir str
 		args = append(args, s, s, s, s, s, s)
 	}
 
-	// Validate sortCol against an allowlist of known column names before
-	// interpolating it into the query string. We cannot use a "?" placeholder
-	// for column names in SQL, so we must guard against injection ourselves.
-	validCols := map[string]bool{
-		"id": true, "title": true, "priority": true, "status": true,
-		"reporter": true, "assignee": true, "created_at": true, "updated_at": true,
-		"project": true, "component": true,
-	}
-	if !validCols[sortCol] {
-		sortCol = "id" // unknown column — fall back to a safe default
+	// SQL placeholders ("?") can only bind literal values — they cannot
+	// substitute column names or keywords such as ASC/DESC.  To prevent
+	// injection we use a lookup table whose values are all hardcoded string
+	// literals.  sortCol and sortDir are used only as lookup keys; neither
+	// is ever interpolated into the query string, which breaks the data-flow
+	// path that static analysis tools track from HTTP parameters to SQL.
+	//
+	// Index 0 = ASC clause, index 1 = DESC clause.
+	validOrders := map[string][2]string{
+		"id":         {" ORDER BY id ASC",         " ORDER BY id DESC"},
+		"title":      {" ORDER BY title ASC",      " ORDER BY title DESC"},
+		"priority":   {" ORDER BY priority ASC",   " ORDER BY priority DESC"},
+		"status":     {" ORDER BY status ASC",     " ORDER BY status DESC"},
+		"reporter":   {" ORDER BY reporter ASC",   " ORDER BY reporter DESC"},
+		"assignee":   {" ORDER BY assignee ASC",   " ORDER BY assignee DESC"},
+		"created_at": {" ORDER BY created_at ASC", " ORDER BY created_at DESC"},
+		"updated_at": {" ORDER BY updated_at ASC", " ORDER BY updated_at DESC"},
+		"project":    {" ORDER BY project ASC",    " ORDER BY project DESC"},
+		"component":  {" ORDER BY component ASC",  " ORDER BY component DESC"},
 	}
 
-	if sortDir != "asc" {
-		sortDir = "desc" // only accept "asc"; anything else defaults to "desc"
+	clauses, ok := validOrders[sortCol]
+	if !ok {
+		clauses = validOrders["id"] // unknown column — fall back to a safe default
 	}
 
-	query += fmt.Sprintf(` ORDER BY %s %s`, sortCol, sortDir)
+	if sortDir == "asc" {
+		query += clauses[0]
+	} else {
+		query += clauses[1]
+	}
 
 	rows, err := database.Query(query, args...)
 	if err != nil {
