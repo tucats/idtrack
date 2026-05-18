@@ -106,7 +106,8 @@ CREATE TABLE issues (
     updated_at  TEXT NOT NULL,
     -- added via migration:
     project     TEXT NOT NULL DEFAULT '',
-    component   TEXT NOT NULL DEFAULT ''
+    component   TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT NOT NULL DEFAULT ''   -- set when status → Resolved; cleared when → Open
 );
 
 CREATE TABLE comments (
@@ -131,7 +132,9 @@ CREATE TABLE components (
 
 ### Schema Migrations
 
-The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added after the initial schema (like `last_login_at`, `is_admin`, `project`, `component`) are applied via `addColumnIfMissing()` in `db/db.go`, which runs `ALTER TABLE ... ADD COLUMN` and ignores "duplicate column name" errors. This means the binary upgrades existing databases automatically on startup with no migration tooling needed.
+The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added after the initial schema (like `last_login_at`, `is_admin`, `project`, `component`, `resolved_at`) are applied via `addColumnIfMissing()` in `db/db.go`, which runs `ALTER TABLE ... ADD COLUMN` and ignores "duplicate column name" errors. This means the binary upgrades existing databases automatically on startup with no migration tooling needed.
+
+**`resolved_at` backfill migration.** When `resolved_at` is first added to an existing database, a one-time UPDATE sets it for all Resolved issues that have at least one comment, using `MAX(comments.created_at)` as the best available proxy for when the issue was actually closed. Issues with no comments keep `resolved_at = ''`. The UPDATE is guarded by `WHERE resolved_at = ''` so it is a no-op on subsequent startups.
 
 ## Runtime Files (`~/.idtrack/`)
 
@@ -389,6 +392,10 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **Comment parent validation prevents orphaned comments (S-12).** `handleCreateComment` calls `db.GetIssue` before inserting the comment row. A non-existent issue ID returns 404 rather than creating a comment with a dangling `issue_id`.
 
 **Last-admin guard blocks lockout (S-14).** `db.CountAdmins` counts rows with `is_admin = 1`. Both `handleDeleteUser` and `handleUpdateUser` call it when the operation would leave no admin: deletion of the last admin returns 400 with a message directing the operator to use the CLI; demotion of the last admin is blocked the same way. The last-admin check runs before the self-deletion check in `handleDeleteUser` so the more informative message takes priority when both conditions apply.
+
+**Configurable column visibility uses CSS class-gating, not DOM rebuilding.** Nine optional columns can be toggled via a "Columns ▾" dropdown in the header. Visibility state is stored in `_colVisibility` (keyed by CSS class suffix, e.g. `"project"`, `"resolved"`) and persisted in `localStorage` under `idtrack_prefs.colVisibility`. `applyColVisibility()` toggles `html.hide-col-X` classes on `<html>`; the rule `html.hide-col-project .col-project { display: none }` hides both the `<th>` header and every `<td>` data cell without touching or re-rendering the DOM rows. The `<head>` inline script pre-applies these classes before first render to prevent a flash of all columns on load. `issueRow()` always emits all cells; CSS does all the hiding. Phone breakpoint (≤600px) adds a separate media-query hide for all optional columns except Priority and Status — the two visibility mechanisms compose additively. The "Columns" button itself is hidden on phone (column choice is irrelevant there). ID and Title are always visible and have no hide-col class. Default visibility: Project, Component, Status, Priority, Assignee, Created = on; Reporter, Resolved, Comments = off.
+
+**`resolved_at` is set and cleared by `UpdateIssue` automatically.** The UPDATE uses a CASE expression: if the new status is `'Resolved'` and `resolved_at` is currently empty, it is set to `now`; if the new status is `'Open'`, it is cleared to `''` (so a later re-resolution gets a fresh timestamp); otherwise it is left unchanged (prevents re-saving a Resolved issue from overwriting the original resolved date). The `comment_count` field in the API response is a correlated subquery: `(SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`; the `idx_comments_issue_id` index keeps it fast.
 
 **Full-screen detail panel on mobile uses a CSS class, not JS visibility logic.** At ≤900px, when an issue is selected the JS adds `has-detail` to `#main-layout`; closing removes it. The CSS rule `.main-layout.has-detail .list-panel { display: none }` handles the panel switch. This keeps the responsive behaviour entirely in CSS — the class is harmless above 900px where no matching media-query rule exists, so no viewport-width check is needed in JS.
 

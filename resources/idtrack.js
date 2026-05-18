@@ -97,6 +97,23 @@ let _scrollObserver = null;
 let _pollTimer      = null;
 let _refreshHintOn  = false;
 
+// Column visibility — which optional columns are shown in the issue table.
+// Keys correspond to the CSS class suffix (col-X) and the hide-col-X classes
+// toggled on <html> by applyColVisibility(). Defaults preserve the historic
+// column set; the two new columns (resolved, comments) start hidden.
+const _colVisibilityDefaults = {
+    project:   true,
+    component: true,
+    status:    true,
+    priority:  true,
+    reporter:  false,
+    assignee:  true,
+    date:      true,   // "Created" column — CSS class is col-date
+    resolved:  false,
+    comments:  false,
+};
+let _colVisibility = { ..._colVisibilityDefaults };
+
 // The id of the issue currently open in the detail panel. null = none open.
 let _currentId         = null;
 
@@ -567,6 +584,63 @@ async function doLogout() {
 }
 
 // =====================================================================
+// COLUMN VISIBILITY
+// =====================================================================
+
+// applyColVisibility synchronises the html.hide-col-X CSS classes with the
+// current _colVisibility state. Adding 'hide-col-project' to <html> causes
+// the rule 'html.hide-col-project .col-project { display: none }' to hide
+// every .col-project element (both <th> headers and <td> data cells) without
+// touching the DOM structure at all — no re-render of the issue rows needed.
+function applyColVisibility() {
+    for (const [col, visible] of Object.entries(_colVisibility)) {
+        document.documentElement.classList.toggle('hide-col-' + col, !visible);
+    }
+}
+
+// toggleColumn is called by each checkbox in the column picker panel. It
+// updates _colVisibility, applies the CSS change immediately, and persists
+// the new state to localStorage so the preference survives page reloads.
+function toggleColumn(col, checked) {
+    _colVisibility[col] = checked;
+    applyColVisibility();
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.colVisibility = _colVisibility;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
+}
+
+// toggleColPicker opens or closes the column picker dropdown. Uses the same
+// { once: true } document click pattern as the hamburger menu so the panel
+// closes automatically when the user clicks anywhere else on the page.
+function toggleColPicker(event) {
+    event.stopPropagation();
+    _closeMenuOnOutside();   // close hamburger menu if it is open
+    const panel = document.getElementById('col-picker-panel');
+    if (!panel) return;
+    const opening = panel.style.display === 'none';
+    panel.style.display = opening ? '' : 'none';
+    if (opening) {
+        // Sync checkbox states to the current _colVisibility values so the
+        // panel always reflects the truth even if prefs changed since it was
+        // last opened.
+        for (const col of Object.keys(_colVisibility)) {
+            const chk = document.getElementById('colchk-' + col);
+            if (chk) chk.checked = _colVisibility[col];
+        }
+        document.addEventListener('click', _closeColPickerOnOutside, { once: true });
+    }
+}
+
+// _closeColPickerOnOutside hides the column picker panel. Called by the
+// one-time document click listener from toggleColPicker().
+function _closeColPickerOnOutside() {
+    const panel = document.getElementById('col-picker-panel');
+    if (panel) panel.style.display = 'none';
+}
+
+// =====================================================================
 // UI — FILTERS & SORT
 // =====================================================================
 // Filters and sort are sent to the server on every change; the server
@@ -611,6 +685,30 @@ function clearSearch() {
     const ss = document.getElementById('search-status');
     if (ss) ss.textContent = '';
     loadIssueWindow();
+}
+
+// matchesCurrentFilters returns true if the given issue satisfies all of the
+// currently active filters and the search query. Used after a save to decide
+// whether an issue should stay in the list or be removed — for example, if
+// the filter is "Open only" and the user just resolved the issue, the issue
+// should disappear from the list immediately rather than remaining as a stale
+// row. The logic mirrors what the server applies in db.buildWhereClause so
+// the client and server always agree on which issues are visible.
+function matchesCurrentFilters(issue) {
+    if (_statusFilter !== 'all') {
+        const wantOpen = _statusFilter === 'open';
+        if (wantOpen  && issue.status !== 'Open')     return false;
+        if (!wantOpen && issue.status !== 'Resolved') return false;
+    }
+    if (_priorityFilter !== 'all' && issue.priority !== _priorityFilter) return false;
+    if (_projectFilter  !== 'all' && issue.project  !== _projectFilter)  return false;
+    const q = ((document.getElementById('search-input') || {}).value || '').toLowerCase();
+    if (q) {
+        const hay = [issue.title, issue.description, issue.reporter,
+                     issue.assignee, issue.project, issue.component].join(' ').toLowerCase();
+        if (!hay.includes(q)) return false;
+    }
+    return true;
 }
 
 // toggleSort is called when the user clicks a column header. Clicking the
@@ -742,8 +840,11 @@ function issueRow(issue) {
         <td class="col-component">${esc(issue.component || '—')}</td>
         <td class="col-priority">${priorityBadge(issue.priority)}</td>
         <td class="col-status">${statusBadge(issue.status)}</td>
+        <td class="col-reporter">${esc(issue.reporter ? displayName(issue.reporter) : '—')}</td>
         <td class="col-assignee">${esc(issue.assignee ? displayName(issue.assignee) : '—')}</td>
         <td class="col-date">${fmtDate(issue.created_at)}</td>
+        <td class="col-resolved">${issue.resolved_at ? fmtDate(issue.resolved_at) : '—'}</td>
+        <td class="col-comments">${issue.comment_count || 0}</td>
     </tr>`;
 }
 
@@ -998,21 +1099,32 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
         _detailDirty = false;
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
-        // Update the window entry and the DOM row in-place so the list reflects
-        // the new status/priority/assignee without reloading the entire page.
-        // _issueWindow[idx] = issue replaces the JS object in our local array.
-        // tr.outerHTML = issueRow(issue) replaces the entire <tr> element in the
-        // DOM with a freshly rendered string — the browser parses and inserts the
-        // new HTML in place of the old element, so the surrounding rows are
-        // untouched. We also advance _lastSeenAt so the polling loop won't report
-        // this save as an "external change" on the next 30-second tick.
+        // After a successful save, decide whether the issue still belongs in the
+        // visible list given the current filters. For example, if the user filters
+        // by "Open" and just resolved this issue it should vanish from the list
+        // rather than staying as a stale row that doesn't match the filter.
+        if (issue.updated_at > (_lastSeenAt || '')) _lastSeenAt = issue.updated_at;
         const idx = _issueWindow.findIndex(i => i.id === issue.id);
         if (idx !== -1) {
-            _issueWindow[idx] = issue;
-            const tr = document.querySelector(`#issues-tbody tr[data-id="${issue.id}"]`);
-            if (tr) tr.outerHTML = issueRow(issue);
+            if (matchesCurrentFilters(issue)) {
+                // Still matches: update the row in-place.
+                // _issueWindow[idx] = issue replaces the JS object in our local array.
+                // tr.outerHTML = issueRow(issue) swaps the entire <tr> element in the
+                // DOM for a freshly rendered string without touching neighbouring rows.
+                _issueWindow[idx] = issue;
+                const tr = document.querySelector(`#issues-tbody tr[data-id="${issue.id}"]`);
+                if (tr) tr.outerHTML = issueRow(issue);
+            } else {
+                // No longer matches the active filter: remove from the window and DOM,
+                // adjust the total, and close the detail panel.
+                _issueWindow.splice(idx, 1);
+                _totalIssues = Math.max(0, _totalIssues - 1);
+                const tr = document.querySelector(`#issues-tbody tr[data-id="${issue.id}"]`);
+                if (tr) tr.remove();
+                updateIssueCounter();
+                closeDetail();
+            }
         }
-        if (issue.updated_at > (_lastSeenAt || '')) _lastSeenAt = issue.updated_at;
         if (commentBody) {
             const { comments } = await fetchIssue(_currentId);
             renderComments(comments);
@@ -2219,8 +2331,21 @@ function loadPrefs() {
             if (p.pageSize && [10,25,50,100,200].includes(p.pageSize)) {
                 _pageSize = p.pageSize;
             }
+            // Merge saved column visibility over the defaults. Unknown keys in
+            // saved data are ignored; missing keys keep the default value.
+            if (p.colVisibility) {
+                for (const col of Object.keys(_colVisibility)) {
+                    if (typeof p.colVisibility[col] === 'boolean') {
+                        _colVisibility[col] = p.colVisibility[col];
+                    }
+                }
+            }
         }
     } catch {}
+    // Apply column visibility classes now. The <head> inline script already
+    // set these classes before first render to prevent a flash; calling
+    // applyColVisibility() here keeps _colVisibility in sync with the DOM.
+    applyColVisibility();
 }
 
 // mainLayoutClick is the onclick handler for the main layout container

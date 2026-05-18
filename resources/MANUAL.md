@@ -244,7 +244,8 @@ The web app adapts automatically to the size of your browser window or device sc
 **On phones and small screens (up to about 600 px wide):**
 
 - The filter controls move to a scrollable strip below the header rather than sitting inside it.
-- The issue list shows only the **#**, **Title**, **Priority**, and **Status** columns. Project, Component, Assignee, and Created date are hidden to keep the table readable. All fields remain visible when you open an issue.
+- The issue list shows only the **#**, **Title**, **Priority**, and **Status** columns. All other columns — Project, Component, Reporter, Assignee, Created, Resolved, and Comments — are hidden to keep the table readable. All fields remain visible when you open an issue.
+- The **Columns ▾** button is hidden on phone screens. Column preferences apply on larger screens only.
 - Dialogs and overlays slide up from the bottom of the screen.
 - Form fields that normally sit side-by-side (such as the two password fields) stack vertically.
 
@@ -274,9 +275,29 @@ Four filter controls sit above the issue list:
 
 Filters are cumulative: all active filters are applied simultaneously.
 
+#### Choosing Columns
+
+Click the **Columns ▾** button in the top-right corner of the header (between **+ New Issue** and your name) to open a column picker. Check or uncheck any column to show or hide it immediately. The **#** (ID) and **Title** columns are always visible and cannot be hidden.
+
+| Column | Shown by default | Description |
+| --- | --- | --- |
+| Project | Yes | The project the issue belongs to |
+| Component | Yes | The component within that project |
+| Status | Yes | Open or Resolved |
+| Priority | Yes | High, Medium, or Low |
+| Reporter | No | Who filed the issue |
+| Assigned To | Yes | Who the issue is currently assigned to |
+| Created | Yes | When the issue was first opened |
+| Resolved | No | When the issue was resolved; blank if still open or if the date is unknown |
+| Comments | No | Number of comments on the issue |
+
+Your column choices are saved in the browser and persist across sessions on the same device. On phone-sized screens the **Columns ▾** button is hidden and the compact column set (# Title Priority Status) is always used regardless of your preferences — use **Always show desktop version** in Settings if you need access to all columns on a small screen.
+
+> **Note on the Resolved date:** When a previously open issue is marked Resolved the resolved date is recorded automatically. If an issue is reopened and later resolved again, a fresh resolved date is stamped. For issues that were resolved before this feature was added, the system uses the timestamp of the most recent comment as the best available approximation; issues with no comments will show no resolved date.
+
 #### Sorting
 
-Click any column header to sort by that column. Click again to reverse the sort order. Sortable columns: **#**, **Title**, **Project**, **Component**, **Priority**, **Status**, **Assignee**, **Created**.
+Click any column header to sort by that column. Click again to reverse the sort order. Sortable columns: **#**, **Title**, **Project**, **Component**, **Priority**, **Status**, **Reporter**, **Assigned To**, **Created**, **Resolved**. The **Comments** column is not sortable. Hidden columns can still be sorted — the sort applies to all matching issues, not only those visible in the current page.
 
 ### Viewing an Issue
 
@@ -471,9 +492,15 @@ Choosing **Sign out** always clears the stored information and invalidates the s
 
 > **Note:** The long-lived session persists until you sign out or the 30-day cookie expires. Use this setting only on devices you trust and control.
 
+### Issues per page
+
+Choose how many issues are loaded at a time as you scroll through the list: **10**, **25**, **50** (default), **100**, or **200**. Larger values fetch more rows per network request; smaller values are faster to load and useful for testing filters. The page size is saved in your browser and persists across sessions.
+
+> **Note:** The full issue list is still available regardless of this setting — when you scroll to the bottom of the loaded rows, the next page loads automatically. The counter above the list ("Showing X of Y issues") tells you how many have been loaded versus the total matching the current filters.
+
 ### Always show desktop version
 
-When this setting is enabled the responsive layout rules are disabled entirely, and the app renders exactly as it does on a desktop browser regardless of screen width. All eight issue-table columns are visible, the filter bar stays in the header, and dialogs appear centred rather than as bottom drawers.
+When this setting is enabled the responsive layout rules are disabled entirely, and the app renders exactly as it does on a desktop browser regardless of screen width. All columns selected in the column picker are visible, the filter bar stays in the header, and dialogs appear centred rather than as bottom drawers.
 
 This is useful on a phone or tablet when you want access to columns or layout elements that are otherwise hidden on small screens. The trade-off is that everything will be smaller than normal — you will likely need to pinch-to-zoom to read and interact with parts of the page comfortably.
 

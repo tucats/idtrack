@@ -418,6 +418,38 @@ html, body {
 .col-reporter  { width: 110px; }
 .col-assignee  { width: 110px; }
 .col-date      { width: 110px; white-space: nowrap; }
+.col-resolved  { width: 110px; white-space: nowrap; }
+.col-comments  { width: 50px;  text-align: center; }
+
+/* Column visibility — toggled by applyColVisibility() via html.hide-col-X classes.
+   These rules are global (not scoped to a media query), so a hidden column stays
+   hidden on every screen size including phone. The phone media query below adds
+   further hiding on top. */
+html.hide-col-project   .col-project   { display: none; }
+html.hide-col-component .col-component { display: none; }
+html.hide-col-status    .col-status    { display: none; }
+html.hide-col-priority  .col-priority  { display: none; }
+html.hide-col-reporter  .col-reporter  { display: none; }
+html.hide-col-assignee  .col-assignee  { display: none; }
+html.hide-col-date      .col-date      { display: none; }
+html.hide-col-resolved  .col-resolved  { display: none; }
+html.hide-col-comments  .col-comments  { display: none; }
+
+/* Column picker dropdown */
+.col-picker-wrap  { position: relative; }
+.col-picker-panel {
+    position: absolute; top: calc(100% + 4px); right: 0;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+    padding: .4rem 0; min-width: 170px; z-index: 300;
+}
+.col-picker-item {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .3rem .75rem; font-size: .9rem;
+    cursor: pointer; user-select: none; white-space: nowrap;
+}
+.col-picker-item:hover { background: var(--bg-hover); }
+.col-picker-item input[type=checkbox] { cursor: pointer; }
 
 .issue-title-cell { font-weight: 500; }
 
@@ -1006,8 +1038,13 @@ body.dark .toggle-track::before { background: #e2e5ea; }
   html:not(.desktop-mode) .col-project,
   html:not(.desktop-mode) .col-component,
   html:not(.desktop-mode) .col-assignee,
-  html:not(.desktop-mode) .col-date { display: none; }
+  html:not(.desktop-mode) .col-date,
+  html:not(.desktop-mode) .col-reporter,
+  html:not(.desktop-mode) .col-resolved,
+  html:not(.desktop-mode) .col-comments { display: none; }
   html:not(.desktop-mode) .col-title { min-width: 80px; }
+  /* Column picker is irrelevant on phone — the phone layout overrides all column choices */
+  html:not(.desktop-mode) .col-picker-wrap { display: none; }
 
   /* Sheets: full-width bottom-drawer */
   html:not(.desktop-mode) .overlay { align-items: flex-end; padding: 0; }
