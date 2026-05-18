@@ -20,8 +20,9 @@ import (
 // alongside the PID allows Restart to relaunch the server with exactly the
 // same flags that were passed to the original Serve call.
 type pidRecord struct {
-	PID  int      `json:"pid"`
-	Args []string `json:"args"` // passArgs forwarded to the background child
+	PID     int      `json:"pid"`
+	Version string   `json:"version,omitempty"`
+	Args    []string `json:"args"` // passArgs forwarded to the background child
 }
 
 // readPidFile reads and parses the PID file. It understands both the current
@@ -223,7 +224,7 @@ func Stop() {
 	}
 
 	os.Remove(pidFile)
-	fmt.Printf("idtrack server stopped (pid %d)\n", record.PID)
+	fmt.Printf("idtrack %s server stopped (pid %d)\n", record.Version, record.PID)
 }
 
 // Restart stops the currently running server and immediately relaunches it
@@ -250,7 +251,7 @@ func Restart() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("idtrack server stopped (pid %d)\n", record.PID)
+	fmt.Printf("idtrack %s server stopped (pid %d)\n", record.Version, record.PID)
 
 	// Wait for the old process to fully exit before relaunching. Without this,
 	// the new child may fail to bind the same port while the old one still holds it.
@@ -334,13 +335,13 @@ func launchBackground(serveArgs []string) {
 
 	// Record the child's PID and serve args so Stop can find the process and
 	// Restart can relaunch with the same flags.
-	record := pidRecord{PID: cmd.Process.Pid, Args: serveArgs}
+	record := pidRecord{PID: cmd.Process.Pid, Version: BuildVersion, Args: serveArgs}
 	if pidData, err := json.Marshal(record); err == nil {
 		if err := os.WriteFile(pidFile, pidData, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "cannot write pid file: %v\n", err)
 		}
 	}
 
-	fmt.Printf("idtrack server %s started (pid %d)\n", BuildVersion, cmd.Process.Pid)
+	fmt.Printf("idtrack %s server started (pid %d)\n", BuildVersion, cmd.Process.Pid)
 	fmt.Printf("log: %s\n", logPath)
 }
