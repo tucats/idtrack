@@ -1,0 +1,45 @@
+# =============================================================================
+# .dockerignore — files excluded from the Docker build context
+# =============================================================================
+# Docker sends the entire build context to the daemon before the first
+# build step runs.  Excluding files that the Dockerfile does not need keeps
+# the context small, speeds up 'docker build', and prevents secrets or large
+# artifacts from being inadvertently included in the image.
+
+# ----- Build artifacts -------------------------------------------------------
+# Native binaries compiled for the host OS (not the container's Linux target).
+# The Dockerfile compiles its own binary from source inside the builder stage.
+idtrack
+idtrack.exe
+builds/
+
+# ----- Runtime data files ----------------------------------------------------
+# The local SQLite database and its backup directory are host-specific data
+# and must never be baked into the image.
+*.db
+idtrack-backups/
+
+# ----- Developer scratch files -----------------------------------------------
+project-words.txt
+
+# ----- Version control -------------------------------------------------------
+.git
+.gitignore
+.gitattributes
+
+# ----- Editor / IDE metadata -------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ----- macOS metadata --------------------------------------------------------
+.DS_Store
+**/.DS_Store
+
+# ----- Documentation that does not affect the build -------------------------
+# (Keep resources/ because idtrack.html/css/js are embedded into the binary.)
+docs/
+README.md
+LICENSE

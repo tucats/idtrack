@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build script for idtrack — injects version number and optionally increments it.
 
-BUILDVERFILE=tools/buildvers.txt
+BUILDVERFILE=tools/buildver.txt
 GO="go"
 GOARCH=`go env GOARCH`
 GOOS=`go env GOOS`
