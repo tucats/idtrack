@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -94,6 +95,10 @@ func User(args []string) {
 
 	if database == "" {
 		database = defaultDB
+	}
+
+	if abs, err := filepath.Abs(database); err == nil {
+		database = abs
 	}
 
 	d, err := db.Open(database)

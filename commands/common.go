@@ -43,6 +43,12 @@ type defaults struct {
 // loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
 // file does not exist or cannot be read, a zero-value struct is returned so
 // callers can apply their own fallback values.
+//
+// Migration: if the stored Database path is a non-empty relative path (written
+// by a version of idtrack that did not resolve paths on save), it is converted
+// to absolute and the file is rewritten immediately.  This is a one-time
+// operation; after migration the file always contains an absolute path and this
+// branch becomes a no-op on every subsequent read.
 func loadDefaults() defaults {
 	var d defaults
 
@@ -51,12 +57,26 @@ func loadDefaults() defaults {
 		return defaults{}
 	}
 
-	data, err := os.ReadFile(filepath.Join(home, ".idtrack", "defaults.json"))
+	path := filepath.Join(home, ".idtrack", "defaults.json")
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return defaults{} // file not yet created — silently use zero values
 	}
 
 	json.Unmarshal(data, &d) // ignore parse error; zero struct is a safe fallback
+
+	// Migrate a relative Database path to absolute.  Best-effort: if the
+	// rewrite fails for any reason we still return the resolved value so this
+	// invocation behaves correctly even if the file cannot be updated.
+	if d.Database != "" && !filepath.IsAbs(d.Database) {
+		if abs, err := filepath.Abs(d.Database); err == nil {
+			d.Database = abs
+			if migrated, err := json.MarshalIndent(d, "", "  "); err == nil {
+				os.WriteFile(path, append(migrated, '\n'), 0600)
+			}
+		}
+	}
 
 	return d
 }

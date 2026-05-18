@@ -224,6 +224,11 @@ func Default(args []string) {
 	}
 
 	if database != "" {
+		// Resolve to an absolute path before saving so that the stored value
+		// is not sensitive to the working directory of future invocations.
+		if abs, err := filepath.Abs(database); err == nil {
+			database = abs
+		}
 		defs.Database = database
 	}
 
@@ -335,7 +340,7 @@ func showDefaults() {
 	if defs.Database != "" {
 		row("database", defs.Database)
 	} else {
-		row("database", `"idtrack.db" in working directory (default)`)
+		row("database", "(not set)")
 	}
 
 	if defs.ServerCert != "" {
