@@ -71,7 +71,7 @@ Both default to `"dev"` / `""` when built with plain `go build` (no flags).
 
 - **Go 1.25**, single binary, no runtime dependencies
 - **SQLite** via `modernc.org/sqlite` (pure-Go, no CGO required)
-- **HTTPS only** — TLS cert/key embedded in the binary via `embed.FS`
+- **HTTPS only** — TLS cert/key embedded in the binary via `embed.FS`; external cert/key files can be configured via `--server-cert`/`--server-key` to replace the built-in self-signed certificate
 - **Session-cookie auth** — browser sends plaintext password over TLS; server hashes with bcrypt (`golang.org/x/crypto/bcrypt`, default cost) and stores the hash in the DB. On login the server issues a cryptographically random 64-hex-char session token as an `HttpOnly; Secure; SameSite=Strict` cookie. The `auth` middleware validates the cookie against an in-memory `sessionStore` on each authenticated request. `POST /api/logout` deletes the server-side session and clears the cookie. Non-browser API clients may pass `Authorization: Bearer <token>` instead. Legacy SHA-256 hashes (from the old client-side scheme) are detected by format and transparently upgraded to bcrypt on first successful login.
 - **No framework** — `net/http` mux with Go 1.22+ path patterns (`GET /api/issues/{id}`)
 
@@ -133,7 +133,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h"}` — persisted defaults; all fields are omitempty |
+| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h"}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -143,25 +143,28 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration]`
+### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration]`
 
-Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag.
+Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag. Running with no flags prints a two-column table of the current defaults.
 
-- `--idle-timeout` accepts any Go duration string (`30m`, `1h`, `90s`). Use `0` to disable. The server returns this value from `GET /api/status`; the frontend enforces it as an idle-logout timer.
+- `--server-cert` / `--cert` / `--cert-file` set an absolute path to a PEM TLS certificate file. The file must exist at save time; the path is resolved to absolute before storing. Use `off` to clear the setting and revert to the built-in self-signed certificate. Both `server_cert` and `server_key` must be set together for external TLS to work.
+- `--server-key` / `--key` / `--key-file` set an absolute path to a PEM TLS private key file. Same validation and `off` semantics as `--server-cert`.
+- `--idle-timeout` accepts any Go duration string (`30m`, `1h`, `90s`). Use `0` or `off` to disable. The server returns this value from `GET /api/status`; the frontend enforces it as an idle-logout timer.
 - `--app-name` sets a custom application name shown in the header, login screen, onboarding screen, and About dialog (default: `idtrack`).
 - `--app-description` sets a custom tagline shown under the name on the login screen and About dialog (default: `Issue Tracker`).
 - Both branding values are returned by `GET /api/status` as `app_name` and `app_description` (omitted when not set). The frontend applies them immediately after the status probe via `applyBranding()`.
-- `--backup-interval` accepts any Go duration string (`1h`, `30m`). Use `0` to disable backups. Stored as a string in `defaults.json` and parsed to `time.Duration` in `commands.Serve`.
-- `--backup-count` is a non-negative integer. `0` means no count limit.
-- `--backup-age` accepts any Go duration string. Use `0` to disable age-based pruning. Stored as a string in `defaults.json`.
+- `--backup-interval` accepts any Go duration string (`1h`, `30m`). Use `0` or `off` to disable backups. Stored as a string in `defaults.json` and parsed to `time.Duration` in `commands.Serve`.
+- `--backup-count` is a non-negative integer. Use `0` or `off` for no count limit.
+- `--backup-age` accepts any Go duration string. Use `0` or `off` to disable age-based pruning. Stored as a string in `defaults.json`.
 
-### `idtrack serve [--port n] [--database path]`
+### `idtrack serve [--port n] [--database path] [--server-cert path] [--server-key path]`
 
 - **Does not block the terminal.** Re-execs itself with `--foreground` as a background process using `exec.Command` + `Setsid: true` (new session, survives terminal close).
 - Checks for a stale/live PID file before starting; errors if a server is already running.
 - Redirects child stdout/stderr to `~/.idtrack/idtrack.log` (append mode).
 - Writes child PID to `~/.idtrack/idtrack.pid`.
 - Default port: **8443**. Default database: `idtrack.db` in the working directory.
+- `--server-cert` / `--cert` / `--cert-file` and `--server-key` / `--key` / `--key-file` override the TLS credentials for this run only (do not persist to `defaults.json`). When absent, values from `defaults.json` are used; if those are also absent, the built-in self-signed cert/key are used.
 - The `--foreground` flag is **internal** — it tells the re-exec'd child to run the server directly. Do not expose it in docs.
 
 ### `idtrack stop`
@@ -329,6 +332,10 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **"Always show desktop version" setting** — a toggle in Settings that adds the class `desktop-mode` to `<html>`. Every responsive CSS rule is gated on `html:not(.desktop-mode)`, so when the class is present all mobile/tablet overrides become inert and the app renders as a full desktop layout regardless of viewport width (the user will need to pinch-zoom or scroll horizontally). The preference is stored in `idtrack_prefs` under `desktopMode`. To prevent a flash of mobile layout on reload, a minified inline `<script>` in `<head>` reads `localStorage` and applies the class before the browser renders the first frame — the same class that `toggleDesktopMode()` and `loadPrefs()` manage at runtime.
 
 ## Important Implementation Decisions
+
+**External TLS cert/key replaces the embedded self-signed certificate.** When `server_cert` and `server_key` are set in `defaults.json` (or passed directly to `idtrack serve`), `server.Start()` reads the PEM files from disk via `os.ReadFile` instead of from the embedded `embed.FS`. Both must be set together — the server will fail to start if only one is present (the cert and key must form a matching pair for `tls.X509KeyPair`). `idtrack default --server-cert` validates that the file exists and resolves it to an absolute path before saving, so a relative path at save time won't silently break after a working-directory change. Use `off` as the value to clear either setting and revert to the built-in certificate.
+
+**`off` is a synonym for the zero/disabled value on duration and count flags.** `--idle-timeout off`, `--backup-interval off`, `--backup-count off`, and `--backup-age off` all behave identically to `0`. This makes the intent explicit in shell scripts or documentation where the word "off" reads more clearly than the number zero.
 
 **Password hashing is server-side (bcrypt).** The browser sends the plaintext password over TLS to `POST /api/login`. The server hashes it with `bcrypt.GenerateFromPassword` (default cost) and compares against the stored bcrypt hash with `bcrypt.CompareHashAndPassword`. The DB stores the bcrypt hash string (begins with `$2a$`). Legacy SHA-256 hashes (64 lowercase hex chars, from the old client-side scheme) are detected by format in `db.IsLegacyHash` and verified via a constant-time SHA-256 comparison in `db.VerifyPassword`; they are transparently upgraded to bcrypt on next successful login via `db.UpgradePasswordHash`.
 

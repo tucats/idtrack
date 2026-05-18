@@ -30,6 +30,8 @@ var (
 type defaults struct {
 	Port           int    `json:"port"`
 	Database       string `json:"database"`
+	ServerCert     string `json:"server_cert,omitempty"`     // absolute path to TLS cert file; empty = auto-generated self-signed cert
+	ServerKey      string `json:"server_key,omitempty"`      // absolute path to TLS key file; empty = auto-generated self-signed key
 	IdleTimeout    int    `json:"idle_timeout,omitempty"`    // seconds; 0 means disabled
 	AppName        string `json:"app_name,omitempty"`        // custom branding name
 	AppDescription string `json:"app_description,omitempty"` // custom branding tagline
@@ -78,12 +80,14 @@ Commands:
 		With no options, lists the current defaults.
 		 --port <n>
 		 --database <path>
-		 --idle-timeout <duration>
+		 --server-cert <path>
+		 --server-key <path>
+		 --idle-timeout <duration> | off
 		 --app-name <name>
 		 --app-description <text>
-		 --backup-interval <duration>  (e.g. 1h, 30m; 0 to disable)
-		 --backup-count <n>            (max backups to keep; 0 = no limit)
-		 --backup-age <duration>       (e.g. 168h for 7 days; 0 to disable)
+		 --backup-interval <duration>|off
+		 --backup-count <n> | off
+		 --backup-age <duration> | off
 
 	define [subcommand] [options]
 		Create projects and components.
@@ -103,6 +107,8 @@ Commands:
 		on port 8443, but you can override these with options on the command.
 		 --port <n>
 		 --database <path>
+		 --server-cert <path> 
+		 --server-key <path> 
 
 	stop
 		Stop the running idtrack server.

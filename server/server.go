@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -37,6 +38,8 @@ type srv struct {
 	backupInterval  time.Duration // 0 = backups disabled
 	backupCount     int           // 0 = no count limit
 	backupAge       time.Duration // 0 = no age limit
+	certFile        string        // absolute path to TLS cert file; empty = use embedded cert
+	keyFile         string        // absolute path to TLS key file; empty = use embedded key
 }
 
 // Start wires up all routes, loads the TLS certificate, opens a TCP listener,
@@ -47,7 +50,7 @@ type srv struct {
 // Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration) error {
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, certFile, keyFile string) error {
 	s := &srv{
 		database:       database,
 		static:         static,
@@ -62,6 +65,8 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		backupInterval: backupInterval,
 		backupCount:    backupCount,
 		backupAge:      backupAge,
+		certFile:       certFile,
+		keyFile:        keyFile,
 	}
 
 	mux := http.NewServeMux()
@@ -108,16 +113,40 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle("POST /api/issues/{id}/comments", s.auth(requireJSON(http.HandlerFunc(s.handleCreateComment))))
 	mux.Handle("DELETE /api/issues/{id}/comments/{cid}", s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
-	// Read the TLS certificate and key from the embedded filesystem. Both
-	// files are compiled into the binary, so deployment is a single file copy.
-	certData, err := fs.ReadFile(static, "resources/https-server.crt")
-	if err != nil {
-		return fmt.Errorf("reading TLS cert: %w", err)
+	// Read the TLS certificate and key. If a file name was provided from the defaults
+	// data, use that as the name. Otherwise, read the values from the embedded filesystem.
+	var (
+		certData []byte
+		keyData  []byte
+		err      error
+	)
+
+	if certFile != "" {
+		certData, err = os.ReadFile(certFile)
+		if err != nil {
+			return fmt.Errorf("reading TLS cert: %w", err)
+		}
+
+		log.Printf("idtrack using cert file: %s", certFile)
+	} else {
+		certData, err = fs.ReadFile(static, "resources/https-server.crt")
+		if err != nil {
+			return fmt.Errorf("reading TLS cert: %w", err)
+		}
 	}
 
-	keyData, err := fs.ReadFile(static, "resources/https-server.key")
-	if err != nil {
-		return fmt.Errorf("reading TLS key: %w", err)
+	if keyFile != "" {
+		keyData, err = os.ReadFile(keyFile)
+		if err != nil {
+			return fmt.Errorf("reading TLS key: %w", err)
+		}
+
+		log.Printf("idtrack using key file: %s", keyFile)
+	} else {
+		keyData, err = fs.ReadFile(static, "resources/https-server.key")
+		if err != nil {
+			return fmt.Errorf("reading TLS key: %w", err)
+		}
 	}
 
 	// X509KeyPair parses the PEM-encoded certificate and key into a struct

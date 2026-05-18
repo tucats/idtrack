@@ -73,15 +73,49 @@ func serverLogPath() string {
 // static is the embedded fs.FS passed from main — it cannot live in this
 // package because //go:embed must be declared alongside the resources directory.
 func Serve(args []string, static fs.FS) {
-	var passArgs []string
+	var (
+		passArgs []string
+	)
 
 	defs := loadDefaults()
 	port := defs.Port
+	keyFile := defs.ServerKey
+	certFile := defs.ServerCert
 	database := defs.Database
 	foreground := false
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--server-cert", "--cert", "--cert-file":
+			if i+1 < len(args) {
+				i++
+
+				certFile = args[i]
+				if abs, err := filepath.Abs(args[i]); err == nil {
+					certFile = abs
+				} else {
+					fmt.Fprintf(os.Stderr, "cannot resolve path to server cert file %q: %v\n", args[i], err)
+					os.Exit(1)
+				}
+
+				passArgs = append(passArgs, "--cert-file", args[i])
+			}
+
+		case "--server-key", "--key", "--key-file":
+			if i+1 < len(args) {
+				i++
+
+				keyFile = args[i]
+				if abs, err := filepath.Abs(args[i]); err == nil {
+					keyFile = abs
+				} else {
+					fmt.Fprintf(os.Stderr, "cannot resolve path to server key file %q: %v\n", args[i], err)
+					os.Exit(1)
+				}
+
+				passArgs = append(passArgs, "--key-file", args[i])
+			}
+
 		case "--foreground":
 			foreground = true
 
@@ -154,7 +188,7 @@ func Serve(args []string, static fs.FS) {
 		backupAge, _ = time.ParseDuration(defs.BackupAge)
 	}
 
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, certFile, keyFile); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}
