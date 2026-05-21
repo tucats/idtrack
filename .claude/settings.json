@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(go mod *)",
-      "Bash(grep \"\\\\.go$\")"
+      "Bash(grep \"\\\\.go$\")",
+      "Bash([ -f \"IDTrack/$f\" ])",
+      "Bash(xcodebuild -project IDTrack.xcodeproj -scheme IDTrack -destination 'platform=iOS Simulator,name=iPhone 16' -configuration Debug build CODE_SIGNING_ALLOWED=NO)",
+      "Bash(xcodebuild -project IDTrack.xcodeproj -scheme IDTrack -destination 'generic/platform=iOS Simulator' -configuration Debug build CODE_SIGNING_ALLOWED=NO)",
+      "Bash(grep -v \"^$\")"
     ]
   }
 }
