@@ -61,7 +61,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		1F2E3D4C5B6A790AB7B6C5D4 /* IDTrack */ = {
+		1F2E3D4C5B6A790AB7B6C5D4 /* IDTrackSource */ = {
 			isa = PBXGroup;
 			children = (
 				3A1234567890ABCDEF000001 /* IDTrackApp.swift */,
@@ -84,7 +84,7 @@
 				8C1234567890ABCDEF000017 /* Assets.xcassets */,
 				8E1234567890ABCDEF000018 /* Info.plist */,
 			);
-			path = IDTrack;
+			path = IDTrackSource;
 			sourceTree = "<group>";
 		};
 		9E8D7C6B5A4F3E2D1C0B9A8F /* Products */ = {
@@ -98,7 +98,7 @@
 		AA0000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				1F2E3D4C5B6A790AB7B6C5D4 /* IDTrack */,
+				1F2E3D4C5B6A790AB7B6C5D4 /* IDTrackSource */,
 				9E8D7C6B5A4F3E2D1C0B9A8F /* Products */,
 			);
 			sourceTree = "<group>";
