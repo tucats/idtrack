@@ -207,7 +207,7 @@ The schema is created with `CREATE TABLE IF NOT EXISTS` on every startup. New co
 
 Columns added via migration: `last_login_at`, `is_admin` (users table); `project`, `component`, `resolved_at`, `dependent_issues` (issues table).
 
-**`dependent_issues` column.** Stores a comma-separated list of issue IDs (e.g. `"7,12,33"`). `parseDependentIssues` converts this to `[]int64`; `formatDependentIssues` converts back. The empty string represents no dependencies. `scanIssue()` centralises all column scanning so every query function reuses the same scan logic. For Duplicate status the list holds exactly one ID; for Blocked it holds one or more; for all other statuses it is always empty (the handler clears it automatically).
+**`dependent_issues` column.** Stores a comma-separated list of issue IDs (e.g. `"7,12,33"`). `parseDependentIssues` converts this to `[]int64`; `formatDependentIssues` converts back. The empty string represents no dependencies. `scanIssue()` centralizes all column scanning so every query function reuses the same scan logic. For Duplicate status the list holds exactly one ID; for Blocked it holds one or more; for all other statuses it is always empty (the handler clears it automatically).
 
 **`resolved_at` backfill.** When `resolved_at` is first added to an existing database, a one-time UPDATE sets it for all Resolved issues that have at least one comment, using `MAX(comments.created_at)` as a proxy for the resolution time. Issues with no comments retain `resolved_at = ''`. The UPDATE is guarded by `WHERE resolved_at = ''` so it is a no-op on subsequent starts.
 
