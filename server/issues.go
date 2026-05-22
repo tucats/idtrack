@@ -439,19 +439,6 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// Ignore the error — a failed auto-comment does not roll back the status change.
 		_, _ = db.CreateComment(s.database, id, author, commentBody)
 
-	} else if oldStatus != "Blocked" && newStatus == "Blocked" {
-		parts := make([]string, len(body.DependentIssues))
-		for i, depID := range body.DependentIssues {
-			parts[i] = fmt.Sprintf("#%d", depID)
-		}
-
-		commentBody := "Blocked by issues " + strings.Join(parts, ", ")
-
-		if extra := strings.TrimSpace(body.Comment); extra != "" {
-			commentBody += "\n\n" + extra
-		}
-
-		_, _ = db.CreateComment(s.database, id, author, commentBody)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})

@@ -1295,16 +1295,28 @@ function cancelDuplicateDialog() {
 // UI — STATUS CHANGE: Blocked dialog
 // =====================================================================
 
+// buildBlockedCommentText returns the seeded comment prefix for a Blocked
+// transition, e.g. "Blocked by issues #3, #7". Returns '' if ids is empty.
+function buildBlockedCommentText(ids) {
+    if (!ids || ids.length === 0) return '';
+    return 'Blocked by issues ' + ids.map(id => '#' + id).join(', ');
+}
+
 // showBlockedDialog opens the overlay for capturing one or more blocking
-// issue IDs and an optional extra comment for the auto-generated system note.
+// issue IDs and a comment that will be posted client-side on confirm.
 function showBlockedDialog() {
-    _pendingBlockedIds = [];
+    _pendingBlockedIds = [..._dependentIssues];
     renderBlockedDialogList();
     document.getElementById('blk-add-input').value = '';
-    document.getElementById('blk-comment').value = '';
+    const seeded = buildBlockedCommentText(_pendingBlockedIds);
+    document.getElementById('blk-comment').value = seeded ? seeded + '\n\n' : '';
     document.getElementById('blk-error').textContent = '';
     document.getElementById('blocked-overlay').style.display = 'flex';
-    document.getElementById('blk-add-input').focus();
+    if (_pendingBlockedIds.length > 0) {
+        document.getElementById('blk-comment').focus();
+    } else {
+        document.getElementById('blk-add-input').focus();
+    }
 }
 
 // addBlockedDialogIssue adds the value in the dialog's number input to the
@@ -1328,20 +1340,31 @@ function removeBlockedDialogIssue(id) {
     renderBlockedDialogList();
 }
 
-// renderBlockedDialogList rebuilds the chip list inside the Blocked dialog.
+// renderBlockedDialogList rebuilds the chip list inside the Blocked dialog
+// and refreshes the seeded prefix in the comment textarea.
 function renderBlockedDialogList() {
     const list = document.getElementById('blk-issues-list');
     if (_pendingBlockedIds.length === 0) {
         list.innerHTML = '<em class="dep-empty">No blocking issues added yet.</em>';
-        return;
+    } else {
+        list.innerHTML = _pendingBlockedIds.map(id =>
+            `<span class="dep-issue-chip">#${esc(String(id))}<button class="dep-remove-btn" onclick="removeBlockedDialogIssue(${id})" title="Remove">×</button></span>`
+        ).join('');
     }
-    list.innerHTML = _pendingBlockedIds.map(id =>
-        `<span class="dep-issue-chip">#${esc(String(id))}<button class="dep-remove-btn" onclick="removeBlockedDialogIssue(${id})" title="Remove">×</button></span>`
-    ).join('');
+    // Keep the comment textarea prefix in sync with the current chip list.
+    const ta = document.getElementById('blk-comment');
+    if (!ta) return;
+    const seeded = buildBlockedCommentText(_pendingBlockedIds);
+    const current = ta.value;
+    // Replace everything up to the first blank line (the seeded prefix line).
+    const blankIdx = current.indexOf('\n\n');
+    const userText = blankIdx >= 0 ? current.slice(blankIdx + 2) : '';
+    ta.value = seeded ? seeded + '\n\n' + userText : userText;
 }
 
 // confirmBlockedDialog validates the pending list, transfers it to
-// _dependentIssues, and saves.
+// _dependentIssues, and saves. The comment is posted client-side so the
+// textarea text (including the seeded prefix) is sent exactly as written.
 async function confirmBlockedDialog() {
     if (!_pendingStatusData) return;
     const err = document.getElementById('blk-error');
@@ -1350,12 +1373,12 @@ async function confirmBlockedDialog() {
         err.textContent = 'At least one blocking issue is required.';
         return;
     }
-    const serverComment = document.getElementById('blk-comment').value.trim();
+    const commentBody = document.getElementById('blk-comment').value.trim();
     _dependentIssues = [..._pendingBlockedIds];
     document.getElementById('blocked-overlay').style.display = 'none';
     const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
     _pendingStatusData = null;
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, null, serverComment);
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody || null, '');
 }
 
 // cancelBlockedDialog dismisses the overlay and restores the status picker.
