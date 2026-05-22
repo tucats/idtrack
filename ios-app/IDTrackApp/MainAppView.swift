@@ -40,11 +40,20 @@ struct MainAppView: View {
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             // --- Sidebar column (always visible) ---
+            //
+            // On Mac Catalyst, the issue list is the primary working view —
+            // it's naturally wide (many columns: id, title, project, priority,
+            // status, assignee, dates) while the issue editor is comparatively
+            // narrow. Override the default sidebar proportions so the user can
+            // drag the divider up to ~2/3 of the window width.
             IssueListView(selectedIssueId: $selectedIssueId)
                 .navigationTitle(appState.appName)
                 // `listToolbar` is a computed property below; the `@ToolbarContentBuilder`
                 // attribute lets it return multiple ToolbarItems as a group.
                 .toolbar { listToolbar }
+                #if targetEnvironment(macCatalyst)
+                .navigationSplitViewColumnWidth(min: 360, ideal: 700, max: 1500)
+                #endif
         } detail: {
             // --- Detail column ---
             // Show a placeholder when nothing is selected (common on iPad at
@@ -76,6 +85,11 @@ struct MainAppView: View {
         .sheet(isPresented: $appState.showAbout)        { AboutView() }
         .sheet(isPresented: $appState.showManageUsers)  { ManageUsersView() }
         .sheet(isPresented: $appState.showEditProjects) { EditProjectsView() }
+        // Explicitly re-inject `appState` here. On Mac Catalyst, sheets can be
+        // presented in a separate window context whose environment does not
+        // always inherit EnvironmentObjects from the presenter — passing it
+        // through manually guarantees the lookup inside ManualView succeeds.
+        .sheet(isPresented: $appState.showManual)       { ManualView().environmentObject(appState) }
     }
 
     // MARK: - Toolbar
@@ -95,12 +109,12 @@ struct MainAppView: View {
         }
 
         // Hamburger / "…" menu — groups less-frequent actions behind a tap.
-        // On Mac Catalyst, About / Settings / Edit Users / Edit Projects move
-        // out to the native menu bar (see IDTrackApp.commands), so the dot menu
-        // collapses down to Sign Out only.
+        // On Mac Catalyst every item it used to host (About, Settings, Edit
+        // Users, Edit Projects, Sign Out) has moved to the native menu bar
+        // (see IDTrackApp.commands), so the whole ToolbarItem is omitted there.
+        #if !targetEnvironment(macCatalyst)
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                #if !targetEnvironment(macCatalyst)
                 Button(action: { appState.showAbout = true }) {
                     Label("About", systemImage: "info.circle")
                 }
@@ -119,7 +133,6 @@ struct MainAppView: View {
                     }
                 }
                 Divider()
-                #endif
                 // `role: .destructive` colours the button red on iOS, signalling
                 // that the action has serious consequences (signs out the user).
                 Button(role: .destructive, action: {
@@ -131,5 +144,6 @@ struct MainAppView: View {
                 Label("Menu", systemImage: "ellipsis.circle")
             }
         }
+        #endif
     }
 }

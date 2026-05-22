@@ -46,6 +46,7 @@ class AppState: ObservableObject {
     @Published var showSettings:     Bool = false
     @Published var showManageUsers:  Bool = false
     @Published var showEditProjects: Bool = false
+    @Published var showManual:       Bool = false
 
     // These three properties persist their values to UserDefaults using
     // `didSet` — an observer block that runs immediately after the property

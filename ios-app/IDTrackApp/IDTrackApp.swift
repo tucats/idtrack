@@ -40,11 +40,12 @@ struct IDTrackApp: App {
         // native locations:
         //
         //   • Application ("IDTrack") menu — About, Settings…
+        //   • File menu                    — Sign Out
         //   • Edit menu                    — Edit Users…, Edit Projects…
         //                                    (admin users only)
         //
-        // Each command just flips a flag on AppState; the sheet observer in
-        // MainAppView is what actually presents the view.
+        // Each command just flips a flag on AppState (or calls signOut); the
+        // sheet observer in MainAppView is what actually presents the views.
         #if targetEnvironment(macCatalyst)
         .commands {
             CommandGroup(replacing: .appInfo) {
@@ -60,6 +61,13 @@ struct IDTrackApp: App {
                 .keyboardShortcut(",", modifiers: .command)
                 .disabled(!appState.isLoggedIn)
             }
+            CommandGroup(after: .saveItem) {
+                Divider()
+                Button("Sign Out") {
+                    Task { await appState.signOut() }
+                }
+                .disabled(!appState.isLoggedIn)
+            }
             CommandGroup(after: .pasteboard) {
                 if appState.currentUser?.isAdmin == true {
                     Divider()
@@ -70,6 +78,17 @@ struct IDTrackApp: App {
                         appState.showEditProjects = true
                     }
                 }
+            }
+            // Replace the default Help-menu entry ("IDTrack Help" pointing at
+            // a non-existent Help Book) with an action that opens the manual
+            // sheet. The sheet's WKWebView loads HTML fetched from the
+            // server's /manual endpoint via APIClient.
+            CommandGroup(replacing: .help) {
+                Button("\(appState.appName) Help") {
+                    appState.showManual = true
+                }
+                .keyboardShortcut("?", modifiers: .command)
+                .disabled(!appState.isLoggedIn)
             }
         }
         #endif

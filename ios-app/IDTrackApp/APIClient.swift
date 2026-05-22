@@ -218,6 +218,22 @@ class APIClient {
         return try await decode(req(url))
     }
 
+    // MARK: - Manual
+    //
+    // GET /manual returns a complete self-contained HTML page (inline CSS,
+    // dark-mode-aware) rendered from the server's MANUAL.md. It is a public
+    // endpoint — no auth required — so this just performs a plain GET and
+    // returns the body as a UTF-8 string for WKWebView.loadHTMLString.
+
+    func getManual() async throws -> String {
+        let url  = try makeURL("/manual")
+        let data = try await perform(req(url))
+        guard let html = String(data: data, encoding: .utf8) else {
+            throw APIError.decodingError("Manual is not valid UTF-8")
+        }
+        return html
+    }
+
     // MARK: - Auth
 
     // Login request body. Defining it as a nested struct keeps the shape

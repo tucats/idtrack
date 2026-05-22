@@ -25,6 +25,7 @@
 		8B1234567890ABCDEF000016 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A1234567890ABCDEF000016 /* AboutView.swift */; };
 		8D1234567890ABCDEF000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8C1234567890ABCDEF000017 /* Assets.xcassets */; };
 		9A1234567890ABCDEF000019 /* SharedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B1234567890ABCDEF000019 /* SharedViews.swift */; };
+		E2E5C79F2FBFDE4A00B0364F /* ManualView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2E5C79E2FBFDE4A00B0364F /* ManualView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +48,7 @@
 		8C1234567890ABCDEF000017 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		8E1234567890ABCDEF000018 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9B1234567890ABCDEF000019 /* SharedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedViews.swift; sourceTree = "<group>"; };
+		E2E5C79E2FBFDE4A00B0364F /* ManualView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualView.swift; sourceTree = "<group>"; };
 		F0E1D2C3B4A5968778695A4B /* IDTrack.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IDTrack.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -61,7 +63,7 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		1F2E3D4C5B6A790AB7B6C5D4 /* IDTrackSource */ = {
+		1F2E3D4C5B6A790AB7B6C5D4 /* IDTrackApp */ = {
 			isa = PBXGroup;
 			children = (
 				3A1234567890ABCDEF000001 /* IDTrackApp.swift */,
@@ -83,8 +85,9 @@
 				8A1234567890ABCDEF000016 /* AboutView.swift */,
 				8C1234567890ABCDEF000017 /* Assets.xcassets */,
 				8E1234567890ABCDEF000018 /* Info.plist */,
+				E2E5C79E2FBFDE4A00B0364F /* ManualView.swift */,
 			);
-			path = IDTrackSource;
+			path = IDTrackApp;
 			sourceTree = "<group>";
 		};
 		9E8D7C6B5A4F3E2D1C0B9A8F /* Products */ = {
@@ -98,7 +101,7 @@
 		AA0000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
-				1F2E3D4C5B6A790AB7B6C5D4 /* IDTrackSource */,
+				1F2E3D4C5B6A790AB7B6C5D4 /* IDTrackApp */,
 				9E8D7C6B5A4F3E2D1C0B9A8F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -174,6 +177,7 @@
 			files = (
 				4A1234567890ABCDEF000001 /* IDTrackApp.swift in Sources */,
 				4B1234567890ABCDEF000002 /* AppState.swift in Sources */,
+				E2E5C79F2FBFDE4A00B0364F /* ManualView.swift in Sources */,
 				4C1234567890ABCDEF000003 /* Models.swift in Sources */,
 				4D1234567890ABCDEF000004 /* APIClient.swift in Sources */,
 				4E1234567890ABCDEF000005 /* ContentView.swift in Sources */,
@@ -262,7 +266,9 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = IDTrackSource/Info.plist;
+				INFOPLIST_FILE = IDTrackApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "IDTrack: Issue Database Tracking";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -276,7 +282,7 @@
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = "1,2,6";
 			};
 			name = Debug;
 		};
@@ -290,7 +296,9 @@
 				DEVELOPMENT_ASSET_PATHS = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = IDTrackSource/Info.plist;
+				INFOPLIST_FILE = IDTrackApp/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "IDTrack: Issue Database Tracking";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -304,7 +312,7 @@
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = "1,2,6";
 			};
 			name = Release;
 		};
