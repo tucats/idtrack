@@ -726,7 +726,15 @@ struct IssueDetailView: View {
         }
         // Any → Blocked: requires one or more blocking issue IDs.
         if origStatus != "Blocked" && status == "Blocked" {
-            pendingBlockedIds = []; pendingBlockedText = ""; blockedComment = ""; scError = ""
+            pendingBlockedIds = dependentIssues
+            pendingBlockedText = ""; scError = ""
+            // Seed the comment textarea with the blocking-issues prefix.
+            if !pendingBlockedIds.isEmpty {
+                let ids = pendingBlockedIds.map { "#\($0)" }.joined(separator: ", ")
+                blockedComment = "Blocked by issues \(ids)\n\n"
+            } else {
+                blockedComment = ""
+            }
             showBlockedDialog = true
             return
         }
@@ -778,24 +786,24 @@ struct IssueDetailView: View {
     }
 
     // Called from the blocked sheet's Confirm button.
-    // Requires at least one blocking issue ID.
+    // Requires at least one blocking issue ID. Posts the comment client-side
+    // so the textarea text (including the seeded prefix) is sent exactly as written.
     private func confirmBlocked() async {
         if pendingBlockedIds.isEmpty {
             scError = "At least one blocking issue is required."; return
         }
-        let extra = blockedComment.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = blockedComment.trimmingCharacters(in: .whitespacesAndNewlines)
         dependentIssues = pendingBlockedIds
         showBlockedDialog = false
-        if let iss = issue { await doSave(iss, extraComment: extra) }
+        if let iss = issue { await doSave(iss, commentBody: body.isEmpty ? nil : body) }
     }
 
     // Core save function. Sends the PUT request, optionally posts a client-side
-    // comment (for Resolve/Reopen), then refreshes both the issue and comments
-    // to reflect the server's committed state.
+    // comment (for Resolve/Reopen/Blocked), then refreshes both the issue and
+    // comments to reflect the server's committed state.
     //
-    // `commentBody` — a client-side comment posted after the save (Resolve/Reopen).
-    // `extraComment` — appended to the server's auto-comment for Blocked transitions.
-    private func doSave(_ iss: Issue, commentBody: String? = nil, extraComment: String = "") async {
+    // `commentBody` — a client-side comment posted after the save.
+    private func doSave(_ iss: Issue, commentBody: String? = nil) async {
         isSaving = true
         saveError = ""
         do {
@@ -806,7 +814,7 @@ struct IssueDetailView: View {
                 priority: priority, status: status,
                 assignee: assignee, project: project, component: component,
                 dependentIssues: dependentIssues,
-                comment: extraComment
+                comment: ""
             )
             // If the status transition produced a comment body, post it now.
             // `try?` makes a comment failure non-fatal — the status is already
