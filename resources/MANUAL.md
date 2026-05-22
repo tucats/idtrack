@@ -271,7 +271,7 @@ After login, the main screen shows the issue list. By default it shows all **Ope
 Four filter controls sit above the issue list:
 
 - **Search** — Filter by text that appears anywhere in the title or description.
-- **Status** — Choose *All*, *Open*, or *Resolved*.
+- **Status** — Choose *All*, *Open*, *Resolved*, *Blocked*, or *Duplicate*.
 - **Priority** — Choose *All*, *High*, *Medium*, or *Low*.
 - **Project** — Choose *All* or a specific project name.
 
@@ -285,7 +285,7 @@ Click the **Columns ▾** button in the top-right corner of the header (between 
 | --- | --- | --- |
 | Project | Yes | The project the issue belongs to |
 | Component | Yes | The component within that project |
-| Status | Yes | Open or Resolved |
+| Status | Yes | Open, Resolved, Blocked, or Duplicate |
 | Priority | Yes | High, Medium, or Low |
 | Reporter | No | Who filed the issue |
 | Assigned To | Yes | Who the issue is currently assigned to |
@@ -313,7 +313,8 @@ Click any row in the issue list to open the detail panel on the right. The detai
 - Project (editable dropdown)
 - Component (editable dropdown — filtered to the selected project)
 - Priority (editable — High, Medium, or Low)
-- Status (editable — Open or Resolved)
+- Status (editable — Open, Resolved, Blocked, or Duplicate)
+- Blocked By / Duplicate Of (appears when status is Blocked or Duplicate — shows the dependent issue IDs)
 - Created and Updated timestamps (read-only)
 - Comments thread
 
@@ -333,6 +334,17 @@ If either field is filled in, the information is posted as a comment at the same
 > **Note:** An **Assignee** is required before an issue can be saved as *Resolved*. The save is blocked with an error if the assignee field is empty.
 
 **Resolved → Open:** Reopening a resolved issue always requires a comment — the dialog will not confirm until a reason is entered. The reason is posted as a comment at the same time the status is changed back to *Open*.
+
+**Any → Blocked:** When you change an issue's status to *Blocked*, a dialog appears asking you to identify the blocking issues:
+
+- **Blocking Issues** — one or more issue numbers (by ID) that must be resolved before this issue can move forward. Use the **Add** button or press Enter to add each one. At least one is required.
+- **Additional Comment** (optional) — any extra context you want to attach. This text is appended to the automatically generated *"Blocked by issues #N, #M…"* comment that the server posts.
+
+After saving, the **Blocked By** section appears in the issue detail panel listing all blocking issues. Any editor can add more blocking issues to an already-Blocked issue using the inline **Add** field. Only admins can remove blocking issues from the list.
+
+**Blocked → Open:** Changing a Blocked issue back to *Open* is only allowed once every issue in the blocking list has status *Resolved*. If any blocking issue is still open, the save is rejected with an error explaining which issue is still unresolved.
+
+**Any → Duplicate:** When you change an issue's status to *Duplicate*, a dialog appears asking for the issue number that this issue is a duplicate of. Exactly one issue number is required and it must not be the same issue. After saving, the **Duplicate Of** section in the detail panel shows the target issue number, and the server automatically posts a *"Duplicate of issue #N"* comment.
 
 ### Adding a Comment
 

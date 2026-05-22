@@ -112,6 +112,14 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	// dependent_issues stores a comma-separated list of issue IDs that this
+	// issue depends on.  For a Duplicate issue this is always a single ID; for
+	// a Blocked issue it may be one or more.  The empty string means no
+	// dependencies.  Added as a post-initial-release migration.
+	if err := addColumnIfMissing(database, "issues", "dependent_issues", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
 	// Backfill resolved_at for existing Resolved issues that have no value yet.
 	// The most recent comment timestamp is used as the best available proxy —
 	// it is typically the "Fixed in version X" comment posted when the issue was
