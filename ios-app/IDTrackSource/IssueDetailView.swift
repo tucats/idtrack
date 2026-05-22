@@ -2,16 +2,22 @@ import SwiftUI
 
 // MARK: - IssueDetailView
 //
-// Shows the full details of one issue and allows editing. The view is split
-// into three main responsibilities:
+// Shows the full details of one issue and allows editing. The view has four
+// main responsibilities:
 //
-//   1. Loading — fetches the issue and its comments via GET /api/issues/{id}.
-//   2. Editing — provides form fields for every editable property. Changes
+//   1. Loading  — fetches the issue and its comments via GET /api/issues/{id}.
+//   2. Editing  — provides form fields for every editable property. Changes
 //      are tracked with `isDirty` so the Save button is only enabled when
 //      something has actually changed.
-//   3. Status transitions — changing status from Open → Resolved or vice versa
-//      shows an intermediate sheet dialog to capture a reason or fixed-version
-//      note, which is posted as a comment alongside the status update.
+//   3. Status transitions — several status changes require additional input:
+//        • Open → Resolved     : optional fixed-version note + comment.
+//        • Resolved → Open     : required reason comment.
+//        • Any → Duplicate     : exactly one target issue ID.
+//        • Any → Blocked       : one or more blocking issue IDs + optional comment.
+//      Each of these shows an intermediate sheet before the save is committed.
+//   4. Dependent issue management — issues in Blocked status display their
+//      blocking issue list inline; any editor may add entries, but only admins
+//      may remove them.
 
 struct IssueDetailView: View {
     @EnvironmentObject var appState: AppState
@@ -46,19 +52,38 @@ struct IssueDetailView: View {
     @State private var isDirty    = false   // true when any field differs from server state
     @State private var origStatus = "Open"  // the status as of the last successful save
 
+    // MARK: Dependent issues (Duplicate / Blocked)
+    //
+    // `dependentIssues` mirrors the server field for the current form state.
+    // For a Duplicate issue this holds exactly one ID; for a Blocked issue it
+    // holds one or more. It is kept in sync with the server after every save.
+    @State private var dependentIssues: [Int] = []
+    // Text field for adding a new blocking issue ID inline (when already Blocked).
+    @State private var addBlockingText = ""
+
     // MARK: Comment input
-    @State private var newComment = ""
+    @State private var newComment      = ""
     @State private var isSavingComment = false
 
     // MARK: Status-change dialog state
     //
-    // These are shared between the resolve and reopen sheets.
-    // `sc` prefix = "status change".
-    @State private var showResolveDialog = false
-    @State private var showReopenDialog  = false
-    @State private var scVersion         = ""   // "Fixed in X.Y" version string
-    @State private var scComment         = ""   // free-text reason / notes
-    @State private var scError           = ""   // validation error shown in the sheet
+    // `sc` prefix = "status change". These vars are shared across all dialogs
+    // because only one dialog is ever open at a time.
+    @State private var showResolveDialog   = false
+    @State private var showReopenDialog    = false
+    @State private var showDuplicateDialog = false
+    @State private var showBlockedDialog   = false
+    @State private var scVersion           = ""   // "Fixed in X.Y" — Resolve dialog
+    @State private var scComment           = ""   // reason/notes — Resolve and Reopen dialogs
+    @State private var scError             = ""   // validation error shown inside the sheet
+
+    // Blocked dialog — assembles the list of blocking issue IDs before confirming.
+    @State private var pendingBlockedIds:  [Int]  = []
+    @State private var pendingBlockedText  = ""   // text field for entering IDs in the dialog
+    @State private var blockedComment      = ""   // optional extra comment for the transition
+
+    // Duplicate dialog — captures the single target issue ID.
+    @State private var dupIdText = ""
 
     // MARK: Save / delete state
     @State private var isSaving  = false
@@ -93,8 +118,10 @@ struct IssueDetailView: View {
         // when the user selects a different issue in the sidebar without the
         // view being destroyed and recreated.
         .task(id: issueId) { await loadIssue() }
-        .sheet(isPresented: $showResolveDialog) { resolveSheet }
-        .sheet(isPresented: $showReopenDialog)  { reopenSheet  }
+        .sheet(isPresented: $showResolveDialog)   { resolveSheet   }
+        .sheet(isPresented: $showReopenDialog)    { reopenSheet    }
+        .sheet(isPresented: $showDuplicateDialog) { duplicateSheet }
+        .sheet(isPresented: $showBlockedDialog)   { blockedSheet   }
         // `.confirmationDialog` shows a native action sheet with a destructive
         // confirmation button. Safer than a plain alert for irreversible actions.
         .confirmationDialog("Delete Issue #\(issueId)?", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
@@ -137,6 +164,8 @@ struct IssueDetailView: View {
                             Picker("Status", selection: $status) {
                                 Text("Open").tag("Open")
                                 Text("Resolved").tag("Resolved")
+                                Text("Blocked").tag("Blocked")
+                                Text("Duplicate").tag("Duplicate")
                             }
                             .pickerStyle(.menu)
                             .disabled(!canEdit)
@@ -225,6 +254,14 @@ struct IssueDetailView: View {
                     }
                 }
 
+                // Dependent issues section — only visible when status is
+                // Duplicate or Blocked.
+                if status == "Duplicate" {
+                    duplicateSection(canEdit: canEdit)
+                } else if status == "Blocked" {
+                    blockedSection(canEdit: canEdit)
+                }
+
                 // Read-only metadata row.
                 GroupBox {
                     VStack(spacing: 8) {
@@ -268,6 +305,90 @@ struct IssueDetailView: View {
             Text(value)
                 .font(.subheadline)
             Spacer()
+        }
+    }
+
+    // MARK: - Dependent issues sections
+
+    // Shown inline when status == "Duplicate". Displays the one issue this
+    // duplicates. The value is read-only here; to change the target the user
+    // would change status to Open and back to Duplicate (triggering the dialog).
+    private func duplicateSection(canEdit: Bool) -> some View {
+        GroupBox("Duplicate Of") {
+            if dependentIssues.isEmpty {
+                Text("Save to set the target issue.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    Image(systemName: "arrow.triangle.merge")
+                        .foregroundStyle(.purple)
+                    Text("Issue #\(dependentIssues[0])")
+                        .font(.subheadline)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    // Shown inline when status == "Blocked". Lists blocking issues with add
+    // (any editor) and remove (admin only) controls.
+    private func blockedSection(canEdit: Bool) -> some View {
+        let isAdmin = appState.currentUser?.isAdmin == true
+        return GroupBox("Blocked By") {
+            VStack(alignment: .leading, spacing: 8) {
+                if dependentIssues.isEmpty {
+                    Text("No blocking issues yet.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+
+                // Existing blocking issue IDs with optional remove buttons.
+                ForEach(dependentIssues, id: \.self) { depId in
+                    HStack {
+                        Image(systemName: "lock.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Text("Issue #\(depId)")
+                            .font(.subheadline)
+                        Spacer()
+                        // Only admins may remove blocking issues (server enforces this
+                        // too, but we also guard it here for immediate UI feedback).
+                        if canEdit && isAdmin {
+                            Button(role: .destructive, action: {
+                                dependentIssues.removeAll { $0 == depId }
+                                isDirty = true
+                            }) {
+                                Image(systemName: "minus.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.red)
+                        }
+                    }
+                }
+
+                // Add field — any editor may add new blocking issues.
+                if canEdit {
+                    Divider()
+                    HStack {
+                        TextField("Add issue ID…", text: $addBlockingText)
+                            .keyboardType(.numberPad)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Add") {
+                            let trimmed = addBlockingText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let newId = Int(trimmed), newId > 0,
+                               newId != (issue?.id ?? 0),
+                               !dependentIssues.contains(newId) {
+                                dependentIssues.append(newId)
+                                addBlockingText = ""
+                                isDirty = true
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .disabled(addBlockingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
         }
     }
 
@@ -428,6 +549,112 @@ struct IssueDetailView: View {
         .presentationDetents([.medium, .large])
     }
 
+    // Presented when the user transitions to "Duplicate" from any other status.
+    // The user must provide the single issue ID that this issue duplicates.
+    private var duplicateSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Enter the issue number that this issue is a duplicate of.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Issue Number") {
+                    TextField("e.g. 42", text: $dupIdText)
+                        .keyboardType(.numberPad)
+                }
+                if !scError.isEmpty {
+                    Section {
+                        Text(scError).foregroundStyle(.red).font(.callout)
+                    }
+                }
+            }
+            .navigationTitle("Mark as Duplicate")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        status = origStatus  // revert picker to its previous value
+                        showDuplicateDialog = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Confirm") { Task { await confirmDuplicate() } }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    // Presented when the user transitions to "Blocked" from any other status.
+    // The user must provide at least one blocking issue ID and may optionally
+    // add extra text that is appended to the server-generated auto-comment.
+    private var blockedSheet: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Add the issue IDs that are blocking this issue.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Section("Blocking Issues") {
+                    // Show already-added IDs with remove buttons.
+                    ForEach(pendingBlockedIds, id: \.self) { depId in
+                        HStack {
+                            Text("Issue #\(depId)")
+                            Spacer()
+                            Button(role: .destructive, action: {
+                                pendingBlockedIds.removeAll { $0 == depId }
+                            }) {
+                                Image(systemName: "minus.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    // Add field for entering a new blocking issue ID.
+                    HStack {
+                        TextField("Issue ID", text: $pendingBlockedText)
+                            .keyboardType(.numberPad)
+                        Button("Add") {
+                            let trimmed = pendingBlockedText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let newId = Int(trimmed), newId > 0,
+                               !pendingBlockedIds.contains(newId) {
+                                pendingBlockedIds.append(newId)
+                                pendingBlockedText = ""
+                            }
+                        }
+                        .disabled(pendingBlockedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+                // Optional extra text appended to the server's auto-comment
+                // "Blocked by issues #N, #M…".
+                Section("Additional Comment (optional)") {
+                    TextEditor(text: $blockedComment)
+                        .frame(minHeight: 80)
+                }
+                if !scError.isEmpty {
+                    Section {
+                        Text(scError).foregroundStyle(.red).font(.callout)
+                    }
+                }
+            }
+            .navigationTitle("Mark as Blocked")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        status = origStatus
+                        showBlockedDialog = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Confirm") { Task { await confirmBlocked() } }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
     // MARK: - Actions
 
     // Load (or reload) the issue and its comments from the server.
@@ -438,18 +665,20 @@ struct IssueDetailView: View {
         loadError = nil
         do {
             let resp = try await appState.api.getIssue(id: issueId)
-            issue     = resp.issue
-            comments  = resp.comments
-            title     = resp.issue.title
-            status    = resp.issue.status
-            origStatus = resp.issue.status   // remember the "clean" status
-            priority  = resp.issue.priority
-            assignee  = resp.issue.assignee
-            project   = resp.issue.project
-            component = resp.issue.component
-            desc      = resp.issue.description
-            isDirty   = false    // form is in sync with server
-            saveError = ""
+            issue           = resp.issue
+            comments        = resp.comments
+            title           = resp.issue.title
+            status          = resp.issue.status
+            origStatus      = resp.issue.status   // remember the "clean" status
+            priority        = resp.issue.priority
+            assignee        = resp.issue.assignee
+            project         = resp.issue.project
+            component       = resp.issue.component
+            desc            = resp.issue.description
+            dependentIssues = resp.issue.dependentIssues
+            isDirty         = false   // form is in sync with server
+            saveError       = ""
+            addBlockingText = ""
         } catch APIError.unauthorized {
             await appState.signOut()
         } catch {
@@ -474,22 +703,39 @@ struct IssueDetailView: View {
             saveError = "An assignee is required before marking an issue Resolved."; return
         }
 
-        // Status transitions require user confirmation and an optional comment.
-        // Show the appropriate sheet and return — doSave() is called from the
-        // sheet's Confirm button.
+        // Status transitions that require additional input show a sheet and return.
+        // The sheet's Confirm button then calls the appropriate confirm* function.
+
+        // Open → Resolved: optional version note + comment.
         if origStatus == "Open" && status == "Resolved" {
             scVersion = ""; scComment = ""; scError = ""
             showResolveDialog = true
             return
         }
+        // Resolved → Open: required reason.
         if origStatus == "Resolved" && status == "Open" {
             scComment = ""; scError = ""
             showReopenDialog = true
             return
         }
+        // Any → Duplicate: requires exactly one valid target issue ID.
+        if origStatus != "Duplicate" && status == "Duplicate" {
+            dupIdText = ""; scError = ""
+            showDuplicateDialog = true
+            return
+        }
+        // Any → Blocked: requires one or more blocking issue IDs.
+        if origStatus != "Blocked" && status == "Blocked" {
+            pendingBlockedIds = []; pendingBlockedText = ""; blockedComment = ""; scError = ""
+            showBlockedDialog = true
+            return
+        }
 
-        // No status transition — save directly.
-        await doSave(iss, commentBody: nil)
+        // No dialog needed — save directly.
+        // This covers: field edits on a stable status, Blocked→Open,
+        // Duplicate→anything (the server clears dependent_issues automatically),
+        // and adding/removing blocking issues on an already-Blocked issue.
+        await doSave(iss)
     }
 
     // Called from the resolve sheet's Confirm button.
@@ -516,9 +762,40 @@ struct IssueDetailView: View {
         if let iss = issue { await doSave(iss, commentBody: comment) }
     }
 
-    // Core save function. Sends the PUT request, optionally posts a comment,
-    // then refreshes both the issue and comments to reflect the server's state.
-    private func doSave(_ iss: Issue, commentBody: String?) async {
+    // Called from the duplicate sheet's Confirm button.
+    // Validates the entered ID and, if valid, proceeds to doSave.
+    private func confirmDuplicate() async {
+        let trimmed = dupIdText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let targetId = Int(trimmed), targetId > 0 else {
+            scError = "Please enter a valid issue number."; return
+        }
+        if let iss = issue, targetId == iss.id {
+            scError = "An issue cannot be a duplicate of itself."; return
+        }
+        dependentIssues = [targetId]
+        showDuplicateDialog = false
+        if let iss = issue { await doSave(iss) }
+    }
+
+    // Called from the blocked sheet's Confirm button.
+    // Requires at least one blocking issue ID.
+    private func confirmBlocked() async {
+        if pendingBlockedIds.isEmpty {
+            scError = "At least one blocking issue is required."; return
+        }
+        let extra = blockedComment.trimmingCharacters(in: .whitespacesAndNewlines)
+        dependentIssues = pendingBlockedIds
+        showBlockedDialog = false
+        if let iss = issue { await doSave(iss, extraComment: extra) }
+    }
+
+    // Core save function. Sends the PUT request, optionally posts a client-side
+    // comment (for Resolve/Reopen), then refreshes both the issue and comments
+    // to reflect the server's committed state.
+    //
+    // `commentBody` — a client-side comment posted after the save (Resolve/Reopen).
+    // `extraComment` — appended to the server's auto-comment for Blocked transitions.
+    private func doSave(_ iss: Issue, commentBody: String? = nil, extraComment: String = "") async {
         isSaving = true
         saveError = ""
         do {
@@ -527,7 +804,9 @@ struct IssueDetailView: View {
                 title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                 description: desc.trimmingCharacters(in: .whitespacesAndNewlines),
                 priority: priority, status: status,
-                assignee: assignee, project: project, component: component
+                assignee: assignee, project: project, component: component,
+                dependentIssues: dependentIssues,
+                comment: extraComment
             )
             // If the status transition produced a comment body, post it now.
             // `try?` makes a comment failure non-fatal — the status is already
@@ -535,9 +814,11 @@ struct IssueDetailView: View {
             if let body = commentBody {
                 _ = try? await appState.api.addComment(issueId: iss.id, body: body)
             }
-            issue = updated
-            origStatus = updated.status  // advance the "clean" status baseline
-            isDirty = false
+            issue           = updated
+            origStatus      = updated.status           // advance the "clean" status baseline
+            dependentIssues = updated.dependentIssues  // sync to server's canonical state
+            isDirty         = false
+            addBlockingText = ""
             // Reload comments to include any just-posted comment.
             let resp = try await appState.api.getIssue(id: iss.id)
             comments = resp.comments

@@ -28,12 +28,10 @@ struct MainAppView: View {
     // after a delete). Using a shared @State means both panels always agree.
     @State private var selectedIssueId: Int? = nil
 
-    // Each Bool drives one `.sheet(isPresented:)` call below.
+    // `showNewIssue` is purely a local toolbar action so it stays as @State.
+    // The other four sheet flags live on AppState because Mac Catalyst menu-bar
+    // commands (see IDTrackApp) need to be able to trigger them too.
     @State private var showNewIssue      = false
-    @State private var showSettings      = false
-    @State private var showAbout         = false
-    @State private var showManageUsers   = false
-    @State private var showEditProjects  = false
 
     // Controls whether both columns of the NavigationSplitView are visible
     // simultaneously. `.all` shows sidebar + detail at once on iPad.
@@ -74,10 +72,10 @@ struct MainAppView: View {
                 if id > 0 { selectedIssueId = id }
             })
         }
-        .sheet(isPresented: $showSettings)     { SettingsView() }
-        .sheet(isPresented: $showAbout)        { AboutView() }
-        .sheet(isPresented: $showManageUsers)  { ManageUsersView() }
-        .sheet(isPresented: $showEditProjects) { EditProjectsView() }
+        .sheet(isPresented: $appState.showSettings)     { SettingsView() }
+        .sheet(isPresented: $appState.showAbout)        { AboutView() }
+        .sheet(isPresented: $appState.showManageUsers)  { ManageUsersView() }
+        .sheet(isPresented: $appState.showEditProjects) { EditProjectsView() }
     }
 
     // MARK: - Toolbar
@@ -97,26 +95,31 @@ struct MainAppView: View {
         }
 
         // Hamburger / "…" menu — groups less-frequent actions behind a tap.
+        // On Mac Catalyst, About / Settings / Edit Users / Edit Projects move
+        // out to the native menu bar (see IDTrackApp.commands), so the dot menu
+        // collapses down to Sign Out only.
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Button(action: { showAbout = true }) {
+                #if !targetEnvironment(macCatalyst)
+                Button(action: { appState.showAbout = true }) {
                     Label("About", systemImage: "info.circle")
                 }
                 Divider()
-                Button(action: { showSettings = true }) {
+                Button(action: { appState.showSettings = true }) {
                     Label("Settings", systemImage: "gear")
                 }
                 // Admin-only items — only rendered when the current user has admin privileges.
                 // `?.isAdmin == true` safely handles the case where currentUser is nil.
                 if appState.currentUser?.isAdmin == true {
-                    Button(action: { showManageUsers = true }) {
+                    Button(action: { appState.showManageUsers = true }) {
                         Label("Edit Users…", systemImage: "person.2")
                     }
-                    Button(action: { showEditProjects = true }) {
+                    Button(action: { appState.showEditProjects = true }) {
                         Label("Edit Projects…", systemImage: "folder")
                     }
                 }
                 Divider()
+                #endif
                 // `role: .destructive` colours the button red on iOS, signalling
                 // that the action has serious consequences (signs out the user).
                 Button(role: .destructive, action: {

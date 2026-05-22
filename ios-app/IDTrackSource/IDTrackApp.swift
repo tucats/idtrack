@@ -35,5 +35,43 @@ struct IDTrackApp: App {
                 // SwiftUI re-evaluates this when appState.darkMode changes.
                 .preferredColorScheme(appState.darkMode ? .dark : .light)
         }
+        // Mac Catalyst gets the standard macOS menu bar. Move the items that
+        // belong in the system menus out of the in-app dot menu and into their
+        // native locations:
+        //
+        //   • Application ("IDTrack") menu — About, Settings…
+        //   • Edit menu                    — Edit Users…, Edit Projects…
+        //                                    (admin users only)
+        //
+        // Each command just flips a flag on AppState; the sheet observer in
+        // MainAppView is what actually presents the view.
+        #if targetEnvironment(macCatalyst)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About \(appState.appName)") {
+                    appState.showAbout = true
+                }
+                .disabled(!appState.isLoggedIn)
+            }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    appState.showSettings = true
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(!appState.isLoggedIn)
+            }
+            CommandGroup(after: .pasteboard) {
+                if appState.currentUser?.isAdmin == true {
+                    Divider()
+                    Button("Edit Users…") {
+                        appState.showManageUsers = true
+                    }
+                    Button("Edit Projects…") {
+                        appState.showEditProjects = true
+                    }
+                }
+            }
+        }
+        #endif
     }
 }

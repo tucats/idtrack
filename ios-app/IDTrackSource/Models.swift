@@ -103,32 +103,39 @@ struct Issue: Identifiable, Codable, Equatable {
     var updatedAt: String
     var resolvedAt: String // empty if not yet resolved
     var commentCount: Int  // denormalized count from the server for fast display
+    // Issue IDs this issue depends on:
+    //   Status "Duplicate" — exactly one ID (the issue this duplicates).
+    //   Status "Blocked"   — one or more IDs (the issues blocking progress).
+    //   Any other status   — empty.
+    var dependentIssues: [Int]
 
     enum CodingKeys: String, CodingKey {
         case id, title, description, reporter, assignee, priority, status, project, component
-        case createdAt    = "created_at"
-        case updatedAt    = "updated_at"
-        case resolvedAt   = "resolved_at"
-        case commentCount = "comment_count"
+        case createdAt       = "created_at"
+        case updatedAt       = "updated_at"
+        case resolvedAt      = "resolved_at"
+        case commentCount    = "comment_count"
+        case dependentIssues = "dependent_issues"
     }
 
     // Custom decoder for the same reasons as User: defensive defaults for
     // every field so a partially-populated server response doesn't crash.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id           = try c.decode(Int.self, forKey: .id)
-        title        = try c.decodeIfPresent(String.self, forKey: .title)       ?? ""
-        description  = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
-        reporter     = try c.decodeIfPresent(String.self, forKey: .reporter)    ?? ""
-        assignee     = try c.decodeIfPresent(String.self, forKey: .assignee)    ?? ""
-        priority     = try c.decodeIfPresent(String.self, forKey: .priority)    ?? "Medium"
-        status       = try c.decodeIfPresent(String.self, forKey: .status)      ?? "Open"
-        project      = try c.decodeIfPresent(String.self, forKey: .project)     ?? ""
-        component    = try c.decodeIfPresent(String.self, forKey: .component)   ?? ""
-        createdAt    = try c.decodeIfPresent(String.self, forKey: .createdAt)   ?? ""
-        updatedAt    = try c.decodeIfPresent(String.self, forKey: .updatedAt)   ?? ""
-        resolvedAt   = try c.decodeIfPresent(String.self, forKey: .resolvedAt)  ?? ""
-        commentCount = try c.decodeIfPresent(Int.self,    forKey: .commentCount) ?? 0
+        id               = try c.decode(Int.self, forKey: .id)
+        title            = try c.decodeIfPresent(String.self, forKey: .title)          ?? ""
+        description      = try c.decodeIfPresent(String.self, forKey: .description)    ?? ""
+        reporter         = try c.decodeIfPresent(String.self, forKey: .reporter)        ?? ""
+        assignee         = try c.decodeIfPresent(String.self, forKey: .assignee)        ?? ""
+        priority         = try c.decodeIfPresent(String.self, forKey: .priority)        ?? "Medium"
+        status           = try c.decodeIfPresent(String.self, forKey: .status)          ?? "Open"
+        project          = try c.decodeIfPresent(String.self, forKey: .project)         ?? ""
+        component        = try c.decodeIfPresent(String.self, forKey: .component)       ?? ""
+        createdAt        = try c.decodeIfPresent(String.self, forKey: .createdAt)       ?? ""
+        updatedAt        = try c.decodeIfPresent(String.self, forKey: .updatedAt)       ?? ""
+        resolvedAt       = try c.decodeIfPresent(String.self, forKey: .resolvedAt)      ?? ""
+        commentCount     = try c.decodeIfPresent(Int.self,    forKey: .commentCount)    ?? 0
+        dependentIssues  = try c.decodeIfPresent([Int].self,  forKey: .dependentIssues) ?? []
     }
 }
 

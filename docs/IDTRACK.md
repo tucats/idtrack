@@ -205,7 +205,9 @@ SQLite is opened with `MaxOpenConns(1)`. SQLite does not support concurrent writ
 
 The schema is created with `CREATE TABLE IF NOT EXISTS` on every startup. New columns added after the initial schema are applied by `addColumnIfMissing()` in `db/db.go`, which calls `ALTER TABLE ... ADD COLUMN` and treats "duplicate column name" as a success. This means the binary upgrades any existing database automatically on startup with no migration tool.
 
-Columns added via migration: `last_login_at`, `is_admin` (users table); `project`, `component`, `resolved_at` (issues table).
+Columns added via migration: `last_login_at`, `is_admin` (users table); `project`, `component`, `resolved_at`, `dependent_issues` (issues table).
+
+**`dependent_issues` column.** Stores a comma-separated list of issue IDs (e.g. `"7,12,33"`). `parseDependentIssues` converts this to `[]int64`; `formatDependentIssues` converts back. The empty string represents no dependencies. `scanIssue()` centralises all column scanning so every query function reuses the same scan logic. For Duplicate status the list holds exactly one ID; for Blocked it holds one or more; for all other statuses it is always empty (the handler clears it automatically).
 
 **`resolved_at` backfill.** When `resolved_at` is first added to an existing database, a one-time UPDATE sets it for all Resolved issues that have at least one comment, using `MAX(comments.created_at)` as a proxy for the resolution time. Issues with no comments retain `resolved_at = ''`. The UPDATE is guarded by `WHERE resolved_at = ''` so it is a no-op on subsequent starts.
 
@@ -284,6 +286,22 @@ Two CSS breakpoints handle phone and tablet layouts. Both are gated on `html:not
 
 - **Open → Resolved:** Optional dialog with Fixed Version and Comment fields. An Assignee is required before this transition is allowed. If either field is filled, the comment is posted atomically with the status update.
 - **Resolved → Open:** Required dialog with a mandatory Reason textarea. The reason is posted as a comment atomically.
+- **Any → Duplicate** (`#duplicate-overlay`): Required dialog capturing exactly one target issue ID. Server auto-posts *"Duplicate of issue #N"* on transition. The `dependent_issues` field is stored and returned in all issue responses.
+- **Any → Blocked** (`#blocked-overlay`): Required dialog capturing one or more blocking issue IDs plus an optional extra comment. The extra text is sent as `comment` in the PUT body; the server appends it to the auto-generated *"Blocked by issues #N, #M…"* system comment. The inline **Blocked By** chip list appears in the detail panel after saving — any editor can add IDs, only admins can remove them.
+- **Blocked → Open:** No dialog. The server validates every `dependent_issues` ID has `status = 'Resolved'`; returns HTTP 409 otherwise.
+
+### Issue status state machine
+
+Valid statuses: `Open`, `Resolved`, `Blocked`, `Duplicate`. All transitions are possible (any status can change to any other), subject to these rules enforced in `handleUpdateIssue`:
+
+| Transition | Requirement |
+|---|---|
+| Any → Duplicate | Exactly one valid, non-self target issue ID in `dependent_issues` |
+| Any → Blocked | At least one valid, non-self issue ID in `dependent_issues`; non-admins can only add IDs to an already-Blocked issue |
+| Blocked → Open | Every ID in `dependent_issues` must have status `Resolved` (HTTP 409 otherwise) |
+| Any → Resolved or Duplicate | Sets `resolved_at` if currently empty |
+| Any → Open or Blocked | Clears `resolved_at` |
+| Any → Open or Resolved | Server clears `dependent_issues` automatically |
 
 ---
 

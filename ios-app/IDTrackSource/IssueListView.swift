@@ -100,6 +100,8 @@ struct IssueListView: View {
                     Text("All").tag("all")
                     Text("Open").tag("open")
                     Text("Resolved").tag("resolved")
+                    Text("Blocked").tag("blocked")
+                    Text("Duplicate").tag("duplicate")
                 }
                 .pickerStyle(.menu)   // compact inline menu button style
                 .onChange(of: statusFilter) { _ in Task { await reload() } }
@@ -494,6 +496,14 @@ struct StatusBadge: View {
             .clipShape(Capsule())
     }
 
-    // Open issues are blue (active/actionable); resolved are grey (inert).
-    var color: Color { status == "Open" ? .blue : .gray }
+    // Each status maps to a distinct colour so issues are scannable at a glance.
+    var color: Color {
+        switch status {
+        case "Open":      return .blue
+        case "Resolved":  return .gray
+        case "Blocked":   return .orange
+        case "Duplicate": return .purple
+        default:          return .gray
+        }
+    }
 }

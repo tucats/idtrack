@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -9,26 +11,94 @@ import (
 // All timestamps are stored and returned as RFC3339 strings (e.g.
 // "2026-05-16T12:00:00Z") rather than time.Time, which keeps the DB schema
 // and the JSON API consistent without any conversion layer.
+//
+// DependentIssues holds the issue IDs that this issue depends on:
+//   - Status "Duplicate": exactly one ID — the issue this one duplicates.
+//   - Status "Blocked":   one or more IDs — the issues blocking progress.
+//   - Any other status:   empty slice (stored as "" in the DB).
 type Issue struct {
-	ID           int64  `json:"id"`
-	Title        string `json:"title"`
-	Description  string `json:"description"`
-	Reporter     string `json:"reporter"`
-	Assignee     string `json:"assignee"`
-	Priority     string `json:"priority"`
-	Status       string `json:"status"`
-	Project      string `json:"project"`
-	Component    string `json:"component"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
-	ResolvedAt   string `json:"resolved_at"`
-	CommentCount int    `json:"comment_count"`
+	ID              int64   `json:"id"`
+	Title           string  `json:"title"`
+	Description     string  `json:"description"`
+	Reporter        string  `json:"reporter"`
+	Assignee        string  `json:"assignee"`
+	Priority        string  `json:"priority"`
+	Status          string  `json:"status"`
+	Project         string  `json:"project"`
+	Component       string  `json:"component"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	ResolvedAt      string  `json:"resolved_at"`
+	DependentIssues []int64 `json:"dependent_issues"`
+	CommentCount    int     `json:"comment_count"`
+}
+
+// parseDependentIssues converts the comma-separated string stored in the DB
+// (e.g. "7,12,33") to a []int64.  An empty or blank string returns an empty
+// slice — never nil — so JSON encoding always produces "[]", not "null".
+func parseDependentIssues(s string) []int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return []int64{}
+	}
+
+	parts := strings.Split(s, ",")
+	result := make([]int64, 0, len(parts))
+
+	for _, p := range parts {
+		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 64)
+		if err == nil && n > 0 {
+			result = append(result, n)
+		}
+	}
+
+	return result
+}
+
+// formatDependentIssues converts a []int64 to the comma-separated string
+// used for DB storage.  An empty or nil slice returns "".
+func formatDependentIssues(ids []int64) string {
+	if len(ids) == 0 {
+		return ""
+	}
+
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatInt(id, 10)
+	}
+
+	return strings.Join(parts, ",")
 }
 
 // issueColumns is the SELECT column list shared by ListIssues, ListChanges,
 // and GetIssue. The correlated subquery for comment_count runs once per row;
 // the idx_comments_issue_id index keeps it fast.
-const issueColumns = `id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, resolved_at, (SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`
+const issueColumns = `id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, resolved_at, dependent_issues, (SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`
+
+// scanIssue reads a single issue row from any type that exposes Scan, decoding
+// the dependent_issues column from its comma-separated string representation.
+// Centralising the Scan call avoids repeating the temporary-string boilerplate
+// in every query function.
+func scanIssue(scanner interface {
+	Scan(...any) error
+}, i *Issue) error {
+	var depStr string
+
+	err := scanner.Scan(
+		&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee,
+		&i.Priority, &i.Status, &i.Project, &i.Component,
+		&i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt,
+		&depStr,
+		&i.CommentCount,
+	)
+	if err != nil {
+		return err
+	}
+
+	i.DependentIssues = parseDependentIssues(depStr)
+
+	return nil
+}
 
 // buildWhereClause constructs the WHERE clause and argument slice shared by
 // ListIssues and CountIssues. "WHERE 1=1" lets us unconditionally append
@@ -38,11 +108,17 @@ func buildWhereClause(status, priority, search, project string) (string, []inter
 
 	where := ` WHERE 1=1`
 
+	// Each status string maps 1-to-1 to the stored status value so the client
+	// can filter by any combination including the new Blocked and Duplicate states.
 	switch status {
 	case "open":
 		where += ` AND status = 'Open'`
 	case "resolved":
 		where += ` AND status = 'Resolved'`
+	case "blocked":
+		where += ` AND status = 'Blocked'`
+	case "duplicate":
+		where += ` AND status = 'Duplicate'`
 	}
 
 	if priority != "" && priority != "all" {
@@ -129,7 +205,7 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 
 	for rows.Next() {
 		var i Issue
-		if err := rows.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.Project, &i.Component, &i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt, &i.CommentCount); err != nil {
+		if err := scanIssue(rows, &i); err != nil {
 			return nil, err
 		}
 
@@ -179,10 +255,10 @@ func ListChanges(database *sql.DB, since string) ([]Issue, error) {
 
 	for rows.Next() {
 		var i Issue
-		if err := rows.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.Project, &i.Component, &i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt, &i.CommentCount); err != nil {
+		if err := scanIssue(rows, &i); err != nil {
 			return nil, err
 		}
-		
+
 		issues = append(issues, i)
 	}
 
@@ -202,7 +278,7 @@ func GetIssue(database *sql.DB, id int64) (*Issue, error) {
 		`SELECT `+issueColumns+` FROM issues WHERE id = ?`, id,
 	)
 
-	if err := row.Scan(&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee, &i.Priority, &i.Status, &i.Project, &i.Component, &i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt, &i.CommentCount); err != nil {
+	if err := scanIssue(row, &i); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -243,34 +319,37 @@ func CreateIssue(database *sql.DB, title, description, reporter, assignee, prior
 // UpdateIssue replaces all editable fields of an issue in one statement and
 // sets updated_at to now. Like CreateIssue, it re-reads the row afterwards so
 // the returned struct reflects the committed state.
-// UpdateIssue replaces all editable fields of an issue in one statement and
-// sets updated_at to now. Like CreateIssue, it re-reads the row afterwards so
-// the returned struct reflects the committed state.
 //
-// resolved_at is managed automatically:
-//   - Transitioning to Resolved: set to now, but only if it is currently empty
-//     (preserves the original resolved timestamp if the issue is re-saved while
-//     already Resolved — e.g. editing the description without changing status).
-//   - Transitioning to Open: always cleared to ” so a later resolution gets a
-//     fresh timestamp.
-//   - Any other status change: ELSE branch leaves resolved_at unchanged.
-func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string) (*Issue, error) {
+// resolved_at is managed automatically by status:
+//   - Transitioning to Resolved or Duplicate: set to now if currently empty
+//     (preserves the original timestamp when re-saving without status change).
+//   - Transitioning to Open or Blocked: always cleared to "" so a later
+//     resolution gets a fresh timestamp.
+//   - Any other value: ELSE branch leaves resolved_at unchanged.
+//
+// dependent_issues is stored verbatim from the caller.  The server handler
+// (server/issues.go) clears the slice before calling here when the new status
+// is Open or Resolved.
+func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string, dependentIssues []int64) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	depStr := formatDependentIssues(dependentIssues)
 
 	_, err := database.Exec(`
 		UPDATE issues
 		SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?,
+		    dependent_issues=?,
 		    updated_at=?,
 		    resolved_at = CASE
-		        WHEN ? = 'Resolved' AND resolved_at = '' THEN ?
-		        WHEN ? = 'Open'                          THEN ''
+		        WHEN ? IN ('Resolved', 'Duplicate') AND resolved_at = '' THEN ?
+		        WHEN ? IN ('Open', 'Blocked')                            THEN ''
 		        ELSE resolved_at
 		    END
 		WHERE id=?`,
 		title, description, priority, status, assignee, project, component,
+		depStr,
 		now,
-		status, now, // CASE: set resolved_at when transitioning to Resolved
-		status, // CASE: clear resolved_at when transitioning to Open
+		status, now, // CASE arm 1: set resolved_at when first closing
+		status,      // CASE arm 2: clear resolved_at when reopening
 		id,
 	)
 	if err != nil {

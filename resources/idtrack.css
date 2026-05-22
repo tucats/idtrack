@@ -26,6 +26,10 @@
   --open-fg:    #15803d;
   --res-bg:     #f3f4f6;
   --res-fg:     #6b7280;
+  --blk-bg:     #fff7ed;
+  --blk-fg:     #c2410c;
+  --dup-bg:     #f5f3ff;
+  --dup-fg:     #6d28d9;
   --header-h:   52px;
   --radius:     6px;
   --shadow:     0 2px 8px rgba(0,0,0,.10);
@@ -467,8 +471,10 @@ html.hide-col-comments  .col-comments  { display: none; }
 .badge-high   { background: var(--high-bg); color: var(--high-fg); }
 .badge-medium { background: var(--med-bg);  color: var(--med-fg);  }
 .badge-low    { background: var(--low-bg);  color: var(--low-fg);  }
-.badge-open   { background: var(--open-bg); color: var(--open-fg); }
-.badge-resolved { background: var(--res-bg); color: var(--res-fg); }
+.badge-open      { background: var(--open-bg); color: var(--open-fg); }
+.badge-resolved  { background: var(--res-bg); color: var(--res-fg); }
+.badge-blocked   { background: var(--blk-bg); color: var(--blk-fg); }
+.badge-duplicate { background: var(--dup-bg); color: var(--dup-fg); }
 
 /* ==================== DETAIL PANEL ==================== */
 
@@ -538,6 +544,64 @@ html.hide-col-comments  .col-comments  { display: none; }
 .detail-input  { font-size: .9375rem; }
 .detail-select { font-size: .875rem; }
 .detail-textarea { font-size: .875rem; }
+
+/* ==================== DEPENDENT ISSUES ==================== */
+
+/* Container for issue-chip pills (Blocked / Duplicate sections) */
+.dep-issues-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 1.5rem;
+  margin-bottom: 6px;
+}
+
+/* A single blocking/duplicate issue shown as a pill badge */
+.dep-issue-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-dark);
+  font-size: .75rem;
+  font-weight: 500;
+}
+
+/* × remove button inside the chip — admin only */
+.dep-remove-btn {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--danger);
+  font-size: .875rem;
+  line-height: 1;
+  padding: 0 0 1px 2px;
+}
+.dep-remove-btn:hover { color: var(--danger-hov); }
+
+/* Inline add row: number input + Add button */
+.dep-add-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+.dep-add-input {
+  width: 90px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: .8125rem;
+}
+.dep-empty {
+  font-size: .8125rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
 
 /* ==================== COMMENTS ==================== */
 
@@ -945,6 +1009,10 @@ body.dark {
   --open-fg:     #4ade80;
   --res-bg:      #1e2130;
   --res-fg:      #9ca3af;
+  --blk-bg:      #2d1a0a;
+  --blk-fg:      #fb923c;
+  --dup-bg:      #1e1333;
+  --dup-fg:      #a78bfa;
   --shadow:      0 2px 8px rgba(0,0,0,.45);
   --shadow-lg:   0 8px 32px rgba(0,0,0,.60);
 }

@@ -432,13 +432,27 @@ class APIClient {
 
     func updateIssue(
         id: Int, title: String, description: String, priority: String,
-        status: String, assignee: String, project: String, component: String
+        status: String, assignee: String, project: String, component: String,
+        dependentIssues: [Int] = [], comment: String = ""
     ) async throws -> Issue {
+        // `comment` is the optional extra text the user supplies when first
+        // marking an issue Blocked; the server appends it to the auto-generated
+        // "Blocked by issues #N…" system comment.
         struct Body: Encodable {
             let title, description, priority, status, assignee, project, component: String
+            let dependentIssues: [Int]
+            let comment: String
+            enum CodingKeys: String, CodingKey {
+                case title, description, priority, status, assignee, project, component, comment
+                case dependentIssues = "dependent_issues"
+            }
         }
         let url  = try makeURL("/api/issues/\(id)")
-        let body = try JSONEncoder().encode(Body(title: title, description: description, priority: priority, status: status, assignee: assignee, project: project, component: component))
+        let body = try JSONEncoder().encode(Body(
+            title: title, description: description, priority: priority,
+            status: status, assignee: assignee, project: project, component: component,
+            dependentIssues: dependentIssues, comment: comment
+        ))
         let env: IssueEnvelope = try await decode(req(url, method: "PUT", body: body))
         return env.issue
     }

@@ -336,6 +336,51 @@
   </div>
 </div>
 
+<!-- Duplicate status dialog: user must provide exactly one target issue ID -->
+<div id="duplicate-overlay" class="overlay" style="display:none">
+  <div class="sheet issue-sheet">
+    <h3>Mark as Duplicate</h3>
+    <p class="sc-intro">Enter the issue number that this issue duplicates.</p>
+    <div class="form-group">
+      <label for="dup-id-input">Duplicate of Issue #</label>
+      <input id="dup-id-input" type="number" min="1" class="detail-input" placeholder="e.g. 42"
+             onkeydown="if(event.key==='Enter')confirmDuplicateDialog()">
+    </div>
+    <div id="dup-error" class="error-text"></div>
+    <div class="button-row">
+      <button class="btn btn-primary" onclick="confirmDuplicateDialog()">Confirm</button>
+      <button class="btn btn-secondary" onclick="cancelDuplicateDialog()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Blocked status dialog: user provides one or more blocking issue IDs and an optional comment -->
+<div id="blocked-overlay" class="overlay" style="display:none">
+  <div class="sheet issue-sheet">
+    <h3>Mark as Blocked</h3>
+    <p class="sc-intro">Add the issue IDs that are blocking this issue. The server will post an
+       automatic comment listing them; the optional text below is appended to that comment.</p>
+    <div class="form-group">
+      <label>Blocking Issues</label>
+      <div id="blk-issues-list" class="dep-issues-list"></div>
+      <div class="dep-add-row" style="margin-top:6px">
+        <input id="blk-add-input" type="number" min="1" placeholder="Issue #" class="dep-add-input"
+               onkeydown="if(event.key==='Enter')addBlockedDialogIssue()">
+        <button class="btn btn-secondary btn-sm" onclick="addBlockedDialogIssue()">Add</button>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="blk-comment">Additional Comment <span class="label-hint">(optional)</span></label>
+      <textarea id="blk-comment" rows="3" placeholder="Appended to the auto-generated Blocked comment…"></textarea>
+    </div>
+    <div id="blk-error" class="error-text"></div>
+    <div class="button-row">
+      <button class="btn btn-primary" onclick="confirmBlockedDialog()">Confirm</button>
+      <button class="btn btn-secondary" onclick="cancelBlockedDialog()">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ==================== MAIN APP ==================== -->
 <div id="app" style="display:none">
 
@@ -350,6 +395,8 @@
           <option value="all">All…</option>
           <option value="open" selected>Open</option>
           <option value="resolved">Resolved</option>
+          <option value="blocked">Blocked</option>
+          <option value="duplicate">Duplicate</option>
         </select>
         &nbsp;&nbsp;
         <label class="filter-label">Priority:</label>
@@ -458,9 +505,11 @@
         <div class="detail-fields-row">
           <div class="detail-field">
             <label>Status</label>
-            <select id="detail-status" class="detail-select" onchange="markDetailDirty()">
+            <select id="detail-status" class="detail-select" onchange="onDetailStatusChange()">
               <option value="Open">Open</option>
               <option value="Resolved">Resolved</option>
+              <option value="Blocked">Blocked</option>
+              <option value="Duplicate">Duplicate</option>
             </select>
           </div>
           <div class="detail-field">
@@ -492,6 +541,17 @@
             </select>
           </div>
         </div>
+        <!-- Dependent issues — shown only when status is Blocked or Duplicate -->
+        <div id="dependent-issues-section" class="detail-field" style="display:none">
+          <label id="dep-label">Dependent Issues</label>
+          <div id="dep-issues-list" class="dep-issues-list"></div>
+          <div id="dep-add-row" class="dep-add-row" style="display:none">
+            <input id="dep-add-input" type="number" min="1" placeholder="Issue #"
+                   class="dep-add-input" onkeydown="if(event.key==='Enter')addBlockingIssue()">
+            <button class="btn btn-secondary btn-sm" onclick="addBlockingIssue()">Add</button>
+          </div>
+        </div>
+
         <div class="detail-fields-row meta-row">
           <div class="detail-field">
             <label>Reporter</label>

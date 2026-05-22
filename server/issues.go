@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,14 +20,14 @@ const maxSearchLen = 200
 //
 // Query parameters:
 //
-//	status   open|resolved          — filter by status
-//	priority High|Medium|Low        — filter by priority
-//	project  <name>                 — filter by project
-//	search   <text>                 — full-text substring match
-//	sort     <column>               — column to sort by
-//	order    asc|desc               — sort direction
-//	limit    <n>                    — page size (0 = return all, legacy behavior)
-//	offset   <n>                    — rows to skip for pagination
+//	status   open|resolved|blocked|duplicate — filter by status
+//	priority High|Medium|Low                 — filter by priority
+//	project  <name>                          — filter by project
+//	search   <text>                          — full-text substring match
+//	sort     <column>                        — column to sort by
+//	order    asc|desc                        — sort direction
+//	limit    <n>                             — page size (0 = return all)
+//	offset   <n>                             — rows to skip for pagination
 func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -207,6 +208,23 @@ func issueModifier(u *db.User, issue *db.Issue) bool {
 // be sent in the request body — this is a full replacement (PUT semantics), not
 // a partial update (PATCH semantics). Only the reporter, assignee, or an admin
 // may update an issue; all other authenticated users receive 403.
+//
+// Additional rules for the new status values:
+//
+//   - Duplicate: dependent_issues must contain exactly one existing issue ID.
+//     The server auto-posts a "Duplicate of issue #N" comment on transition.
+//
+//   - Blocked: dependent_issues must contain at least one existing issue ID.
+//     The server auto-posts a "Blocked by issues #N[, #M...]" comment on
+//     transition; the optional `comment` request field appends user text.
+//     Non-admins may only ADD entries to an already-blocked issue's
+//     dependent_issues — they cannot remove entries.
+//
+//   - Open (from Blocked): all entries in the current dependent_issues must
+//     have status Resolved before the transition is allowed (HTTP 409 otherwise).
+//
+//   - Open or Resolved: dependent_issues is cleared automatically by this
+//     handler regardless of what the client sends.
 func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -228,20 +246,27 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !issueModifier(currentUser(r), existing) {
+	u := currentUser(r)
+
+	if !issueModifier(u, existing) {
 		jsonError(w, "forbidden", http.StatusForbidden)
 
 		return
 	}
 
 	var body struct {
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Priority    string `json:"priority"`
-		Status      string `json:"status"`
-		Assignee    string `json:"assignee"`
-		Project     string `json:"project"`
-		Component   string `json:"component"`
+		Title           string  `json:"title"`
+		Description     string  `json:"description"`
+		Priority        string  `json:"priority"`
+		Status          string  `json:"status"`
+		Assignee        string  `json:"assignee"`
+		Project         string  `json:"project"`
+		Component       string  `json:"component"`
+		// DependentIssues carries the issue IDs for Duplicate and Blocked statuses.
+		DependentIssues []int64 `json:"dependent_issues"`
+		// Comment is optional extra text appended to the server-generated
+		// auto-comment when transitioning to Blocked.
+		Comment         string  `json:"comment"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -256,7 +281,138 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issue, err := db.UpdateIssue(s.database, id, body.Title, body.Description, body.Priority, body.Status, body.Assignee, body.Project, body.Component)
+	oldStatus := existing.Status
+	newStatus := body.Status
+
+	// -------------------------------------------------------------------------
+	// Validate dependent_issues based on the requested new status.
+	// -------------------------------------------------------------------------
+
+	switch newStatus {
+
+	case "Duplicate":
+		if len(body.DependentIssues) != 1 {
+			jsonError(w, "a Duplicate issue requires exactly one target issue ID in dependent_issues", http.StatusBadRequest)
+
+			return
+		}
+
+		depID := body.DependentIssues[0]
+
+		if depID == id {
+			jsonError(w, "an issue cannot be marked as a duplicate of itself", http.StatusBadRequest)
+
+			return
+		}
+
+		dep, err := db.GetIssue(s.database, depID)
+		if err != nil {
+			internalError(w, err)
+
+			return
+		}
+
+		if dep == nil {
+			jsonError(w, fmt.Sprintf("issue #%d does not exist", depID), http.StatusBadRequest)
+
+			return
+		}
+
+	case "Blocked":
+		if len(body.DependentIssues) == 0 {
+			jsonError(w, "a Blocked issue requires at least one blocking issue ID in dependent_issues", http.StatusBadRequest)
+
+			return
+		}
+
+		for _, depID := range body.DependentIssues {
+			if depID == id {
+				jsonError(w, "an issue cannot block itself", http.StatusBadRequest)
+
+				return
+			}
+
+			dep, err := db.GetIssue(s.database, depID)
+			if err != nil {
+				internalError(w, err)
+
+				return
+			}
+
+			if dep == nil {
+				jsonError(w, fmt.Sprintf("issue #%d does not exist", depID), http.StatusBadRequest)
+
+				return
+			}
+		}
+
+		// When the issue is already Blocked, non-admins may only append to the
+		// dependent_issues list — they cannot remove existing entries.
+		if oldStatus == "Blocked" && !u.IsAdmin {
+			for _, existingDepID := range existing.DependentIssues {
+				found := false
+
+				for _, newDepID := range body.DependentIssues {
+					if newDepID == existingDepID {
+						found = true
+
+						break
+					}
+				}
+
+				if !found {
+					jsonError(w, "only admins may remove blocking issues from a Blocked issue", http.StatusForbidden)
+
+					return
+				}
+			}
+		}
+
+	case "Open":
+		// Transitioning from Blocked to Open requires every blocking issue to
+		// be Resolved.  This rule ensures a blocked issue cannot be re-opened
+		// until the work it depends on is actually complete.
+		if oldStatus == "Blocked" {
+			for _, depID := range existing.DependentIssues {
+				dep, err := db.GetIssue(s.database, depID)
+				if err != nil {
+					internalError(w, err)
+
+					return
+				}
+
+				if dep == nil {
+					jsonError(w, fmt.Sprintf("blocking issue #%d no longer exists", depID), http.StatusConflict)
+
+					return
+				}
+
+				if dep.Status != "Resolved" {
+					jsonError(w, fmt.Sprintf("cannot unblock: issue #%d is still %s", depID, dep.Status), http.StatusConflict)
+
+					return
+				}
+			}
+		}
+
+		// Clear dependent_issues when reopening so the field doesn't carry
+		// stale data from a previous Blocked or Duplicate state.
+		body.DependentIssues = nil
+
+	case "Resolved":
+		// Clear dependent_issues on resolution for the same reason.
+		body.DependentIssues = nil
+	}
+
+	// -------------------------------------------------------------------------
+	// Persist the update.
+	// -------------------------------------------------------------------------
+
+	issue, err := db.UpdateIssue(s.database, id,
+		body.Title, body.Description, body.Priority, body.Status,
+		body.Assignee, body.Project, body.Component,
+		body.DependentIssues,
+	)
 	if err != nil {
 		internalError(w, err)
 
@@ -267,6 +423,35 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "issue not found", http.StatusNotFound)
 
 		return
+	}
+
+	// -------------------------------------------------------------------------
+	// Auto-generate a comment for status transitions to Duplicate or Blocked.
+	// These comments are always server-generated so they are consistent across
+	// all clients (web, iOS, API).  The Resolve/Reopen comments follow the
+	// existing client-side pattern and are unaffected here.
+	// -------------------------------------------------------------------------
+
+	author := u.Username
+
+	if oldStatus != "Duplicate" && newStatus == "Duplicate" {
+		commentBody := fmt.Sprintf("Duplicate of issue #%d", body.DependentIssues[0])
+		// Ignore the error — a failed auto-comment does not roll back the status change.
+		_, _ = db.CreateComment(s.database, id, author, commentBody)
+
+	} else if oldStatus != "Blocked" && newStatus == "Blocked" {
+		parts := make([]string, len(body.DependentIssues))
+		for i, depID := range body.DependentIssues {
+			parts[i] = fmt.Sprintf("#%d", depID)
+		}
+
+		commentBody := "Blocked by issues " + strings.Join(parts, ", ")
+
+		if extra := strings.TrimSpace(body.Comment); extra != "" {
+			commentBody += "\n\n" + extra
+		}
+
+		_, _ = db.CreateComment(s.database, id, author, commentBody)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})

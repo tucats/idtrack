@@ -38,6 +38,15 @@ class AppState: ObservableObject {
     @Published var idleTimeout:  Int = 0       // seconds; 0 = no timeout
     @Published var onboardingToken: String? = nil   // non-nil when server needs first user
 
+    // Menu-driven sheet flags. Lifted out of MainAppView so that Mac Catalyst
+    // menu-bar commands (defined in IDTrackApp) can also trigger them — a
+    // command in the Application menu just flips the matching flag and the
+    // sheet observer on MainAppView presents the view.
+    @Published var showAbout:        Bool = false
+    @Published var showSettings:     Bool = false
+    @Published var showManageUsers:  Bool = false
+    @Published var showEditProjects: Bool = false
+
     // These three properties persist their values to UserDefaults using
     // `didSet` — an observer block that runs immediately after the property
     // is assigned a new value. This keeps UserDefaults in sync automatically

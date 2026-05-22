@@ -117,6 +117,16 @@ let _colVisibility = { ..._colVisibilityDefaults };
 // The id of the issue currently open in the detail panel. null = none open.
 let _currentId         = null;
 
+// The dependent_issues field of the currently-open issue, kept in sync with
+// the detail panel form. For Duplicate status this holds exactly one ID; for
+// Blocked status it holds one or more. Empty for all other statuses.
+let _dependentIssues = [];
+
+// Staging list of blocking issue IDs assembled inside the Blocked dialog
+// before the user confirms. Separate from _dependentIssues so cancelling
+// the dialog leaves the form in its original state.
+let _pendingBlockedIds = [];
+
 // Current sort state for the issue table.
 let _sortCol     = 'id';    // field name that matches issue object keys
 let _sortAsc     = false;   // true = A→Z / low→high, false = Z→A / high→low
@@ -226,10 +236,11 @@ function priorityBadge(p) {
     return `<span class="badge ${cls}">${esc(p)}</span>`;
 }
 
-// statusBadge works exactly like priorityBadge but for issue status
-// (Open / Resolved).
+// statusBadge works exactly like priorityBadge but for issue status.
+// Each status maps to a distinct colour so issues are scannable at a glance.
 function statusBadge(s) {
-    const cls = s === 'Open' ? 'badge-open' : 'badge-resolved';
+    const cls = { Open: 'badge-open', Resolved: 'badge-resolved',
+                  Blocked: 'badge-blocked', Duplicate: 'badge-duplicate' }[s] || 'badge-resolved';
     return `<span class="badge ${cls}">${esc(s)}</span>`;
 }
 
@@ -427,8 +438,12 @@ async function createIssue(title, description, priority, assignee, project, comp
 // partial update (PATCH). Only the reporter, current assignee, and
 // admins may call this; others receive 403 Forbidden.
 // Response shape: { issue: { ...updated issue... } }
-async function updateIssue(id, title, description, priority, status, assignee, project, component) {
-    return apiPut(`/api/issues/${id}`, { title, description, priority, status, assignee, project, component });
+async function updateIssue(id, title, description, priority, status, assignee, project, component, dependentIssues, comment) {
+    return apiPut(`/api/issues/${id}`, {
+        title, description, priority, status, assignee, project, component,
+        dependent_issues: dependentIssues || [],
+        comment: comment || '',
+    });
 }
 
 // DELETE /api/issues/{id}
@@ -696,9 +711,10 @@ function clearSearch() {
 // the client and server always agree on which issues are visible.
 function matchesCurrentFilters(issue) {
     if (_statusFilter !== 'all') {
-        const wantOpen = _statusFilter === 'open';
-        if (wantOpen  && issue.status !== 'Open')     return false;
-        if (!wantOpen && issue.status !== 'Resolved') return false;
+        // Map the filter token (lowercase, from the <select>) to the server's
+        // Title-cased status string stored in issue objects.
+        const want = { open: 'Open', resolved: 'Resolved', blocked: 'Blocked', duplicate: 'Duplicate' }[_statusFilter];
+        if (want && issue.status !== want) return false;
     }
     if (_priorityFilter !== 'all' && issue.priority !== _priorityFilter) return false;
     if (_projectFilter  !== 'all' && issue.project  !== _projectFilter)  return false;
@@ -976,6 +992,10 @@ async function selectIssue(id) {
         // rebuild it with the appropriate options for that project.
         populateComponentDropdown('detail-component', issue.project || '', issue.component || '');
 
+        // Snapshot the dependent_issues field for use during saves and the
+        // inline blocked-by editing section.
+        _dependentIssues = issue.dependent_issues || [];
+
         const canEdit = canModifyIssue(issue);
 
         // Save button is hidden by default; markDetailDirty() reveals it
@@ -992,6 +1012,8 @@ async function selectIssue(id) {
         ['detail-title', 'detail-status', 'detail-priority',
          'detail-assignee', 'detail-project', 'detail-component', 'detail-desc']
             .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !canEdit; });
+
+        renderDependentIssues(issue.status, canEdit);
 
         _detailDirty = false;
 
@@ -1058,7 +1080,9 @@ async function saveIssueChanges() {
     // An assignee is required before an issue can be marked Resolved.
     if (status === 'Resolved' && !assignee) { err.textContent = 'An assignee is required before marking an issue Resolved.'; return; }
 
-    // Status transitions require a dialog rather than an immediate save.
+    // Status transitions that need additional input show a dialog and return.
+    // _pendingStatusData holds the form values so the dialog's confirm handler
+    // can call doSaveIssue without re-reading all the fields.
     if (_originalStatus === 'Open' && status === 'Resolved') {
         _pendingStatusData = { title, desc, priority, status, assignee, project, component };
         showResolveDialog();
@@ -1069,36 +1093,50 @@ async function saveIssueChanges() {
         showReopenDialog();
         return;
     }
+    // Any → Duplicate: must supply exactly one target issue ID.
+    if (_originalStatus !== 'Duplicate' && status === 'Duplicate') {
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        showDuplicateDialog();
+        return;
+    }
+    // Any → Blocked: must supply at least one blocking issue ID.
+    if (_originalStatus !== 'Blocked' && status === 'Blocked') {
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        showBlockedDialog();
+        return;
+    }
 
-    // No status transition: save directly, no comment needed.
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, null);
+    // No special transition: save directly. This covers field edits on a stable
+    // status, inline add/remove on an already-Blocked issue, and Blocked→Open
+    // (the server validates that all dep issues are Resolved and returns 409 if not).
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, null, '');
 }
 
 // doSaveIssue performs the actual PUT to update the issue, then
-// optionally POSTs a comment (for status-change notes). Called by
-// saveIssueChanges() (commentBody = null) and confirmStatusChange()
-// (commentBody = non-null string).
-//
-// PUT /api/issues/{id}
-//   Request body: { title, description, priority, status, assignee, project, component }
-//   Response:     { issue: { ...updated issue... } }
-//
-// POST /api/issues/{id}/comments  (only when commentBody is non-null)
-//   Request body: { body: "comment text" }
-//   Response:     { comment: { ...new comment... } }
-async function doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody) {
+// doSaveIssue performs the actual PUT to update the issue, then
+// optionally POSTs a client-side comment (for Resolve/Reopen notes).
+// `serverComment` is the extra text appended to the server's auto-generated
+// "Blocked by issues #N…" comment — it is sent in the PUT body, not as a
+// separate POST.
+async function doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody, serverComment) {
     const err = document.getElementById('detail-error');
     const btn = document.getElementById('detail-save-btn');
     err.textContent = '';
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
-        const { issue } = await updateIssue(_currentId, title, desc, priority, status, assignee, project, component);
+        const { issue } = await updateIssue(
+            _currentId, title, desc, priority, status, assignee, project, component,
+            _dependentIssues, serverComment || ''
+        );
         if (commentBody) await addComment(_currentId, commentBody);
-        _originalStatus = status;
+        _originalStatus     = status;
+        _dependentIssues    = issue.dependent_issues || [];
         _detailDirty = false;
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
+        // Sync the dependent-issues section with what the server committed.
+        renderDependentIssues(status, canModifyIssue(issue));
         // After a successful save, decide whether the issue still belongs in the
         // visible list given the current filters. For example, if the user filters
         // by "Open" and just resolved this issue it should vanish from the list
@@ -1201,7 +1239,7 @@ async function confirmStatusChange() {
     document.getElementById('status-change-overlay').style.display = 'none';
     const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
     _pendingStatusData = null;
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody);
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody, '');
 }
 
 // cancelStatusChange dismisses the dialog without saving. It restores
@@ -1213,6 +1251,219 @@ function cancelStatusChange() {
         _pendingStatusData = null;
     }
     document.getElementById('status-change-overlay').style.display = 'none';
+}
+
+// =====================================================================
+// UI — STATUS CHANGE: Duplicate dialog
+// =====================================================================
+
+// showDuplicateDialog opens the overlay that captures the single target
+// issue ID required when marking an issue Duplicate.
+function showDuplicateDialog() {
+    document.getElementById('dup-id-input').value = '';
+    document.getElementById('dup-error').textContent = '';
+    document.getElementById('duplicate-overlay').style.display = 'flex';
+    document.getElementById('dup-id-input').focus();
+}
+
+// confirmDuplicateDialog validates the entered ID, stores it in
+// _dependentIssues, and delegates to doSaveIssue.
+async function confirmDuplicateDialog() {
+    if (!_pendingStatusData) return;
+    const val = parseInt(document.getElementById('dup-id-input').value.trim(), 10);
+    const err = document.getElementById('dup-error');
+    err.textContent = '';
+    if (!val || val < 1) { err.textContent = 'Please enter a valid issue number.'; return; }
+    if (val === _currentId) { err.textContent = 'An issue cannot be a duplicate of itself.'; return; }
+    _dependentIssues = [val];
+    document.getElementById('duplicate-overlay').style.display = 'none';
+    const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
+    _pendingStatusData = null;
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, null, '');
+}
+
+// cancelDuplicateDialog dismisses the dialog and restores the status picker.
+function cancelDuplicateDialog() {
+    if (_pendingStatusData) {
+        document.getElementById('detail-status').value = _originalStatus;
+        _pendingStatusData = null;
+    }
+    document.getElementById('duplicate-overlay').style.display = 'none';
+}
+
+// =====================================================================
+// UI — STATUS CHANGE: Blocked dialog
+// =====================================================================
+
+// showBlockedDialog opens the overlay for capturing one or more blocking
+// issue IDs and an optional extra comment for the auto-generated system note.
+function showBlockedDialog() {
+    _pendingBlockedIds = [];
+    renderBlockedDialogList();
+    document.getElementById('blk-add-input').value = '';
+    document.getElementById('blk-comment').value = '';
+    document.getElementById('blk-error').textContent = '';
+    document.getElementById('blocked-overlay').style.display = 'flex';
+    document.getElementById('blk-add-input').focus();
+}
+
+// addBlockedDialogIssue adds the value in the dialog's number input to the
+// pending list and re-renders the chip list.
+function addBlockedDialogIssue() {
+    const input = document.getElementById('blk-add-input');
+    const val   = parseInt(input.value.trim(), 10);
+    const err   = document.getElementById('blk-error');
+    err.textContent = '';
+    if (!val || val < 1) return;
+    if (val === _currentId) { err.textContent = 'An issue cannot block itself.'; return; }
+    if (_pendingBlockedIds.includes(val)) { input.value = ''; return; }
+    _pendingBlockedIds.push(val);
+    input.value = '';
+    renderBlockedDialogList();
+}
+
+// removeBlockedDialogIssue removes one ID from the staging list.
+function removeBlockedDialogIssue(id) {
+    _pendingBlockedIds = _pendingBlockedIds.filter(x => x !== id);
+    renderBlockedDialogList();
+}
+
+// renderBlockedDialogList rebuilds the chip list inside the Blocked dialog.
+function renderBlockedDialogList() {
+    const list = document.getElementById('blk-issues-list');
+    if (_pendingBlockedIds.length === 0) {
+        list.innerHTML = '<em class="dep-empty">No blocking issues added yet.</em>';
+        return;
+    }
+    list.innerHTML = _pendingBlockedIds.map(id =>
+        `<span class="dep-issue-chip">#${esc(String(id))}<button class="dep-remove-btn" onclick="removeBlockedDialogIssue(${id})" title="Remove">×</button></span>`
+    ).join('');
+}
+
+// confirmBlockedDialog validates the pending list, transfers it to
+// _dependentIssues, and saves.
+async function confirmBlockedDialog() {
+    if (!_pendingStatusData) return;
+    const err = document.getElementById('blk-error');
+    err.textContent = '';
+    if (_pendingBlockedIds.length === 0) {
+        err.textContent = 'At least one blocking issue is required.';
+        return;
+    }
+    const serverComment = document.getElementById('blk-comment').value.trim();
+    _dependentIssues = [..._pendingBlockedIds];
+    document.getElementById('blocked-overlay').style.display = 'none';
+    const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
+    _pendingStatusData = null;
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, null, serverComment);
+}
+
+// cancelBlockedDialog dismisses the overlay and restores the status picker.
+function cancelBlockedDialog() {
+    if (_pendingStatusData) {
+        document.getElementById('detail-status').value = _originalStatus;
+        _pendingStatusData = null;
+    }
+    document.getElementById('blocked-overlay').style.display = 'none';
+}
+
+// =====================================================================
+// UI — DEPENDENT ISSUES (inline panel, Blocked/Duplicate)
+// =====================================================================
+
+// onDetailStatusChange is called by the onchange handler on #detail-status.
+// It calls markDetailDirty() and then updates the dependent-issues section
+// visibility. When moving AWAY from Blocked/Duplicate the local list is
+// cleared so the section doesn't show stale chips for the new status.
+function onDetailStatusChange() {
+    markDetailDirty();
+    const status = document.getElementById('detail-status').value;
+    if (status !== 'Blocked' && status !== 'Duplicate') {
+        _dependentIssues = [];
+    }
+    // Compute canEdit from the currently open issue (may be undefined if not
+    // yet loaded, in which case we default to false for safety).
+    const issue   = _issueWindow.find(i => i.id === _currentId);
+    const canEdit = issue ? canModifyIssue(issue) : false;
+    renderDependentIssues(status, canEdit);
+}
+
+// renderDependentIssues updates the dependent-issues section in the detail
+// panel to reflect the current status and _dependentIssues array.
+//
+// For Duplicate status it shows a read-only chip for the single target.
+// For Blocked status it shows a chip-list with optional remove buttons
+// (admins only) and an add field (any editor).
+// For any other status the section is hidden.
+function renderDependentIssues(status, canEdit) {
+    const section  = document.getElementById('dependent-issues-section');
+    const label    = document.getElementById('dep-label');
+    const list     = document.getElementById('dep-issues-list');
+    const addRow   = document.getElementById('dep-add-row');
+    if (!section) return;
+
+    if (status !== 'Blocked' && status !== 'Duplicate') {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = '';
+    const isAdmin = _currentUser && _currentUser.is_admin;
+
+    if (status === 'Duplicate') {
+        label.textContent = 'Duplicate Of';
+        const depId = _dependentIssues[0];
+        list.innerHTML = depId
+            ? `<span class="dep-issue-chip">Issue #${esc(String(depId))}</span>`
+            : '<em class="dep-empty">Not set — save to open the Duplicate dialog.</em>';
+        addRow.style.display = 'none';
+    } else {
+        // Blocked
+        label.textContent = 'Blocked By';
+        if (_dependentIssues.length === 0) {
+            list.innerHTML = '<em class="dep-empty">No blocking issues.</em>';
+        } else {
+            list.innerHTML = _dependentIssues.map(id => {
+                // Only admins may remove blocking issues; the server enforces
+                // the same rule and returns 403 for unauthorised removals.
+                const removeBtn = (canEdit && isAdmin)
+                    ? `<button class="dep-remove-btn" onclick="removeBlockingIssue(${id})" title="Remove">×</button>`
+                    : '';
+                return `<span class="dep-issue-chip">#${esc(String(id))}${removeBtn}</span>`;
+            }).join('');
+        }
+        addRow.style.display = canEdit ? '' : 'none';
+    }
+}
+
+// addBlockingIssue is called by the "Add" button in the inline Blocked
+// section. It reads #dep-add-input, validates the value, and appends it
+// to _dependentIssues before re-rendering.
+function addBlockingIssue() {
+    const input = document.getElementById('dep-add-input');
+    const val   = parseInt(input.value.trim(), 10);
+    if (!val || val < 1) return;
+    if (val === _currentId) return;   // self-blocking is rejected by the server too
+    if (_dependentIssues.includes(val)) { input.value = ''; return; }
+    _dependentIssues.push(val);
+    input.value = '';
+    markDetailDirty();
+    const status  = document.getElementById('detail-status').value;
+    const issue   = _issueWindow.find(i => i.id === _currentId);
+    const canEdit = issue ? canModifyIssue(issue) : false;
+    renderDependentIssues(status, canEdit);
+}
+
+// removeBlockingIssue is called by the × button on a chip in the inline
+// Blocked section. Admin-only (enforced by the server; the button is hidden
+// for non-admins by renderDependentIssues).
+function removeBlockingIssue(id) {
+    _dependentIssues = _dependentIssues.filter(x => x !== id);
+    markDetailDirty();
+    const status  = document.getElementById('detail-status').value;
+    const issue   = _issueWindow.find(i => i.id === _currentId);
+    const canEdit = issue ? canModifyIssue(issue) : false;
+    renderDependentIssues(status, canEdit);
 }
 
 // =====================================================================
