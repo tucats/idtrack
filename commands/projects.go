@@ -22,7 +22,7 @@ func Define(args []string) {
 	subcommand := args[0]
 	rest := args[1:]
 
-	var project, component, database string
+	var project, component, database, teamsStr string
 
 	switch subcommand {
 	case "project":
@@ -60,6 +60,12 @@ func Define(args []string) {
 				database = rest[i]
 			}
 
+		case "--teams", "-t":
+			if i+1 < len(rest) {
+				i++
+				teamsStr = rest[i]
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", rest[i])
 			Usage()
@@ -88,7 +94,12 @@ func Define(args []string) {
 	defer d.Close()
 
 	if component == "" {
-		if err := db.CreateProject(d, project); err != nil {
+		var teams []string
+		if teamsStr != "" {
+			teams = db.ParseTeams(teamsStr)
+		}
+
+		if err := db.CreateProject(d, project, teams); err != nil {
 			fmt.Fprintf(os.Stderr, "error creating project %q: %v\n", project, err)
 			os.Exit(1)
 		}

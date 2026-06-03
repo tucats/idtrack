@@ -16,6 +16,10 @@ const (
 	databaseFlag = "--database"
 	defaultDB    = "idtrack.db"
 	trueValue    = "true"
+	listCommand = "list"
+	addCommand = "add"
+	deleteCommand = "delete"
+	updateCommand = "update"
 )
 
 // BuildVersion and BuildTime are set by main.go from the link-time injected

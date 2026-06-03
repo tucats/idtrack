@@ -51,6 +51,8 @@ func main() {
 		commands.Default(args[1:])
 	case "user", "users":
 		commands.User(args[1:])
+	case "teams", "team":
+		commands.Teams(args[1:])
 	case "define":
 		commands.Define(args[1:])
 	case "delete":

@@ -34,7 +34,12 @@ func newTestSrv(t *testing.T) *srv {
 func addTestUser(t *testing.T, s *srv, username string, isAdmin bool) string {
 	t.Helper()
 
-	if err := db.AddUser(s.database, username, username, "password", isAdmin); err != nil {
+	teams := []string{db.TeamAny}
+	if isAdmin {
+		teams = []string{db.TeamAdmin}
+	}
+
+	if err := db.AddUser(s.database, username, username, "password", teams); err != nil {
 		t.Fatalf("AddUser(%q): %v", username, err)
 	}
 

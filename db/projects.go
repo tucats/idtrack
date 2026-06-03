@@ -6,27 +6,20 @@ import (
 	"strings"
 )
 
-// Project represents a project row combined with its list of component names.
-// The two are stored in separate tables but returned together as one struct
-// for convenience in API responses.
+// Project represents a project row combined with its list of component names
+// and its team visibility list.
 type Project struct {
 	Name       string   `json:"name"`
 	Components []string `json:"components"`
+	Teams      []string `json:"teams"`
 }
 
 // ListProjects returns every project in alphabetical order, each with its
-// component names pre-populated. Because projects and components live in
-// separate tables we do two passes:
-//  1. Fetch all project names.
-//  2. For each project, fetch its components with a second query.
-//
-// The result set from step 1 must be closed (rows.Close()) before we open the
-// per-project queries in step 2; SQLite with MaxOpenConns(1) allows only one
-// active statement at a time on the same connection.
+// component names and teams pre-populated.
 func ListProjects(database *sql.DB) ([]Project, error) {
 	var projects []Project
 
-	rows, err := database.Query(`SELECT name FROM projects ORDER BY name`)
+	rows, err := database.Query(`SELECT name, teams FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -34,11 +27,16 @@ func ListProjects(database *sql.DB) ([]Project, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.Name); err != nil {
+		var (
+			p        Project
+			teamsStr string
+		)
+
+		if err := rows.Scan(&p.Name, &teamsStr); err != nil {
 			return nil, err
 		}
 
+		p.Teams = ParseTeams(teamsStr)
 		projects = append(projects, p)
 	}
 
@@ -46,22 +44,17 @@ func ListProjects(database *sql.DB) ([]Project, error) {
 		return nil, err
 	}
 
-	// Explicitly close the first result set before running the per-project
-	// queries below. The deferred rows.Close() would also work, but calling it
-	// explicitly here makes the intent clear to readers.
 	rows.Close()
 
-	// Populate the Components slice for each project using a separate query.
 	for i, p := range projects {
 		comps, err := GetComponents(database, p.Name)
 		if err != nil {
 			return nil, err
 		}
 
-		projects[i].Components = comps // update the slice element by index, not by range copy
+		projects[i].Components = comps
 	}
 
-	// Return an empty slice rather than nil so JSON encoding produces "[]".
 	if projects == nil {
 		projects = []Project{}
 	}
@@ -70,8 +63,7 @@ func ListProjects(database *sql.DB) ([]Project, error) {
 }
 
 // GetComponents returns the names of all components belonging to project,
-// sorted alphabetically. It is also called by ListProjects to populate the
-// embedded Components field.
+// sorted alphabetically.
 func GetComponents(database *sql.DB, project string) ([]string, error) {
 	var comps []string
 
@@ -91,7 +83,6 @@ func GetComponents(database *sql.DB, project string) ([]string, error) {
 		comps = append(comps, name)
 	}
 
-	// Return an empty slice rather than nil for consistent JSON output.
 	if comps == nil {
 		comps = []string{}
 	}
@@ -99,13 +90,36 @@ func GetComponents(database *sql.DB, project string) ([]string, error) {
 	return comps, rows.Err()
 }
 
-// CreateProject inserts a new project. INSERT OR IGNORE means the statement
-// succeeds silently when the project already exists — making this operation
-// idempotent. Callers do not need to check for duplicates first.
-func CreateProject(database *sql.DB, name string) error {
-	_, err := database.Exec(`INSERT OR IGNORE INTO projects (name) VALUES (?)`, name)
+// CreateProject inserts a new project. INSERT OR IGNORE makes the operation
+// idempotent. teams defaults to ["any"] when nil or empty.
+func CreateProject(database *sql.DB, name string, teams []string) error {
+	teamsStr := FormatTeams(teams)
+	_, err := database.Exec(
+		`INSERT OR IGNORE INTO projects (name, teams) VALUES (?, ?)`,
+		name, teamsStr,
+	)
 
 	return err
+}
+
+// SetProjectTeams replaces the teams list for an existing project.
+func SetProjectTeams(database *sql.DB, project string, teams []string) error {
+	teamsStr := FormatTeams(teams)
+	result, err := database.Exec(
+		`UPDATE projects SET teams = ? WHERE name = ?`,
+		teamsStr, project,
+	)
+
+	if err != nil {
+		return err
+	}
+
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("project %q not found", project)
+	}
+
+	return nil
 }
 
 // AddComponent adds a component to an existing project. It first confirms the
@@ -113,7 +127,6 @@ func CreateProject(database *sql.DB, name string) error {
 // using INSERT OR IGNORE, which is a no-op if the (project, name) pair already
 // exists.
 func AddComponent(database *sql.DB, project, component string) error {
-	// Check that the parent project exists before inserting the component.
 	var exists int
 
 	if err := database.QueryRow(`SELECT COUNT(*) FROM projects WHERE name = ?`, project).Scan(&exists); err != nil {
@@ -130,13 +143,10 @@ func AddComponent(database *sql.DB, project, component string) error {
 }
 
 // DeleteProject removes a project and all its components from the database.
-// It refuses to delete a project that is still referenced by open or resolved
-// issues, returning a descriptive error with the blocking issue IDs so the
-// caller can inform the user.
+// It refuses to delete a project that is still referenced by issues.
 func DeleteProject(database *sql.DB, name string) error {
 	var ids []int64
 
-	// Collect every issue ID that references this project so we can report them.
 	rows, err := database.Query(`SELECT id FROM issues WHERE project = ?`, name)
 	if err != nil {
 		return err
@@ -160,7 +170,6 @@ func DeleteProject(database *sql.DB, name string) error {
 	}
 
 	if len(ids) > 0 {
-		// Format the IDs as "#1, #2, ..." for a human-readable error message.
 		parts := make([]string, len(ids))
 		for i, id := range ids {
 			parts[i] = fmt.Sprintf("#%d", id)
@@ -169,8 +178,6 @@ func DeleteProject(database *sql.DB, name string) error {
 		return fmt.Errorf("project %q is referenced by issues: %s", name, strings.Join(parts, ", "))
 	}
 
-	// Delete components first (no foreign key enforcement in SQLite by default),
-	// then delete the project itself.
 	if _, err := database.Exec(`DELETE FROM components WHERE project = ?`, name); err != nil {
 		return err
 	}
@@ -180,9 +187,7 @@ func DeleteProject(database *sql.DB, name string) error {
 	return err
 }
 
-// DeleteComponent removes a single component from a project. Like DeleteProject
-// it checks for referencing issues first and returns an error with their IDs
-// when any are found.
+// DeleteComponent removes a single component from a project.
 func DeleteComponent(database *sql.DB, project, component string) error {
 	var ids []int64
 
@@ -195,7 +200,7 @@ func DeleteComponent(database *sql.DB, project, component string) error {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			
+
 			return err
 		}
 

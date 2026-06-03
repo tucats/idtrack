@@ -174,6 +174,50 @@
 </div>
 
 <!-- ==================== MANAGE USERS OVERLAY (admin) ==================== -->
+<!-- ==================== MANAGE TEAMS LIST OVERLAY (admin) ==================== -->
+<div id="mt-list-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'mt-list-overlay',hideManageTeams)">
+  <div class="sheet ep-list-sheet">
+    <div class="ep-list-hdr">
+      <h3>Manage Teams</h3>
+      <button class="btn btn-primary btn-sm" onclick="openTeamDetail(null)">+ New Team</button>
+    </div>
+    <div id="mt-list-body" class="ep-list-body"></div>
+    <div id="mt-list-error" class="error-text"></div>
+    <div class="button-row">
+      <button class="btn btn-secondary" onclick="hideManageTeams()">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TEAM DETAIL OVERLAY (admin) ==================== -->
+<div id="mt-detail-overlay" class="overlay" style="display:none">
+  <div class="sheet ep-detail-sheet">
+    <div class="ep-detail-hdr">
+      <button class="btn btn-ghost btn-sm" onclick="hideTeamDetail()">&#8592; Back</button>
+      <h3 id="mt-detail-title"></h3>
+      <button id="mt-delete-btn" class="btn btn-danger btn-sm" onclick="mtDeleteTeam()" style="display:none">Delete</button>
+    </div>
+    <div class="form-group">
+      <label for="mt-name-input">Team Name <span class="required">*</span></label>
+      <input id="mt-name-input" type="text" placeholder="e.g. platform" maxlength="50"
+             onkeydown="if(event.key==='Enter') document.getElementById('mt-desc-input').focus()">
+    </div>
+    <div class="form-group">
+      <label for="mt-desc-input">Description</label>
+      <textarea id="mt-desc-input" rows="3" placeholder="Optional description…" maxlength="500"></textarea>
+    </div>
+    <div id="mt-detail-error" class="error-text"></div>
+    <div class="button-row">
+      <button id="mt-save-btn" class="btn btn-primary" onclick="mtSaveTeam()">Save</button>
+      <button class="btn btn-secondary" onclick="hideTeamDetail()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Shared datalist for team name autocomplete across all chip pickers -->
+<datalist id="team-names-dl"></datalist>
+
+<!-- ==================== MANAGE USERS LIST OVERLAY (admin) ==================== -->
 <div id="manage-users-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'manage-users-overlay',hideManageUsers)">
   <div class="sheet manage-users-sheet">
     <h3>Manage Users</h3>
@@ -208,12 +252,14 @@
         <input id="au-confirm" type="password" autocomplete="new-password" placeholder="confirm">
       </div>
     </div>
-    <div class="settings-row">
-      <span class="settings-label">Admin privileges</span>
-      <label class="toggle">
-        <input type="checkbox" id="au-admin">
-        <span class="toggle-track"></span>
-      </label>
+    <div class="form-group">
+      <label>Teams <span class="required">*</span></label>
+      <div id="au-teams-chips" class="team-chips"></div>
+      <div class="team-input-row">
+        <input id="au-teams-input" type="text" list="team-names-dl" placeholder="Add team…" maxlength="50"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();addTeamChip('au');}">
+        <button class="btn btn-secondary btn-sm" onclick="addTeamChip('au')">Add</button>
+      </div>
     </div>
     <div id="au-error" class="error-text"></div>
     <div class="button-row">
@@ -247,12 +293,14 @@
         <input id="eu-confirm" type="password" autocomplete="new-password" placeholder="(leave blank to keep)">
       </div>
     </div>
-    <div class="settings-row">
-      <span class="settings-label">Admin privileges</span>
-      <label class="toggle">
-        <input type="checkbox" id="eu-admin">
-        <span class="toggle-track"></span>
-      </label>
+    <div class="form-group">
+      <label>Teams <span class="required">*</span></label>
+      <div id="eu-teams-chips" class="team-chips"></div>
+      <div class="team-input-row">
+        <input id="eu-teams-input" type="text" list="team-names-dl" placeholder="Add team…" maxlength="50"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();addTeamChip('eu');}">
+        <button class="btn btn-secondary btn-sm" onclick="addTeamChip('eu')">Add</button>
+      </div>
     </div>
     <div id="eu-error" class="error-text"></div>
     <div class="button-row">
@@ -290,6 +338,16 @@
       <label for="ep-project-name">Project Name <span class="required">*</span></label>
       <input id="ep-project-name" type="text" placeholder="e.g. Backend" maxlength="100"
              onkeydown="if(event.key==='Enter') document.getElementById('ep-comp-name').focus()">
+    </div>
+    <div class="form-group">
+      <label>Teams</label>
+      <div id="ep-teams-chips" class="team-chips"></div>
+      <div class="team-input-row">
+        <input id="ep-teams-input" type="text" list="team-names-dl" placeholder="Add team…" maxlength="50"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();addTeamChip('ep');}">
+        <button class="btn btn-secondary btn-sm" onclick="addTeamChip('ep')">Add</button>
+        <button id="ep-save-teams-btn" class="btn btn-primary btn-sm" onclick="epSaveTeams()" style="display:none">Save Teams</button>
+      </div>
     </div>
     <div id="ep-comp-section">
       <div class="ep-section-label">Components</div>
@@ -441,6 +499,7 @@
           <div class="menu-divider"></div>
           <button class="menu-item" onclick="openSettings()">Settings</button>
           <button id="menu-manage-users" class="menu-item" onclick="openManageUsers()" style="display:none">Edit Users…</button>
+          <button id="menu-edit-teams" class="menu-item" onclick="openManageTeams()" style="display:none">Edit Teams…</button>
           <button id="menu-edit-projects" class="menu-item" onclick="openEditProjects()" style="display:none">Edit Projects…</button>
           <button class="menu-item menu-item-danger" onclick="doLogout()">Sign out</button>
         </div>
@@ -539,6 +598,16 @@
             <select id="detail-component" class="detail-select" onchange="markDetailDirty()">
               <option value="">Choose component…</option>
             </select>
+          </div>
+        </div>
+        <!-- Teams — always visible; input row shown only for admins -->
+        <div class="detail-field">
+          <label>Teams</label>
+          <div id="detail-teams-chips" class="team-chips"></div>
+          <div id="detail-teams-edit-row" class="team-input-row" style="display:none">
+            <input id="detail-teams-input" type="text" list="team-names-dl" placeholder="Add team…" maxlength="50"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();addTeamChip('detail');}">
+            <button class="btn btn-secondary btn-sm" onclick="addTeamChip('detail')">Add</button>
           </div>
         </div>
         <!-- Dependent issues — shown only when status is Blocked or Duplicate -->

@@ -10,6 +10,11 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
+const (
+	testServerAddress = "127.0.0.1:9999"
+	testUser          = "alice"
+)
+
 // ---------------------------------------------------------------------------
 // handleVersion
 // ---------------------------------------------------------------------------
@@ -64,7 +69,7 @@ func TestHandleStatus_NoUsers(t *testing.T) {
 
 func TestHandleStatus_WithUsers(t *testing.T) {
 	s := newTestSrv(t)
-	db.AddUser(s.database, "admin", "Admin", "pw", true)
+	db.AddUser(s.database, "admin", "Admin", "pw", []string{db.TeamAdmin})
 
 	r := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 	w := httptest.NewRecorder()
@@ -86,11 +91,11 @@ func TestHandleStatus_WithUsers(t *testing.T) {
 
 func TestHandleLogin_Success(t *testing.T) {
 	s := newTestSrv(t)
-	db.AddUser(s.database, "alice", "Alice", "secret", false)
+	db.AddUser(s.database, testUser, testUser, "secret", []string{db.TeamAny})
 
 	body := `{"username":"alice","password":"secret"}`
 	r := jsonReq(t, http.MethodPost, "/api/login", body, "")
-	r.RemoteAddr = "127.0.0.1:9999"
+	r.RemoteAddr = testServerAddress
 	w := httptest.NewRecorder()
 
 	s.handleLogin(w, r)
@@ -125,11 +130,11 @@ func TestHandleLogin_Success(t *testing.T) {
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
 	s := newTestSrv(t)
-	db.AddUser(s.database, "bob", "Bob", "correct", false)
+	db.AddUser(s.database, "bob", "Bob", "correct", []string{db.TeamAny})
 
 	body := `{"username":"bob","password":"wrong"}`
 	r := jsonReq(t, http.MethodPost, "/api/login", body, "")
-	r.RemoteAddr = "127.0.0.1:9999"
+	r.RemoteAddr = testServerAddress
 	w := httptest.NewRecorder()
 
 	s.handleLogin(w, r)
@@ -144,7 +149,7 @@ func TestHandleLogin_UnknownUser(t *testing.T) {
 
 	body := `{"username":"nobody","password":"pw"}`
 	r := jsonReq(t, http.MethodPost, "/api/login", body, "")
-	r.RemoteAddr = "127.0.0.1:9999"
+	r.RemoteAddr = testServerAddress
 	w := httptest.NewRecorder()
 
 	s.handleLogin(w, r)
@@ -156,7 +161,7 @@ func TestHandleLogin_UnknownUser(t *testing.T) {
 
 func TestHandleLogin_RateLimited(t *testing.T) {
 	s := newTestSrv(t)
-	db.AddUser(s.database, "carol", "Carol", "pw", false)
+	db.AddUser(s.database, "carol", "Carol", "pw", []string{db.TeamAny})
 
 	ip := "10.10.10.10"
 	// Fill up the rate limiter.
@@ -253,7 +258,7 @@ func TestHandleOnboarding_AlreadyHasUsers(t *testing.T) {
 	s.mu.Unlock()
 
 	// Add an existing user.
-	db.AddUser(s.database, "existing", "Existing", "pw", true)
+	db.AddUser(s.database, "existing", "Existing", "pw", []string{db.TeamAdmin})
 
 	body := `{"username":"admin","password":"pw"}`
 	r := jsonReq(t, http.MethodPost, "/api/onboarding", body, "")
@@ -481,8 +486,8 @@ func TestHandleCreateProject_NonAdmin(t *testing.T) {
 func TestHandleListProjects(t *testing.T) {
 	s := newTestSrv(t)
 	token := addTestUser(t, s, "admin", true)
-	db.CreateProject(s.database, "alpha")
-	db.CreateProject(s.database, "beta")
+	db.CreateProject(s.database, "alpha", nil)
+	db.CreateProject(s.database, "beta", nil)
 
 	r := jsonReq(t, http.MethodGet, "/api/projects", "", token)
 	w := do(s, s.handleListProjects, r)
@@ -508,7 +513,7 @@ func TestHandleListProjects(t *testing.T) {
 func TestHandleCreateComponent_Success(t *testing.T) {
 	s := newTestSrv(t)
 	token := addTestUser(t, s, "admin", true)
-	db.CreateProject(s.database, "myproj")
+	db.CreateProject(s.database, "myproj", nil)
 
 	body := `{"name":"api"}`
 	r := jsonReq(t, http.MethodPost, "/api/projects/myproj/components", body, token)
@@ -527,7 +532,7 @@ func TestHandleCreateComponent_Success(t *testing.T) {
 func TestHandleDeleteProject(t *testing.T) {
 	s := newTestSrv(t)
 	token := addTestUser(t, s, "admin", true)
-	db.CreateProject(s.database, "doomedproj")
+	db.CreateProject(s.database, "doomedproj", nil)
 
 	r := jsonReq(t, http.MethodDelete, "/api/projects/doomedproj", "", token)
 	r.SetPathValue("project", "doomedproj")
@@ -541,7 +546,7 @@ func TestHandleDeleteProject(t *testing.T) {
 func TestHandleDeleteProject_Referenced(t *testing.T) {
 	s := newTestSrv(t)
 	token := addTestUser(t, s, "admin", true)
-	db.CreateProject(s.database, "usedproj")
+	db.CreateProject(s.database, "usedproj", nil)
 	db.CreateIssue(s.database, "T", "", "admin", "", "Medium", "usedproj", "c")
 
 	r := jsonReq(t, http.MethodDelete, "/api/projects/usedproj", "", token)
@@ -559,8 +564,8 @@ func TestHandleDeleteProject_Referenced(t *testing.T) {
 
 func TestHandleCreateIssue(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
-	db.CreateProject(s.database, "p")
+	token := addTestUser(t, s, testUser, false)
+	db.CreateProject(s.database, "p", nil)
 	db.AddComponent(s.database, "p", "c")
 
 	body := `{"title":"My Issue","description":"","priority":"High","project":"p","component":"c"}`
@@ -572,7 +577,7 @@ func TestHandleCreateIssue(t *testing.T) {
 	}
 
 	var resp map[string]interface{}
-	
+
 	json.NewDecoder(w.Body).Decode(&resp)
 
 	issue, _ := resp["issue"].(map[string]interface{})
@@ -585,15 +590,15 @@ func TestHandleCreateIssue(t *testing.T) {
 		t.Error("expected non-zero issue ID")
 	}
 
-	if issue["reporter"] != "alice" {
+	if issue["reporter"] != testUser {
 		t.Errorf("reporter: got %v, want alice", issue["reporter"])
 	}
 }
 
 func TestHandleGetIssue(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
-	issue, _ := db.CreateIssue(s.database, "Bug", "", "alice", "", "High", "p", "c")
+	token := addTestUser(t, s, testUser, false)
+	issue, _ := db.CreateIssue(s.database, "Bug", "", testUser, "", "High", "p", "c")
 
 	r := jsonReq(t, http.MethodGet, "/api/issues/1", "", token)
 	r.SetPathValue("id", "1")
@@ -620,7 +625,7 @@ func TestHandleGetIssue(t *testing.T) {
 
 func TestHandleGetIssue_NotFound(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
+	token := addTestUser(t, s, testUser, false)
 
 	r := jsonReq(t, http.MethodGet, "/api/issues/999", "", token)
 	r.SetPathValue("id", "999")
@@ -633,9 +638,9 @@ func TestHandleGetIssue_NotFound(t *testing.T) {
 
 func TestHandleUpdateIssue_Forbidden(t *testing.T) {
 	s := newTestSrv(t)
-	addTestUser(t, s, "alice", false)
+	addTestUser(t, s, testUser, false)
 	token := addTestUser(t, s, "bob", false)
-	db.CreateIssue(s.database, "T", "", "alice", "", "Medium", "p", "c")
+	db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c")
 
 	body := `{"title":"Changed","priority":"High","status":"Open","project":"p","component":"c"}`
 	r := jsonReq(t, http.MethodPut, "/api/issues/1", body, token)
@@ -649,8 +654,8 @@ func TestHandleUpdateIssue_Forbidden(t *testing.T) {
 
 func TestHandleUpdateIssue_Reporter(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
-	issue, _ := db.CreateIssue(s.database, "T", "", "alice", "", "Medium", "p", "c")
+	token := addTestUser(t, s, testUser, false)
+	issue, _ := db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c")
 
 	body := `{"title":"Updated","priority":"High","status":"Open","project":"p","component":"c","description":""}`
 	r := jsonReq(t, http.MethodPut, "/api/issues/1", body, token)
@@ -666,8 +671,8 @@ func TestHandleUpdateIssue_Reporter(t *testing.T) {
 func TestHandleDeleteIssue_Admin(t *testing.T) {
 	s := newTestSrv(t)
 	token := addTestUser(t, s, "admin", true)
-	addTestUser(t, s, "alice", false)
-	db.CreateIssue(s.database, "T", "", "alice", "", "Medium", "p", "c")
+	addTestUser(t, s, testUser, false)
+	db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c")
 
 	r := jsonReq(t, http.MethodDelete, "/api/issues/1", "", token)
 	r.SetPathValue("id", "1")
@@ -680,9 +685,9 @@ func TestHandleDeleteIssue_Admin(t *testing.T) {
 
 func TestHandleListIssues(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
-	db.CreateIssue(s.database, "A", "", "alice", "", "High", "p", "c")
-	db.CreateIssue(s.database, "B", "", "alice", "", "Low", "p", "c")
+	token := addTestUser(t, s, testUser, false)
+	db.CreateIssue(s.database, "A", "", testUser, "", "High", "p", "c")
+	db.CreateIssue(s.database, "B", "", testUser, "", "Low", "p", "c")
 
 	r := jsonReq(t, http.MethodGet, "/api/issues", "", token)
 	w := do(s, s.handleListIssues, r)
@@ -703,7 +708,7 @@ func TestHandleListIssues(t *testing.T) {
 
 func TestHandleListIssues_SearchTooLong(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
+	token := addTestUser(t, s, testUser, false)
 
 	long := strings.Repeat("x", maxSearchLen+1)
 	r := jsonReq(t, http.MethodGet, "/api/issues?search="+long, "", token)
@@ -720,8 +725,8 @@ func TestHandleListIssues_SearchTooLong(t *testing.T) {
 
 func TestHandleListChanges(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
-	db.CreateIssue(s.database, "T", "", "alice", "", "Medium", "p", "c")
+	token := addTestUser(t, s, testUser, false)
+	db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c")
 
 	r := jsonReq(t, http.MethodGet, "/api/issues/changes?since=2000-01-01T00:00:00Z", "", token)
 	w := do(s, s.handleListChanges, r)
@@ -746,8 +751,8 @@ func TestHandleListChanges(t *testing.T) {
 
 func TestHandleCreateComment_Success(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
-	db.CreateIssue(s.database, "T", "", "alice", "", "Medium", "p", "c")
+	token := addTestUser(t, s, testUser, false)
+	db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c")
 
 	body := `{"body":"this is a comment"}`
 	r := jsonReq(t, http.MethodPost, "/api/issues/1/comments", body, token)
@@ -761,7 +766,7 @@ func TestHandleCreateComment_Success(t *testing.T) {
 
 func TestHandleCreateComment_NotFound(t *testing.T) {
 	s := newTestSrv(t)
-	token := addTestUser(t, s, "alice", false)
+	token := addTestUser(t, s, testUser, false)
 
 	body := `{"body":"orphan comment"}`
 	r := jsonReq(t, http.MethodPost, "/api/issues/999/comments", body, token)
