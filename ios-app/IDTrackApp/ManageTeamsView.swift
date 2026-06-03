@@ -41,7 +41,13 @@ struct ManageTeamsView: View {
             .navigationTitle("Manage Teams")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                // `.cancellationAction` is the semantic placement for a
+                // "dismiss without saving" button. SwiftUI picks the correct
+                // slot per platform and — importantly on Mac Catalyst — sizes
+                // it to fit the label. The previous `.topBarLeading` placement
+                // used a back-button-style tight intrinsic width that
+                // truncated "Done" to "D…" on Catalyst.
+                ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {

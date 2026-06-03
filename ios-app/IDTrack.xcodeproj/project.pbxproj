@@ -26,6 +26,7 @@
 		8D1234567890ABCDEF000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8C1234567890ABCDEF000017 /* Assets.xcassets */; };
 		9A1234567890ABCDEF000019 /* SharedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B1234567890ABCDEF000019 /* SharedViews.swift */; };
 		E2E5C79F2FBFDE4A00B0364F /* ManualView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2E5C79E2FBFDE4A00B0364F /* ManualView.swift */; };
+		A11234567890ABCDEF000020 /* ManageTeamsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A01234567890ABCDEF000020 /* ManageTeamsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -49,6 +50,7 @@
 		8E1234567890ABCDEF000018 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9B1234567890ABCDEF000019 /* SharedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedViews.swift; sourceTree = "<group>"; };
 		E2E5C79E2FBFDE4A00B0364F /* ManualView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualView.swift; sourceTree = "<group>"; };
+		A01234567890ABCDEF000020 /* ManageTeamsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManageTeamsView.swift; sourceTree = "<group>"; };
 		F0E1D2C3B4A5968778695A4B /* IDTrack.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IDTrack.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -80,6 +82,7 @@
 				6C1234567890ABCDEF000011 /* IssueDetailView.swift */,
 				6E1234567890ABCDEF000012 /* NewIssueView.swift */,
 				7A1234567890ABCDEF000013 /* ManageUsersView.swift */,
+				A01234567890ABCDEF000020 /* ManageTeamsView.swift */,
 				7C1234567890ABCDEF000014 /* EditProjectsView.swift */,
 				7E1234567890ABCDEF000015 /* SettingsView.swift */,
 				8A1234567890ABCDEF000016 /* AboutView.swift */,
@@ -189,6 +192,7 @@
 				6D1234567890ABCDEF000011 /* IssueDetailView.swift in Sources */,
 				6F1234567890ABCDEF000012 /* NewIssueView.swift in Sources */,
 				7B1234567890ABCDEF000013 /* ManageUsersView.swift in Sources */,
+				A11234567890ABCDEF000020 /* ManageTeamsView.swift in Sources */,
 				7D1234567890ABCDEF000014 /* EditProjectsView.swift in Sources */,
 				7F1234567890ABCDEF000015 /* SettingsView.swift in Sources */,
 				8B1234567890ABCDEF000016 /* AboutView.swift in Sources */,

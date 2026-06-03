@@ -74,6 +74,9 @@ struct IDTrackApp: App {
                     Button("Edit Users…") {
                         appState.showManageUsers = true
                     }
+                    Button("Edit Teams…") {
+                        appState.showManageTeams = true
+                    }
                     Button("Edit Projects…") {
                         appState.showEditProjects = true
                     }

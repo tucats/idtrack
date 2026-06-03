@@ -66,6 +66,15 @@ struct User: Identifiable, Codable, Equatable {
             teams = adminFlag ? ["admin"] : ["any"]
         }
     }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(username,    forKey: .username)
+        try c.encode(displayName, forKey: .displayName)
+        try c.encode(teams,       forKey: .teams)
+        try c.encode(lastLoginAt, forKey: .lastLoginAt)
+        try c.encode(isAdmin,     forKey: .isAdminRaw)
+    }
 }
 
 // MARK: - Issue
