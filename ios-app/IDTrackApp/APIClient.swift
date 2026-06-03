@@ -302,40 +302,45 @@ class APIClient {
         return env.users
     }
 
-    func createUser(username: String, displayName: String, password: String, isAdmin: Bool) async throws {
+    func createUser(username: String, displayName: String, password: String, teams: [String]) async throws {
         struct Body: Encodable {
             let username: String
             let displayName: String
             let password: String
+            let teams: [String]
             let isAdmin: Bool
             enum CodingKeys: String, CodingKey {
-                case username, password
+                case username, password, teams
                 case displayName = "display_name"
                 case isAdmin     = "is_admin"
             }
         }
         let url  = try makeURL("/api/users")
-        let body = try JSONEncoder().encode(Body(username: username, displayName: displayName, password: password, isAdmin: isAdmin))
-        // `_` discards the Data return value — we only care whether it throws.
+        let body = try JSONEncoder().encode(Body(
+            username: username, displayName: displayName, password: password,
+            teams: teams, isAdmin: teams.contains { $0.lowercased() == "admin" }
+        ))
         _ = try await perform(req(url, method: "POST", body: body))
     }
 
-    func updateUser(username: String, displayName: String, password: String, isAdmin: Bool) async throws {
+    func updateUser(username: String, displayName: String, password: String, teams: [String]) async throws {
         struct Body: Encodable {
             let displayName: String
             let password: String
+            let teams: [String]
             let isAdmin: Bool
             enum CodingKeys: String, CodingKey {
-                case password
+                case password, teams
                 case displayName = "display_name"
                 case isAdmin     = "is_admin"
             }
         }
-        // URL-encode the username in case it contains special characters
-        // (spaces, @-signs, etc.) that would break the URL path.
         let enc = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
         let url  = try makeURL("/api/users/\(enc)")
-        let body = try JSONEncoder().encode(Body(displayName: displayName, password: password, isAdmin: isAdmin))
+        let body = try JSONEncoder().encode(Body(
+            displayName: displayName, password: password,
+            teams: teams, isAdmin: teams.contains { $0.lowercased() == "admin" }
+        ))
         _ = try await perform(req(url, method: "PUT", body: body))
     }
 
@@ -343,6 +348,37 @@ class APIClient {
         let enc = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
         let url = try makeURL("/api/users/\(enc)")
         _ = try await perform(req(url, method: "DELETE"))
+    }
+
+    // MARK: - Teams
+
+    private struct TeamsEnvelope: Codable { let teams: [Team] }
+
+    func getTeams() async throws -> [Team] {
+        let url = try makeURL("/api/teams")
+        let env: TeamsEnvelope = try await decode(req(url))
+        return env.teams
+    }
+
+    func createTeam(name: String, description: String) async throws {
+        struct Body: Encodable { let name: String; let description: String }
+        let url  = try makeURL("/api/teams")
+        let body = try JSONEncoder().encode(Body(name: name, description: description))
+        _ = try await perform(req(url, method: "POST", body: body))
+    }
+
+    func deleteTeam(name: String) async throws {
+        let enc = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let url = try makeURL("/api/teams/\(enc)")
+        _ = try await perform(req(url, method: "DELETE"))
+    }
+
+    func updateTeam(name: String, newName: String?, description: String?) async throws {
+        struct Body: Encodable { let name: String?; let description: String? }
+        let enc  = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
+        let url  = try makeURL("/api/teams/\(enc)")
+        let body = try JSONEncoder().encode(Body(name: newName, description: description))
+        _ = try await perform(req(url, method: "PUT", body: body))
     }
 
     // MARK: - Projects
@@ -355,11 +391,19 @@ class APIClient {
         return env.projects
     }
 
-    func createProject(name: String) async throws {
+    func createProject(name: String, teams: [String] = ["any"]) async throws {
+        struct Body: Encodable { let name: String; let teams: [String] }
         let url  = try makeURL("/api/projects")
-        // Encoding a plain [String: String] dictionary produces {"name": "..."}.
-        let body = try JSONEncoder().encode(["name": name])
+        let body = try JSONEncoder().encode(Body(name: name, teams: teams))
         _ = try await perform(req(url, method: "POST", body: body))
+    }
+
+    func updateProjectTeams(project: String, teams: [String]) async throws {
+        struct Body: Encodable { let teams: [String] }
+        let enc  = project.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? project
+        let url  = try makeURL("/api/projects/\(enc)/teams")
+        let body = try JSONEncoder().encode(Body(teams: teams))
+        _ = try await perform(req(url, method: "PUT", body: body))
     }
 
     func deleteProject(name: String) async throws {
@@ -449,17 +493,15 @@ class APIClient {
     func updateIssue(
         id: Int, title: String, description: String, priority: String,
         status: String, assignee: String, project: String, component: String,
-        dependentIssues: [Int] = [], comment: String = ""
+        dependentIssues: [Int] = [], comment: String = "", teams: [String] = []
     ) async throws -> Issue {
-        // `comment` is the optional extra text the user supplies when first
-        // marking an issue Blocked; the server appends it to the auto-generated
-        // "Blocked by issues #N…" system comment.
         struct Body: Encodable {
             let title, description, priority, status, assignee, project, component: String
             let dependentIssues: [Int]
             let comment: String
+            let teams: [String]
             enum CodingKeys: String, CodingKey {
-                case title, description, priority, status, assignee, project, component, comment
+                case title, description, priority, status, assignee, project, component, comment, teams
                 case dependentIssues = "dependent_issues"
             }
         }
@@ -467,7 +509,7 @@ class APIClient {
         let body = try JSONEncoder().encode(Body(
             title: title, description: description, priority: priority,
             status: status, assignee: assignee, project: project, component: component,
-            dependentIssues: dependentIssues, comment: comment
+            dependentIssues: dependentIssues, comment: comment, teams: teams
         ))
         let env: IssueEnvelope = try await decode(req(url, method: "PUT", body: body))
         return env.issue

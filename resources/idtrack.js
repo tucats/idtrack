@@ -165,6 +165,18 @@ let _idleTimer       = null;  // handle returned by setTimeout(), kept so we can
 let _appName         = 'idtrack';
 let _appDesc         = 'Issue Tracker';
 
+// Canonical team list from GET /api/teams. Shape: [{ name, description }, ...]
+let _teamData        = [];
+
+// Currently-edited team name in the manage-teams detail screen (null = new).
+let _mtTeam          = null;
+
+// Per-context team chip arrays for the four chip pickers.
+let _auTeams         = [];   // add-user overlay
+let _euTeams         = [];   // edit-user overlay
+let _epTeams         = [];   // edit-project overlay
+let _detailTeams     = [];   // issue detail panel
+
 // =====================================================================
 // BRANDING
 // =====================================================================
@@ -185,6 +197,83 @@ function applyBranding() {
     setText('about-app-name', _appName);
     setText('about-app-desc', _appDesc);
 }
+
+// =====================================================================
+// TEAMS — loading, datalist, chip picker helpers
+// =====================================================================
+
+// loadTeamData fetches the canonical team list from the server and
+// updates the shared datalist so all chip-picker inputs get autocomplete.
+async function loadTeamData() {
+    try {
+        const data = await fetch('/api/teams').then(r => r.json());
+        _teamData = data.teams || [];
+    } catch {
+        _teamData = [];
+    }
+    updateTeamDatalist();
+}
+
+// teamNames returns just the name strings from _teamData.
+function teamNames() {
+    return _teamData.map(t => t.name);
+}
+
+// updateTeamDatalist rebuilds the shared <datalist id="team-names-dl">
+// so every team chip picker input gets the same autocomplete options.
+function updateTeamDatalist() {
+    const dl = document.getElementById('team-names-dl');
+    if (dl) dl.innerHTML = _teamData.map(t => `<option value="${esc(t.name)}">`).join('');
+}
+
+// renderTeamChips rebuilds a chip container from an array of team names.
+// 'editable' controls whether × remove buttons are shown.
+// 'prefix' is used to generate the removeTeam callback name.
+function renderTeamChips(containerId, teams, prefix, editable) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = teams.map((t, i) => {
+        const cls = t === 'admin' ? ' chip-admin' : t === 'any' ? ' chip-any' : '';
+        const removeBtn = editable
+            ? `<button class="chip-remove" onclick="${prefix}RemoveTeam(${i})" title="Remove">&#215;</button>`
+            : '';
+        return `<span class="team-chip${cls}">${esc(t)}${removeBtn}</span>`;
+    }).join('');
+}
+
+// addTeamChip reads the input for 'prefix', validates, adds to the correct
+// team array, and re-renders the chips.
+function addTeamChip(prefix) {
+    const input = document.getElementById(`${prefix}-teams-input`);
+    if (!input) return;
+    const name = input.value.trim().toLowerCase();
+    if (!name) return;
+    const arr = _teamArrayFor(prefix);
+    if (!arr.includes(name)) {
+        arr.push(name);
+        renderTeamChips(`${prefix}-teams-chips`, arr, prefix, true);
+        if (prefix === 'detail') markDetailDirty();
+    }
+    input.value = '';
+    input.focus();
+}
+
+// _teamArrayFor returns a reference to the correct per-context array.
+function _teamArrayFor(prefix) {
+    switch (prefix) {
+        case 'au':     return _auTeams;
+        case 'eu':     return _euTeams;
+        case 'ep':     return _epTeams;
+        case 'detail': return _detailTeams;
+    }
+    return [];
+}
+
+// Per-prefix remove functions called from chip × buttons.
+function auRemoveTeam(i)     { _auTeams.splice(i,1);     renderTeamChips('au-teams-chips',     _auTeams,     'au',     true); }
+function euRemoveTeam(i)     { _euTeams.splice(i,1);     renderTeamChips('eu-teams-chips',     _euTeams,     'eu',     true); }
+function epRemoveTeam(i)     { _epTeams.splice(i,1);     renderTeamChips('ep-teams-chips',     _epTeams,     'ep',     true); }
+function detailRemoveTeam(i) { _detailTeams.splice(i,1); renderTeamChips('detail-teams-chips', _detailTeams, 'detail', true); markDetailDirty(); }
 
 // =====================================================================
 // UTILITY
@@ -438,11 +527,12 @@ async function createIssue(title, description, priority, assignee, project, comp
 // partial update (PATCH). Only the reporter, current assignee, and
 // admins may call this; others receive 403 Forbidden.
 // Response shape: { issue: { ...updated issue... } }
-async function updateIssue(id, title, description, priority, status, assignee, project, component, dependentIssues, comment) {
+async function updateIssue(id, title, description, priority, status, assignee, project, component, dependentIssues, comment, teams) {
     return apiPut(`/api/issues/${id}`, {
         title, description, priority, status, assignee, project, component,
         dependent_issues: dependentIssues || [],
         comment: comment || '',
+        teams: teams || [],
     });
 }
 
@@ -555,11 +645,13 @@ async function launchApp() {
     // Admin-only menu items: '' (visible) for admins, 'none' (hidden) for others.
     const adminDisplay = _currentUser.is_admin ? '' : 'none';
     document.getElementById('menu-manage-users').style.display   = adminDisplay;
+    document.getElementById('menu-edit-teams').style.display     = adminDisplay;
     document.getElementById('menu-edit-projects').style.display  = adminDisplay;
     document.getElementById('app').style.display = '';
     // Reset the idle timer so it starts fresh from this login event.
     stopIdleTracking();
     startIdleTracking();
+    await loadTeamData();
     await populateAssigneeDropdowns();
     await populateProjectDropdowns();
     await loadIssueWindow();
@@ -584,6 +676,8 @@ async function doLogout() {
     _currentUser = null;
     _issueWindow = [];
     _totalIssues = 0;
+    _teamData = [];
+    _detailTeams = [];
     sessionStorage.removeItem(SESSION_KEY);
     localStorage.removeItem(PERSIST_KEY);
     _keepLoggedIn = false;
@@ -992,11 +1086,17 @@ async function selectIssue(id) {
         // rebuild it with the appropriate options for that project.
         populateComponentDropdown('detail-component', issue.project || '', issue.component || '');
 
-        // Snapshot the dependent_issues field for use during saves and the
-        // inline blocked-by editing section.
+        // Snapshot the dependent_issues and teams fields.
         _dependentIssues = issue.dependent_issues || [];
+        _detailTeams = Array.isArray(issue.teams) ? [...issue.teams] : ['any'];
 
         const canEdit = canModifyIssue(issue);
+        const isAdmin = _currentUser && _currentUser.is_admin;
+
+        // Render teams chips; admins see the add/remove controls.
+        renderTeamChips('detail-teams-chips', _detailTeams, 'detail', isAdmin);
+        const teamsEditRow = document.getElementById('detail-teams-edit-row');
+        if (teamsEditRow) teamsEditRow.style.display = isAdmin ? '' : 'none';
 
         // Save button is hidden by default; markDetailDirty() reveals it
         // the first time any field changes.
@@ -1127,11 +1227,13 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
     try {
         const { issue } = await updateIssue(
             _currentId, title, desc, priority, status, assignee, project, component,
-            _dependentIssues, serverComment || ''
+            _dependentIssues, serverComment || '', _detailTeams
         );
         if (commentBody) await addComment(_currentId, commentBody);
         _originalStatus     = status;
         _dependentIssues    = issue.dependent_issues || [];
+        _detailTeams        = Array.isArray(issue.teams) ? [...issue.teams] : _detailTeams;
+        renderTeamChips('detail-teams-chips', _detailTeams, 'detail', _currentUser && _currentUser.is_admin);
         _detailDirty = false;
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
@@ -1724,15 +1826,22 @@ function renderManageUsersList(users) {
     }
     div.innerHTML = `<table class="mu-table">
         <thead><tr>
-            <th>Username</th><th>Display Name</th><th>Admin</th><th>Last Login</th>
+            <th>Username</th><th>Display Name</th><th>Teams</th><th>Last Login</th>
         </tr></thead>
-        <tbody>${users.map(u => `
+        <tbody>${users.map(u => {
+            const teams = Array.isArray(u.teams) ? u.teams : (u.is_admin ? ['admin'] : ['any']);
+            const teamBadges = teams.map(t => {
+                const cls = t === 'admin' ? 'badge-open' : t === 'any' ? 'badge-low' : '';
+                return `<span class="badge ${cls}">${esc(t)}</span>`;
+            }).join(' ');
+            return `
             <tr class="mu-row" onclick="openEditUserFromManage('${esc(u.username)}')">
                 <td class="mu-username">${esc(u.username)}</td>
                 <td>${esc(u.display_name || u.username)}</td>
-                <td>${u.is_admin ? '<span class="badge badge-open">Admin</span>' : ''}</td>
+                <td>${teamBadges}</td>
                 <td class="mu-login">${esc(u.last_login_at ? fmtDateTime(u.last_login_at) : '(never)')}</td>
-            </tr>`).join('')}
+            </tr>`;
+        }).join('')}
         </tbody></table>`;
 }
 
@@ -1755,8 +1864,9 @@ function openAddUser() {
     document.getElementById('au-display-name').value  = '';
     document.getElementById('au-password').value      = '';
     document.getElementById('au-confirm').value        = '';
-    document.getElementById('au-admin').checked        = false;
     document.getElementById('au-error').textContent   = '';
+    _auTeams = ['any'];
+    renderTeamChips('au-teams-chips', _auTeams, 'au', true);
     document.getElementById('add-user-overlay').style.display = 'flex';
     document.getElementById('au-username').focus();
 }
@@ -1778,7 +1888,6 @@ async function submitAddUser() {
     const displayName  = document.getElementById('au-display-name').value.trim();
     const password     = document.getElementById('au-password').value;
     const confirm      = document.getElementById('au-confirm').value;
-    const isAdmin      = document.getElementById('au-admin').checked;
     const err          = document.getElementById('au-error');
     const btn          = document.getElementById('au-submit-btn');
 
@@ -1786,12 +1895,16 @@ async function submitAddUser() {
     if (!username)  { err.textContent = 'Username is required.'; return; }
     if (!password)  { err.textContent = 'Password is required.'; return; }
     if (password !== confirm) { err.textContent = 'Passwords do not match.'; return; }
+    if (_auTeams.length === 0) { err.textContent = 'At least one team is required.'; return; }
 
     btn.disabled = true;
     btn.textContent = 'Adding…';
     try {
-        await apiPost('/api/users', { username, display_name: displayName, password, is_admin: isAdmin });
-        // Refresh assignee dropdowns so the new user appears in them.
+        await apiPost('/api/users', {
+            username, display_name: displayName, password,
+            teams: _auTeams,
+            is_admin: _auTeams.includes('admin'),
+        });
         await populateAssigneeDropdowns();
         hideAddUser();
     } catch (e) {
@@ -1838,16 +1951,18 @@ function onEditUserSelect() {
         document.getElementById('eu-display-name').value  = '';
         document.getElementById('eu-password').value       = '';
         document.getElementById('eu-confirm').value         = '';
-        document.getElementById('eu-admin').checked         = false;
         document.getElementById('eu-delete-btn').style.display = 'none';
+        _euTeams = [];
+        renderTeamChips('eu-teams-chips', _euTeams, 'eu', true);
         return;
     }
     document.getElementById('eu-display-name').value = user.display_name || '';
     document.getElementById('eu-password').value      = '';
     document.getElementById('eu-confirm').value        = '';
-    document.getElementById('eu-admin').checked        = !!user.is_admin;
     document.getElementById('eu-delete-btn').style.display =
         (user.username === _currentUser.username) ? 'none' : '';
+    _euTeams = Array.isArray(user.teams) ? [...user.teams] : (user.is_admin ? ['admin'] : ['any']);
+    renderTeamChips('eu-teams-chips', _euTeams, 'eu', true);
 }
 
 // submitEditUser saves changes to an existing user.
@@ -1863,19 +1978,21 @@ async function submitEditUser() {
     const displayName = document.getElementById('eu-display-name').value.trim();
     const password    = document.getElementById('eu-password').value;
     const confirm     = document.getElementById('eu-confirm').value;
-    const isAdmin     = document.getElementById('eu-admin').checked;
     const err         = document.getElementById('eu-error');
     const btn         = document.getElementById('eu-save-btn');
 
     err.textContent = '';
     if (!username)    { err.textContent = 'Select a user.'; return; }
     if (password !== confirm) { err.textContent = 'Passwords do not match.'; return; }
+    if (_euTeams.length === 0) { err.textContent = 'At least one team is required.'; return; }
 
     btn.disabled = true;
     btn.textContent = 'Saving…';
     try {
         await apiPut(`/api/users/${encodeURIComponent(username)}`, {
-            display_name: displayName, password, is_admin: isAdmin,
+            display_name: displayName, password,
+            teams: _euTeams,
+            is_admin: _euTeams.includes('admin'),
         });
         await populateAssigneeDropdowns();
         hideEditUser();
@@ -1995,6 +2112,112 @@ function onDetailProjectChange() {
 }
 
 // =====================================================================
+// UI — MANAGE TEAMS (admin)
+// =====================================================================
+// Two-screen overlay stack: mt-list-overlay → mt-detail-overlay.
+// Follows the same parent/child pattern as Edit Projects.
+
+function openManageTeams() {
+    _closeMenuOnOutside();
+    mtRenderTeamList();
+    document.getElementById('mt-list-overlay').style.display = 'flex';
+}
+
+function hideManageTeams() {
+    document.getElementById('mt-list-overlay').style.display = 'none';
+}
+
+function mtRenderTeamList() {
+    const body = document.getElementById('mt-list-body');
+    if (!_teamData || _teamData.length === 0) {
+        body.innerHTML = '<p class="ep-empty">No teams yet.</p>';
+        return;
+    }
+    body.innerHTML = _teamData.map(t => {
+        const reserved = t.name === 'admin' || t.name === 'any';
+        const lock = reserved ? ' &#x1F512;' : '';
+        const desc = t.description ? esc(t.description) : '<em class="mu-empty">No description</em>';
+        return `
+        <div class="ep-project-row" onclick="openTeamDetail('${esc(t.name)}')">
+            <span class="ep-project-name">${esc(t.name)}${lock}</span>
+            <span class="ep-project-count">${desc}</span>
+            <span class="ep-project-arrow">&#8250;</span>
+        </div>`;
+    }).join('');
+}
+
+function openTeamDetail(name) {
+    _mtTeam = name;
+    const isNew = name === null;
+    const team = name ? _teamData.find(t => t.name === name) : null;
+    const isReserved = name === 'admin' || name === 'any';
+
+    document.getElementById('mt-detail-title').textContent = isNew ? 'New Team' : esc(name);
+    const nameInput = document.getElementById('mt-name-input');
+    nameInput.value    = isNew ? '' : name;
+    nameInput.disabled = isReserved;
+    document.getElementById('mt-desc-input').value = team ? (team.description || '') : '';
+    document.getElementById('mt-delete-btn').style.display  = (isNew || isReserved) ? 'none' : '';
+    document.getElementById('mt-detail-error').textContent  = '';
+
+    document.getElementById('mt-list-overlay').style.display   = 'none';
+    document.getElementById('mt-detail-overlay').style.display = 'flex';
+    document.getElementById(isNew ? 'mt-name-input' : 'mt-desc-input').focus();
+}
+
+function hideTeamDetail() {
+    document.getElementById('mt-detail-overlay').style.display = 'none';
+    mtRenderTeamList();
+    document.getElementById('mt-list-overlay').style.display = 'flex';
+}
+
+async function mtSaveTeam() {
+    const newName = document.getElementById('mt-name-input').value.trim().toLowerCase();
+    const desc    = document.getElementById('mt-desc-input').value.trim();
+    const err     = document.getElementById('mt-detail-error');
+    const btn     = document.getElementById('mt-save-btn');
+    err.textContent = '';
+
+    if (_mtTeam === null) {
+        if (!newName) { err.textContent = 'Team name is required.'; return; }
+        btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+            await apiPost('/api/teams', { name: newName, description: desc });
+            await loadTeamData();
+            hideTeamDetail();
+        } catch (e) {
+            if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed.';
+        } finally { btn.disabled = false; btn.textContent = 'Save'; }
+    } else {
+        btn.disabled = true; btn.textContent = 'Saving…';
+        try {
+            const body = { description: desc };
+            if (newName && newName !== _mtTeam) body.name = newName;
+            await apiPut(`/api/teams/${encodeURIComponent(_mtTeam)}`, body);
+            await loadTeamData();
+            hideTeamDetail();
+        } catch (e) {
+            if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed.';
+        } finally { btn.disabled = false; btn.textContent = 'Save'; }
+    }
+}
+
+async function mtDeleteTeam() {
+    if (!_mtTeam) return;
+    if (!confirm(`Delete team "${_mtTeam}"? This cannot be undone.`)) return;
+    const err = document.getElementById('mt-detail-error');
+    const btn = document.getElementById('mt-delete-btn');
+    btn.disabled = true;
+    try {
+        await apiDelete(`/api/teams/${encodeURIComponent(_mtTeam)}`);
+        await loadTeamData();
+        hideTeamDetail();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Delete failed.';
+    } finally { btn.disabled = false; }
+}
+
+// =====================================================================
 // UI — EDIT PROJECTS (admin)
 // =====================================================================
 // The Edit Projects UI is a two-screen overlay stack:
@@ -2046,6 +2269,8 @@ function openProjectDetail(name) {
     _epPendingComponents = [];
 
     const isNew = name === null;
+    const project = name ? _projectData.find(p => p.name === name) : null;
+
     document.getElementById('ep-detail-title').textContent          = isNew ? 'New Project' : name;
     document.getElementById('ep-name-group').style.display          = isNew ? '' : 'none';
     document.getElementById('ep-project-name').value                = '';
@@ -2053,6 +2278,13 @@ function openProjectDetail(name) {
     document.getElementById('ep-comp-name').value                   = '';
     document.getElementById('ep-detail-error').textContent          = '';
     document.getElementById('ep-create-btn').style.display          = isNew ? '' : 'none';
+
+    // Populate the teams chip picker.
+    _epTeams = (project && Array.isArray(project.teams)) ? [...project.teams] : ['any'];
+    renderTeamChips('ep-teams-chips', _epTeams, 'ep', true);
+    // "Save Teams" only makes sense when editing an existing project.
+    const saveTeamsBtn = document.getElementById('ep-save-teams-btn');
+    if (saveTeamsBtn) saveTeamsBtn.style.display = isNew ? 'none' : '';
 
     epRenderComponents();
     epRenderPending();
@@ -2226,7 +2458,7 @@ async function epSaveNewProject() {
     btn.disabled = true;
     btn.textContent = 'Creating…';
     try {
-        await apiPost('/api/projects', { name });
+        await apiPost('/api/projects', { name, teams: _epTeams.length ? _epTeams : ['any'] });
     } catch (e) {
         if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to create project.';
         btn.disabled = false;
@@ -2264,6 +2496,24 @@ async function epSaveNewProject() {
     }
     btn.disabled = false;
     btn.textContent = 'Create Project';
+}
+
+// epSaveTeams pushes the current _epTeams list to the server for an
+// existing project.
+//
+// PUT /api/projects/{project}/teams
+//   Request body: { teams: [...] }
+async function epSaveTeams() {
+    if (!_epProject) return;
+    const err = document.getElementById('ep-detail-error');
+    err.textContent = '';
+    try {
+        await apiPut(`/api/projects/${encodeURIComponent(_epProject)}/teams`, { teams: _epTeams });
+        await populateProjectDropdowns();
+        err.textContent = '';
+    } catch (e) {
+        if (e.message !== 'Unauthorized') err.textContent = e.message || 'Failed to save teams.';
+    }
 }
 
 // =====================================================================

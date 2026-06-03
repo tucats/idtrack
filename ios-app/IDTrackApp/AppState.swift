@@ -30,9 +30,10 @@ class AppState: ObservableObject {
 
     @Published var isLoggedIn:   Bool = false
     @Published var currentUser:  User? = nil   // nil when signed out
-    @Published var users:        [User] = []   // full user list; used for assignee dropdowns
-    @Published var userMap:      [String: String] = [:]   // username → display name
-    @Published var projects:     [Project] = []
+    @Published var users:          [User] = []   // full user list; used for assignee dropdowns
+    @Published var userMap:        [String: String] = [:]   // username → display name
+    @Published var projects:       [Project] = []
+    @Published var availableTeams: [Team] = []    // canonical team list from /api/teams
     @Published var appName:      String = "idtrack"
     @Published var appDesc:      String = "Issue Tracker"
     @Published var idleTimeout:  Int = 0       // seconds; 0 = no timeout
@@ -45,6 +46,7 @@ class AppState: ObservableObject {
     @Published var showAbout:        Bool = false
     @Published var showSettings:     Bool = false
     @Published var showManageUsers:  Bool = false
+    @Published var showManageTeams:  Bool = false
     @Published var showEditProjects: Bool = false
     @Published var showManual:       Bool = false
 
@@ -138,6 +140,7 @@ class AppState: ObservableObject {
         users           = []
         userMap         = [:]
         projects        = []
+        availableTeams  = []
         onboardingToken = nil
         // Only wipe the persisted user when keepLoggedIn is off.
         // If it's on, leaving the data lets the next app launch restore it.
@@ -182,9 +185,14 @@ class AppState: ObservableObject {
         projects = try await api.getProjects()
     }
 
+    func refreshTeams() async throws {
+        availableTeams = try await api.getTeams()
+    }
+
+    // Just the name strings from availableTeams — used by team pickers.
+    var teamNames: [String] { availableTeams.map(\.name) }
+
     // Convenience accessor used by the cascaded project→component pickers.
-    // `first(where:)` returns the first element satisfying the closure, or nil.
-    // The `?.components ?? []` chain safely handles a nil result.
     func components(for projectName: String) -> [String] {
         projects.first(where: { $0.name == projectName })?.components ?? []
     }

@@ -161,7 +161,7 @@ func (s *srv) handleOnboarding(w http.ResponseWriter, r *http.Request) {
 		displayName = body.Username
 	}
 
-	if err := db.AddUser(s.database, body.Username, displayName, body.Password, true); err != nil {
+	if err := db.AddUser(s.database, body.Username, displayName, body.Password, []string{db.TeamAdmin}); err != nil {
 		internalError(w, err)
 
 		return

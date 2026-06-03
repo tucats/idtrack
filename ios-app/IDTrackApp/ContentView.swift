@@ -88,6 +88,7 @@ struct ContentView: View {
                     // expired — sign out and show the login screen.
                     try await appState.refreshUsers()
                     try await appState.refreshProjects()
+                    try await appState.refreshTeams()
                 } catch APIError.unauthorized {
                     await appState.signOut()
                 } catch {}  // other errors are non-fatal; data loads lazily later

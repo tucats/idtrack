@@ -84,6 +84,7 @@ struct MainAppView: View {
         .sheet(isPresented: $appState.showSettings)     { SettingsView() }
         .sheet(isPresented: $appState.showAbout)        { AboutView() }
         .sheet(isPresented: $appState.showManageUsers)  { ManageUsersView() }
+        .sheet(isPresented: $appState.showManageTeams)  { ManageTeamsView() }
         .sheet(isPresented: $appState.showEditProjects) { EditProjectsView() }
         // Explicitly re-inject `appState` here. On Mac Catalyst, sheets can be
         // presented in a separate window context whose environment does not
@@ -127,6 +128,9 @@ struct MainAppView: View {
                 if appState.currentUser?.isAdmin == true {
                     Button(action: { appState.showManageUsers = true }) {
                         Label("Edit Users…", systemImage: "person.2")
+                    }
+                    Button(action: { appState.showManageTeams = true }) {
+                        Label("Edit Teams…", systemImage: "person.3")
                     }
                     Button(action: { appState.showEditProjects = true }) {
                         Label("Edit Projects…", systemImage: "folder")

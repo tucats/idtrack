@@ -1,116 +1,94 @@
 import Foundation
 
+// MARK: - Team
+
+struct Team: Identifiable, Codable, Equatable {
+    var id: String { name }
+    let name: String
+    var description: String
+
+    static let reservedNames: Set<String> = ["admin", "any"]
+
+    var isReserved: Bool { Team.reservedNames.contains(name.lowercased()) }
+
+    init(name: String, description: String = "") {
+        self.name = name
+        self.description = description
+    }
+}
+
 // MARK: - User
-//
-// Swift structs are value types — every assignment creates an independent copy.
-// That means changes to one variable never silently affect another, making state
-// management predictable in SwiftUI.
-//
-// Three protocol conformances are declared here:
-//   • Identifiable — requires a property named `id`. SwiftUI's List and ForEach
-//     use this to track items across updates without relying on array position.
-//   • Codable      — shorthand for Encodable & Decodable; lets JSONDecoder/
-//     JSONEncoder convert between Swift values and JSON automatically.
-//   • Equatable    — lets Swift compare two values with ==. SwiftUI needs this
-//     to detect changes and decide when to re-render a view.
 
 struct User: Identifiable, Codable, Equatable {
-
-    // `id` is a computed property that returns `username`. This satisfies
-    // Identifiable without storing a separate integer key. The server
-    // identifies users by username, so username IS the stable identity.
     var id: String { username }
 
-    let username: String    // login name (immutable after creation)
-    var displayName: String // human-readable name shown in the UI
-    var isAdmin: Bool
-    var lastLoginAt: String // RFC3339 timestamp string, empty if never logged in
+    let username: String
+    var displayName: String
+    var teams: [String]
+    var lastLoginAt: String
 
-    // MARK: JSON key mapping
-    //
-    // Swift convention is camelCase; the server sends snake_case JSON.
-    // CodingKeys maps one to the other. Any key whose Swift name already
-    // matches the JSON key (like `username`) can be omitted from the enum
-    // and the compiler handles it automatically.
+    // Computed from teams so callers throughout the app continue to work
+    // without changes: u.isAdmin still returns true when "admin" is in teams.
+    var isAdmin: Bool { teams.contains { $0.lowercased() == "admin" } }
+
     enum CodingKeys: String, CodingKey {
         case username
         case displayName  = "display_name"
-        case isAdmin      = "is_admin"
+        case teams
+        case isAdminRaw   = "is_admin"
         case lastLoginAt  = "last_login_at"
     }
 
-    // MARK: Memberwise initializer
-    //
-    // When we write a custom init(from decoder:) below, Swift no longer
-    // auto-generates the memberwise initializer. We define it manually so
-    // code can create a User directly without going through JSON decoding.
-    init(username: String, displayName: String, isAdmin: Bool, lastLoginAt: String = "") {
-        self.username = username
+    init(username: String, displayName: String, teams: [String] = ["any"], lastLoginAt: String = "") {
+        self.username    = username
         self.displayName = displayName
-        self.isAdmin = isAdmin
+        self.teams       = teams
         self.lastLoginAt = lastLoginAt
     }
 
-    // MARK: Custom JSON decoding
-    //
-    // `init(from decoder: Decoder)` is called automatically by JSONDecoder.
-    // Writing it ourselves (instead of letting the compiler synthesize it)
-    // lets us handle two defensive patterns:
-    //
-    //   1. `decodeIfPresent` — returns nil if the key is missing, so we can
-    //      fall back to a sensible default with `?? ""`. The synthesized
-    //      decoder would throw an error if a non-Optional property is absent.
-    //
-    //   2. `is_admin` type ambiguity — the server stores the boolean as a
-    //      SQLite INTEGER (0/1), so older API responses may send an Int
-    //      instead of a JSON bool. We try Bool first, then Int.
     init(from decoder: Decoder) throws {
-        // `container(keyedBy:)` gives us a typed lookup table of the JSON object.
         let c = try decoder.container(keyedBy: CodingKeys.self)
         username    = try c.decode(String.self, forKey: .username)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? ""
         lastLoginAt = try c.decodeIfPresent(String.self, forKey: .lastLoginAt) ?? ""
 
-        // Try to decode is_admin as a Bool (modern API sends true/false).
-        // If that fails, try Int (legacy or SQLite-raw API sends 0/1).
-        // Fall back to false if the key is absent entirely.
-        if let b = try? c.decodeIfPresent(Bool.self, forKey: .isAdmin) {
-            isAdmin = b
-        } else if let i = try? c.decodeIfPresent(Int.self, forKey: .isAdmin) {
-            isAdmin = (i) != 0
+        // Prefer the explicit teams array. Fall back to deriving teams from the
+        // legacy is_admin flag so the app still works against older server versions.
+        if let t = try? c.decodeIfPresent([String].self, forKey: .teams), !t.isEmpty {
+            teams = t
         } else {
-            isAdmin = false
+            var adminFlag = false
+            if let b = try? c.decodeIfPresent(Bool.self, forKey: .isAdminRaw) {
+                adminFlag = b
+            } else if let i = try? c.decodeIfPresent(Int.self, forKey: .isAdminRaw) {
+                adminFlag = i != 0
+            }
+            teams = adminFlag ? ["admin"] : ["any"]
         }
     }
 }
 
 // MARK: - Issue
-//
-// An Issue holds all the fields the server stores for a bug/task record.
-// `var` fields (not `let`) are editable in the detail form.
 
 struct Issue: Identifiable, Codable, Equatable {
-    let id: Int            // server-assigned auto-increment; immutable
+    let id: Int
     var title: String
     var description: String
-    var reporter: String   // username of the person who filed the issue
-    var assignee: String   // username of the person responsible; "" = unassigned
-    var priority: String   // "High" | "Medium" | "Low"
-    var status: String     // "Open" | "Resolved"
+    var reporter: String
+    var assignee: String
+    var priority: String
+    var status: String
     var project: String
     var component: String
-    var createdAt: String  // RFC3339 UTC strings
+    var createdAt: String
     var updatedAt: String
-    var resolvedAt: String // empty if not yet resolved
-    var commentCount: Int  // denormalized count from the server for fast display
-    // Issue IDs this issue depends on:
-    //   Status "Duplicate" — exactly one ID (the issue this duplicates).
-    //   Status "Blocked"   — one or more IDs (the issues blocking progress).
-    //   Any other status   — empty.
+    var resolvedAt: String
+    var commentCount: Int
     var dependentIssues: [Int]
+    var teams: [String]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, reporter, assignee, priority, status, project, component
+        case id, title, description, reporter, assignee, priority, status, project, component, teams
         case createdAt       = "created_at"
         case updatedAt       = "updated_at"
         case resolvedAt      = "resolved_at"
@@ -118,8 +96,6 @@ struct Issue: Identifiable, Codable, Equatable {
         case dependentIssues = "dependent_issues"
     }
 
-    // Custom decoder for the same reasons as User: defensive defaults for
-    // every field so a partially-populated server response doesn't crash.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id               = try c.decode(Int.self, forKey: .id)
@@ -136,6 +112,7 @@ struct Issue: Identifiable, Codable, Equatable {
         resolvedAt       = try c.decodeIfPresent(String.self, forKey: .resolvedAt)      ?? ""
         commentCount     = try c.decodeIfPresent(Int.self,    forKey: .commentCount)    ?? 0
         dependentIssues  = try c.decodeIfPresent([Int].self,  forKey: .dependentIssues) ?? []
+        teams            = try c.decodeIfPresent([String].self, forKey: .teams)         ?? ["any"]
     }
 }
 
@@ -143,7 +120,7 @@ struct Issue: Identifiable, Codable, Equatable {
 
 struct Comment: Identifiable, Codable {
     let id: Int
-    let author: String     // username (not display name)
+    let author: String
     let body: String
     let createdAt: String
 
@@ -162,30 +139,34 @@ struct Comment: Identifiable, Codable {
 }
 
 // MARK: - Project
-//
-// A Project is a container for Components. The server encodes it as:
-//   { "name": "Backend", "components": ["API", "Auth"] }
-//
-// Project has no CodingKeys because its Swift names already match the JSON keys.
-// The compiler synthesizes the decoder automatically.
 
 struct Project: Identifiable, Codable, Equatable {
-    // Like User.id, we use the natural string key rather than a separate integer.
     var id: String { name }
     let name: String
     var components: [String]
+    var teams: [String]
+
+    init(name: String, components: [String] = [], teams: [String] = ["any"]) {
+        self.name       = name
+        self.components = components
+        self.teams      = teams
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name       = try c.decode(String.self, forKey: .name)
+        components = try c.decodeIfPresent([String].self, forKey: .components) ?? []
+        teams      = try c.decodeIfPresent([String].self, forKey: .teams)      ?? ["any"]
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, components, teams
+    }
 }
 
 // MARK: - Helpers
-//
-// Swift extensions let you add methods or computed properties to an existing
-// type without modifying its original declaration. This is especially useful
-// for organising view-related logic separately from the model definition.
 
 extension Issue {
-    // Returns a color name string used by PriorityBadge.
-    // Returning a String (not a Color directly) keeps the model layer free
-    // of SwiftUI imports — Models.swift only imports Foundation.
     var priorityColor: String {
         switch priority {
         case "High":   return "red"

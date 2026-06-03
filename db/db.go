@@ -83,6 +83,10 @@ func initSchema(database *sql.DB) error {
 			name    TEXT NOT NULL,
 			UNIQUE(project, name)
 		);
+		CREATE TABLE IF NOT EXISTS teams (
+			name        TEXT PRIMARY KEY,
+			description TEXT NOT NULL DEFAULT ''
+		);
 	`)
 	if err != nil {
 		return err
@@ -120,6 +124,29 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	// teams columns store a comma-separated list of team names.  DEFAULT ''
+	// allows the migration guard (WHERE teams = '') to distinguish unset rows
+	// from rows that have been explicitly assigned a team.
+	if err := addColumnIfMissing(database, "users", "teams", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	if err := addColumnIfMissing(database, "projects", "teams", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	if err := addColumnIfMissing(database, "issues", "teams", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	// Seed the two reserved team names.  INSERT OR IGNORE is idempotent.
+	if _, err := database.Exec(`
+		INSERT OR IGNORE INTO teams (name, description) VALUES ('admin', '');
+		INSERT OR IGNORE INTO teams (name, description) VALUES ('any',   '');
+	`); err != nil {
+		return err
+	}
+
 	// Backfill resolved_at for existing Resolved issues that have no value yet.
 	// The most recent comment timestamp is used as the best available proxy —
 	// it is typically the "Fixed in version X" comment posted when the issue was
@@ -131,6 +158,25 @@ func initSchema(database *sql.DB) error {
 		AND    resolved_at = ''
 		AND    EXISTS (SELECT 1 FROM comments WHERE issue_id = issues.id)
 	`); err != nil {
+		return err
+	}
+
+	// Migrate users: admin users get team 'admin', everyone else gets 'any'.
+	// The WHERE teams = '' guard makes this a no-op after the first run.
+	if _, err := database.Exec(`
+		UPDATE users
+		SET    teams = CASE WHEN is_admin = 1 THEN 'admin' ELSE 'any' END
+		WHERE  teams = ''
+	`); err != nil {
+		return err
+	}
+
+	// Migrate projects and issues to the 'any' team (visible to all users).
+	if _, err := database.Exec(`UPDATE projects SET teams = 'any' WHERE teams = ''`); err != nil {
+		return err
+	}
+
+	if _, err := database.Exec(`UPDATE issues SET teams = 'any' WHERE teams = ''`); err != nil {
 		return err
 	}
 

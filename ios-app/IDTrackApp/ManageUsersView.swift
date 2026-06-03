@@ -1,32 +1,14 @@
 import SwiftUI
 
 // MARK: - ManageUsersView
-//
-// Admin-only sheet that lists all users and provides access to Add / Edit
-// flows via nested sheets. The pattern used here is called the "parent–child
-// overlay" pattern:
-//
-//   ManageUsersView (parent)
-//     ├── AddUserView  (child sheet, opened by tapping "+")
-//     └── EditUserView (child sheet, opened by tapping a user row)
-//
-// The `onDismiss` callbacks on both child sheets call `load()` to refresh
-// the user list whenever a child closes — whether the user saved, cancelled,
-// or deleted an account.
 
 struct ManageUsersView: View {
     @EnvironmentObject var appState: AppState
-    // `@Environment(\.dismiss)` gives us the dismiss action for the current
-    // presentation context. Calling `dismiss()` closes this sheet.
     @Environment(\.dismiss) private var dismiss
 
     @State private var users:      [User] = []
     @State private var isLoading   = true
-    // Boolean flag for the Add User sheet.
     @State private var showAddUser = false
-    // Optional User for the Edit User sheet. When non-nil, the sheet opens
-    // and passes the user to EditUserView. Setting it back to nil closes the sheet.
-    // `.sheet(item:)` is the right modifier when you want to pass data to the sheet.
     @State private var editTarget: User? = nil
 
     var body: some View {
@@ -38,9 +20,6 @@ struct ManageUsersView: View {
                 } else {
                     List {
                         ForEach(users) { u in
-                            // Button wrapping the row makes the whole row tappable.
-                            // `.buttonStyle(.plain)` prevents the default blue
-                            // tint that Button adds to its content.
                             Button(action: { editTarget = u }) {
                                 UserRow(user: u)
                             }
@@ -62,32 +41,19 @@ struct ManageUsersView: View {
                 }
             }
         }
-        // `.task` fires once on appear to load the initial user list.
         .task { await load() }
-        // `onDismiss:` — refresh the list whenever AddUserView closes, so any
-        // newly created user appears immediately without a manual pull-to-refresh.
         .sheet(isPresented: $showAddUser,  onDismiss: { Task { await load() } }) { AddUserView() }
-        // `.sheet(item:)` — the sheet appears when `editTarget` is non-nil.
-        // The `{ u in ... }` closure receives the non-nil user value.
-        // Setting `editTarget = nil` (e.g. inside EditUserView via dismiss) closes the sheet.
         .sheet(item: $editTarget,          onDismiss: { Task { await load() } }) { u in EditUserView(user: u) }
     }
 
     private func load() async {
         isLoading = true
-        do {
-            users = try await appState.api.getUsers()
-        } catch {}   // errors silently result in an empty list
+        do { users = try await appState.api.getUsers() } catch {}
         isLoading = false
     }
 }
 
 // MARK: - User row
-//
-// Compact display of one user: display name, optional Admin badge, username,
-// and last-login time.
-//
-// `private` — only ManageUsersView uses this.
 
 private struct UserRow: View {
     let user: User
@@ -97,15 +63,14 @@ private struct UserRow: View {
             HStack {
                 Text(user.displayName.isEmpty ? user.username : user.displayName)
                     .font(.body)
-                if user.isAdmin {
-                    // Admin badge — same capsule style as PriorityBadge / StatusBadge.
-                    Text("Admin")
-                        .font(.caption2.weight(.semibold))
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(Color.blue.opacity(0.15))
-                        .foregroundStyle(.blue)
-                        .clipShape(Capsule())
+                // Show team badges instead of a single Admin badge.
+                ForEach(user.teams.prefix(3), id: \.self) { team in
+                    TeamBadge(name: team)
+                }
+                if user.teams.count > 3 {
+                    Text("+\(user.teams.count - 3)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -125,6 +90,118 @@ private struct UserRow: View {
     }
 }
 
+// MARK: - Team Badge
+
+struct TeamBadge: View {
+    let name: String
+
+    private var color: Color {
+        switch name.lowercased() {
+        case "admin": return .blue
+        case "any":   return .green
+        default:      return .secondary
+        }
+    }
+
+    var body: some View {
+        Text(name)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.15))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
+    }
+}
+
+// MARK: - Team Picker Sheet
+
+struct TeamPickerView: View {
+    @Environment(\.dismiss) private var dismiss
+    let availableTeams: [Team]
+    @Binding var selectedTeams: [String]
+
+    var body: some View {
+        NavigationStack {
+            List(availableTeams) { team in
+                let isSelected = selectedTeams.contains { $0.lowercased() == team.name.lowercased() }
+                Button(action: { toggle(team.name) }) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(team.name)
+                                .font(.body)
+                            if !team.description.isEmpty {
+                                Text(team.description)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(.blue)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle("Select Teams")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func toggle(_ name: String) {
+        let lower = name.lowercased()
+        if let idx = selectedTeams.firstIndex(where: { $0.lowercased() == lower }) {
+            selectedTeams.remove(at: idx)
+        } else {
+            selectedTeams.append(name)
+        }
+    }
+}
+
+// MARK: - Teams field (reusable inline row for forms)
+
+struct TeamsField: View {
+    let label: String
+    @Binding var teams: [String]
+    let availableTeams: [Team]
+    @State private var showPicker = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: { showPicker = true }) {
+                HStack {
+                    Text(label)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    if teams.isEmpty {
+                        Text("None selected")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(teams.joined(separator: ", "))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .sheet(isPresented: $showPicker) {
+            TeamPickerView(availableTeams: availableTeams, selectedTeams: $teams)
+        }
+    }
+}
+
 // MARK: - Add User
 
 struct AddUserView: View {
@@ -135,12 +212,10 @@ struct AddUserView: View {
     @State private var displayName = ""
     @State private var password    = ""
     @State private var confirm     = ""
-    @State private var isAdmin     = false
+    @State private var teams: [String] = ["any"]
     @State private var errorMsg    = ""
     @State private var isSaving    = false
 
-    // Boolean @FocusState — simpler than an enum when there's only one
-    // field that needs programmatic focus.
     @FocusState private var firstFocus: Bool
 
     var body: some View {
@@ -164,9 +239,8 @@ struct AddUserView: View {
                         SecureField("confirm", text: $confirm)
                     }
                 }
-                // Toggle binds directly to the @State Bool.
-                Section {
-                    Toggle("Admin privileges", isOn: $isAdmin)
+                Section("Teams") {
+                    TeamsField(label: "Teams", teams: $teams, availableTeams: appState.availableTeams)
                 }
                 if !errorMsg.isEmpty {
                     Section { Text(errorMsg).foregroundStyle(.red).font(.callout) }
@@ -182,9 +256,8 @@ struct AddUserView: View {
                 }
             }
         }
-        // Set focus on the username field when the sheet opens.
-        // `firstFocus = true` triggers the `.focused($firstFocus)` modifier.
         .onAppear { firstFocus = true }
+        .task { try? await appState.refreshTeams() }
     }
 
     private func save() async {
@@ -193,16 +266,15 @@ struct AddUserView: View {
         guard !name.isEmpty          else { errorMsg = "Username is required."; return }
         guard !password.isEmpty      else { errorMsg = "Password is required."; return }
         guard password == confirm     else { errorMsg = "Passwords do not match."; return }
+        guard !teams.isEmpty          else { errorMsg = "At least one team is required."; return }
 
         isSaving = true
         defer { isSaving = false }
         do {
             let dn = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-            try await appState.api.createUser(username: name, displayName: dn, password: password, isAdmin: isAdmin)
-            // Refresh the shared user list and map in AppState so dropdown menus
-            // reflect the new user immediately after this sheet closes.
+            try await appState.api.createUser(username: name, displayName: dn, password: password, teams: teams)
             try? await appState.refreshUsers()
-            dismiss()   // success → close the sheet
+            dismiss()
         } catch {
             errorMsg = error.localizedDescription
         }
@@ -215,16 +287,12 @@ struct EditUserView: View {
     @EnvironmentObject var appState: AppState
     @Environment(\.dismiss) private var dismiss
 
-    // The user to edit, passed in from ManageUsersView via .sheet(item:).
-    // `let` — the identity of the user being edited doesn't change while
-    // the sheet is open.
     let user: User
 
-    // Edit fields — pre-populated in .onAppear.
     @State private var displayName = ""
-    @State private var password    = ""  // blank = keep existing password
+    @State private var password    = ""
     @State private var confirm     = ""
-    @State private var isAdmin     = false
+    @State private var teams: [String] = []
     @State private var errorMsg    = ""
     @State private var isSaving    = false
     @State private var showDeleteConfirm = false
@@ -237,7 +305,6 @@ struct EditUserView: View {
                         TextField("display name", text: $displayName)
                             .autocorrectionDisabled()
                     }
-                    // Leaving both password fields blank means "don't change the password".
                     LabeledField("New Password") {
                         SecureField("(leave blank to keep)", text: $password)
                     }
@@ -245,13 +312,9 @@ struct EditUserView: View {
                         SecureField("(leave blank to keep)", text: $confirm)
                     }
                 }
-                Section {
-                    Toggle("Admin privileges", isOn: $isAdmin)
+                Section("Teams") {
+                    TeamsField(label: "Teams", teams: $teams, availableTeams: appState.availableTeams)
                 }
-                // Hide the Delete button when editing one's own account.
-                // The server would reject self-deletion, but it's better UX
-                // to not show the button at all. The comparison uses `!=` so
-                // the section only renders for other users.
                 if user.username != appState.currentUser?.username {
                     Section {
                         Button("Delete User", role: .destructive) { showDeleteConfirm = true }
@@ -276,26 +339,25 @@ struct EditUserView: View {
                 Text("This cannot be undone.")
             }
         }
-        // Pre-populate the form with the user's current values.
         .onAppear {
             displayName = user.displayName
-            isAdmin     = user.isAdmin
+            teams       = user.teams
         }
+        .task { try? await appState.refreshTeams() }
     }
 
     private func save() async {
         errorMsg = ""
-        // Only validate the password fields if the user typed something.
-        // An empty password string means "leave unchanged".
         if !password.isEmpty && password != confirm {
             errorMsg = "Passwords do not match."
             return
         }
+        guard !teams.isEmpty else { errorMsg = "At least one team is required."; return }
         isSaving = true
         defer { isSaving = false }
         do {
             let dn = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-            try await appState.api.updateUser(username: user.username, displayName: dn, password: password, isAdmin: isAdmin)
+            try await appState.api.updateUser(username: user.username, displayName: dn, password: password, teams: teams)
             try? await appState.refreshUsers()
             dismiss()
         } catch {

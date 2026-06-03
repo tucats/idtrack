@@ -150,6 +150,7 @@ struct LoginView: View {
             // will just be empty until the next navigation.
             try? await appState.refreshUsers()
             try? await appState.refreshProjects()
+            try? await appState.refreshTeams()
             // appState.isLoggedIn is now true → ContentView shows MainAppView.
         } catch APIError.unauthorized {
             // The server returned 401 for an incorrect username/password.

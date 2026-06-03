@@ -10,6 +10,14 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
+// Status values for an issue.
+const (
+	StatusOpen      = "Open"
+	StatusResolved  = "Resolved"
+	StatusBlocked   = "Blocked"
+	StatusDuplicate = "Duplicate"
+)
+
 // maxSearchLen caps the search query parameter to prevent callers from sending
 // arbitrarily long patterns that force a full table scan on every column (S-10).
 const maxSearchLen = 200
@@ -62,11 +70,16 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		offset = n
 	}
 
-	status   := q.Get("status")
+	status := q.Get("status")
 	priority := q.Get("priority")
-	project  := q.Get("project")
-	sortCol  := q.Get("sort")
-	sortDir  := q.Get("order")
+	project := q.Get("project")
+	sortCol := q.Get("sort")
+	sortDir := q.Get("order")
+
+	// Pass the calling user's teams so the DB layer can filter issues they
+	// cannot see.  Admin and "any" users are handled inside buildWhereClause
+	// (no filter applied when the user has either of those teams).
+	userTeams := currentUser(r).Teams
 
 	// When paginating, run a COUNT query first so the client knows the total
 	// number of matching rows without fetching them all.
@@ -75,7 +88,7 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	if limit > 0 {
 		var err error
 
-		total, err = db.CountIssues(s.database, status, priority, search, project)
+		total, err = db.CountIssues(s.database, status, priority, search, project, userTeams)
 		if err != nil {
 			jsonError(w, "server error", http.StatusInternalServerError)
 
@@ -83,7 +96,7 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	issues, err := db.ListIssues(s.database, status, priority, search, project, sortCol, sortDir, limit, offset)
+	issues, err := db.ListIssues(s.database, status, priority, search, project, sortCol, sortDir, limit, offset, userTeams)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 
@@ -114,11 +127,21 @@ func (s *srv) handleListChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issues, err := db.ListChanges(s.database, since)
+	all, err := db.ListChanges(s.database, since)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 
 		return
+	}
+
+	// Filter changes by team visibility.
+	userTeams := currentUser(r).Teams
+	issues := make([]db.Issue, 0, len(all))
+
+	for _, iss := range all {
+		if db.IssueMatchesUserTeams(iss.Teams, userTeams) {
+			issues = append(issues, iss)
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
@@ -127,7 +150,8 @@ func (s *srv) handleListChanges(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateIssue creates a new issue. The reporter is always set to the
-// authenticated user's username — clients cannot spoof the reporter field.
+// authenticated user's username. The chosen project must be visible to the
+// user given their team membership.
 func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string `json:"title"`
@@ -150,9 +174,35 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reporter := currentUser(r).Username
+	u := currentUser(r)
 
-	issue, err := db.CreateIssue(s.database, body.Title, body.Description, reporter, body.Assignee, body.Priority, body.Project, body.Component)
+	// Validate that the chosen project is accessible to this user.
+	if body.Project != "" {
+		projects, err := db.ListProjects(s.database)
+		if err != nil {
+			internalError(w, err)
+
+			return
+		}
+
+		found := false
+
+		for _, p := range projects {
+			if p.Name == body.Project && db.ProjectMatchesUserTeams(p.Teams, u.Teams) {
+				found = true
+
+				break
+			}
+		}
+
+		if !found {
+			jsonError(w, "project not found or not accessible", http.StatusForbidden)
+
+			return
+		}
+	}
+
+	issue, err := db.CreateIssue(s.database, body.Title, body.Description, u.Username, body.Assignee, body.Priority, body.Project, body.Component)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 
@@ -262,11 +312,11 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee        string  `json:"assignee"`
 		Project         string  `json:"project"`
 		Component       string  `json:"component"`
-		// DependentIssues carries the issue IDs for Duplicate and Blocked statuses.
 		DependentIssues []int64 `json:"dependent_issues"`
-		// Comment is optional extra text appended to the server-generated
-		// auto-comment when transitioning to Blocked.
-		Comment         string  `json:"comment"`
+		// Teams replaces the issue's team list when provided. Only admins may
+		// change teams; a non-admin sending a different list receives 403.
+		Teams   []string `json:"teams"`
+		Comment string   `json:"comment"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -289,7 +339,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// -------------------------------------------------------------------------
 
 	switch newStatus {
-	case "Duplicate":
+	case StatusDuplicate:
 		if len(body.DependentIssues) != 1 {
 			jsonError(w, "a Duplicate issue requires exactly one target issue ID in dependent_issues", http.StatusBadRequest)
 
@@ -317,7 +367,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-	case "Blocked":
+	case StatusBlocked:
 		if len(body.DependentIssues) == 0 {
 			jsonError(w, "a Blocked issue requires at least one blocking issue ID in dependent_issues", http.StatusBadRequest)
 
@@ -347,7 +397,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 		// When the issue is already Blocked, non-admins may only append to the
 		// dependent_issues list — they cannot remove existing entries.
-		if oldStatus == "Blocked" && !u.IsAdmin {
+		if oldStatus == StatusBlocked && !u.IsAdmin {
 			for _, existingDepID := range existing.DependentIssues {
 				found := false
 
@@ -367,11 +417,11 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-	case "Open":
+	case StatusOpen:
 		// Transitioning from Blocked to Open requires every blocking issue to
 		// be Resolved.  This rule ensures a blocked issue cannot be re-opened
 		// until the work it depends on is actually complete.
-		if oldStatus == "Blocked" {
+		if oldStatus == StatusBlocked {
 			for _, depID := range existing.DependentIssues {
 				dep, err := db.GetIssue(s.database, depID)
 				if err != nil {
@@ -386,7 +436,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 
-				if dep.Status != "Resolved" {
+				if dep.Status != StatusResolved {
 					jsonError(w, fmt.Sprintf("cannot unblock: issue #%d is still %s", depID, dep.Status), http.StatusConflict)
 
 					return
@@ -398,9 +448,29 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// stale data from a previous Blocked or Duplicate state.
 		body.DependentIssues = nil
 
-	case "Resolved":
+	case StatusResolved:
 		// Clear dependent_issues on resolution for the same reason.
 		body.DependentIssues = nil
+	}
+
+	// -------------------------------------------------------------------------
+	// Validate the teams change: only admins may modify the teams list.
+	// -------------------------------------------------------------------------
+
+	var newTeams []string // nil = leave unchanged
+
+	if len(body.Teams) > 0 {
+		if !u.IsAdmin {
+			// Check whether the client is trying to change teams.
+			teamsChanged := !teamsEqual(existing.Teams, body.Teams)
+			if teamsChanged {
+				jsonError(w, "only admins may change issue teams", http.StatusForbidden)
+
+				return
+			}
+		}
+
+		newTeams = body.Teams
 	}
 
 	// -------------------------------------------------------------------------
@@ -411,6 +481,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		body.Title, body.Description, body.Priority, body.Status,
 		body.Assignee, body.Project, body.Component,
 		body.DependentIssues,
+		newTeams,
 	)
 	if err != nil {
 		internalError(w, err)
@@ -433,13 +504,34 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	author := u.Username
 
-	if oldStatus != "Duplicate" && newStatus == "Duplicate" {
+	if oldStatus != StatusDuplicate && newStatus == StatusDuplicate {
 		commentBody := fmt.Sprintf("Duplicate of issue #%d", body.DependentIssues[0])
 		// Ignore the error — a failed auto-comment does not roll back the status change.
 		_, _ = db.CreateComment(s.database, id, author, commentBody)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})
+}
+
+// teamsEqual reports whether two team slices contain the same elements
+// (order-independent, case-insensitive).
+func teamsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+
+	m := make(map[string]struct{}, len(a))
+	for _, t := range a {
+		m[strings.ToLower(t)] = struct{}{}
+	}
+
+	for _, t := range b {
+		if _, ok := m[strings.ToLower(t)]; !ok {
+			return false
+		}
+	}
+
+	return true
 }
 
 // handleDeleteIssue permanently removes an issue and all its comments. Only

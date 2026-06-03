@@ -8,34 +8,26 @@ import (
 )
 
 // Issue represents a row in the issues table plus its JSON serialization.
-// All timestamps are stored and returned as RFC3339 strings (e.g.
-// "2026-05-16T12:00:00Z") rather than time.Time, which keeps the DB schema
-// and the JSON API consistent without any conversion layer.
-//
-// DependentIssues holds the issue IDs that this issue depends on:
-//   - Status "Duplicate": exactly one ID — the issue this one duplicates.
-//   - Status "Blocked":   one or more IDs — the issues blocking progress.
-//   - Any other status:   empty slice (stored as "" in the DB).
 type Issue struct {
-	ID              int64   `json:"id"`
-	Title           string  `json:"title"`
-	Description     string  `json:"description"`
-	Reporter        string  `json:"reporter"`
-	Assignee        string  `json:"assignee"`
-	Priority        string  `json:"priority"`
-	Status          string  `json:"status"`
-	Project         string  `json:"project"`
-	Component       string  `json:"component"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
-	ResolvedAt      string  `json:"resolved_at"`
-	DependentIssues []int64 `json:"dependent_issues"`
-	CommentCount    int     `json:"comment_count"`
+	ID              int64    `json:"id"`
+	Title           string   `json:"title"`
+	Description     string   `json:"description"`
+	Reporter        string   `json:"reporter"`
+	Assignee        string   `json:"assignee"`
+	Priority        string   `json:"priority"`
+	Status          string   `json:"status"`
+	Project         string   `json:"project"`
+	Component       string   `json:"component"`
+	CreatedAt       string   `json:"created_at"`
+	UpdatedAt       string   `json:"updated_at"`
+	ResolvedAt      string   `json:"resolved_at"`
+	DependentIssues []int64  `json:"dependent_issues"`
+	Teams           []string `json:"teams"`
+	CommentCount    int      `json:"comment_count"`
 }
 
 // parseDependentIssues converts the comma-separated string stored in the DB
-// (e.g. "7,12,33") to a []int64.  An empty or blank string returns an empty
-// slice — never nil — so JSON encoding always produces "[]", not "null".
+// to a []int64.  An empty or blank string returns an empty slice — never nil.
 func parseDependentIssues(s string) []int64 {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -71,24 +63,21 @@ func formatDependentIssues(ids []int64) string {
 }
 
 // issueColumns is the SELECT column list shared by ListIssues, ListChanges,
-// and GetIssue. The correlated subquery for comment_count runs once per row;
-// the idx_comments_issue_id index keeps it fast.
-const issueColumns = `id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, resolved_at, dependent_issues, (SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`
+// and GetIssue.
+const issueColumns = `id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, resolved_at, dependent_issues, teams, (SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`
 
-// scanIssue reads a single issue row from any type that exposes Scan, decoding
-// the dependent_issues column from its comma-separated string representation.
-// centralizing the Scan call avoids repeating the temporary-string boilerplate
-// in every query function.
+// scanIssue reads a single issue row from any type that exposes Scan.
 func scanIssue(scanner interface {
-	Scan(...any) error
+	Scan(...any) error //golint: inamedparam
 }, i *Issue) error {
-	var depStr string
+	var depStr, teamsStr string
 
 	err := scanner.Scan(
 		&i.ID, &i.Title, &i.Description, &i.Reporter, &i.Assignee,
 		&i.Priority, &i.Status, &i.Project, &i.Component,
 		&i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt,
 		&depStr,
+		&teamsStr,
 		&i.CommentCount,
 	)
 	if err != nil {
@@ -96,20 +85,20 @@ func scanIssue(scanner interface {
 	}
 
 	i.DependentIssues = parseDependentIssues(depStr)
+	i.Teams = ParseTeams(teamsStr)
 
 	return nil
 }
 
 // buildWhereClause constructs the WHERE clause and argument slice shared by
-// ListIssues and CountIssues. "WHERE 1=1" lets us unconditionally append
-// "AND ..." clauses without tracking whether this is the first one.
-func buildWhereClause(status, priority, search, project string) (string, []interface{}) {
+// ListIssues and CountIssues.  userTeams is the calling user's team membership;
+// pass nil to skip team filtering (used when the caller has already determined
+// the user can see everything, e.g. admin/any users).
+func buildWhereClause(status, priority, search, project string, userTeams []string) (string, []interface{}) {
 	var args []interface{}
 
 	where := ` WHERE 1=1`
 
-	// Each status string maps 1-to-1 to the stored status value so the client
-	// can filter by any combination including the new Blocked and Duplicate states.
 	switch status {
 	case "open":
 		where += ` AND status = 'Open'`
@@ -134,36 +123,37 @@ func buildWhereClause(status, priority, search, project string) (string, []inter
 	}
 
 	if search != "" {
-		// Search across all text columns. Each "?" must have a matching value
-		// in args, hence six copies of the wrapped search term.
 		where += ` AND (title LIKE ? OR description LIKE ? OR reporter LIKE ? OR assignee LIKE ? OR project LIKE ? OR component LIKE ?)`
 		s := "%" + search + "%"
 		args = append(args, s, s, s, s, s, s)
+	}
+
+	// Team filtering: skip entirely when the user has admin or any team.
+	// Otherwise, add an OR condition: issue has 'any', or shares a team with
+	// the user.  The padded-LIKE pattern prevents false substring matches.
+	if len(userTeams) > 0 && !ContainsTeam(userTeams, TeamAdmin) && !ContainsTeam(userTeams, TeamAny) {
+		clauses := []string{`',' || lower(teams) || ',' LIKE ?`}
+
+		args = append(args, "%,any,%")
+
+		for _, t := range userTeams {
+			clauses = append(clauses, `',' || lower(teams) || ',' LIKE ?`)
+			args = append(args, "%,"+strings.ToLower(t)+",%")
+		}
+
+		where += " AND (" + strings.Join(clauses, " OR ") + ")"
 	}
 
 	return where, args
 }
 
 // ListIssues returns issues filtered and sorted according to the provided
-// parameters. All parameters are optional — empty strings / zero ints mean
-// "no filter / no limit". When limit > 0, LIMIT/OFFSET pagination is applied.
-//
-// The query is built dynamically: we start with a base SELECT and accumulate
-// WHERE clauses and argument values in parallel slices. Using "?" placeholders
-// (never string interpolation for user-supplied values) prevents SQL injection.
-func ListIssues(database *sql.DB, status, priority, search, project, sortCol, sortDir string, limit, offset int) ([]Issue, error) {
+// parameters.  Pass nil for userTeams to skip team filtering.
+func ListIssues(database *sql.DB, status, priority, search, project, sortCol, sortDir string, limit, offset int, userTeams []string) ([]Issue, error) {
 	var issues []Issue
 
-	where, args := buildWhereClause(status, priority, search, project)
+	where, args := buildWhereClause(status, priority, search, project, userTeams)
 
-	// SQL placeholders ("?") can only bind literal values — they cannot
-	// substitute column names or keywords such as ASC/DESC.  To prevent
-	// injection we use a lookup table whose values are all hardcoded string
-	// literals.  sortCol and sortDir are used only as lookup keys; neither
-	// is ever interpolated into the query string, which breaks the data-flow
-	// path that static analysis tools track from HTTP parameters to SQL.
-	//
-	// Index 0 = ASC clause, index 1 = DESC clause.
 	validOrders := map[string][2]string{
 		"id":          {" ORDER BY id ASC", " ORDER BY id DESC"},
 		"title":       {" ORDER BY title ASC", " ORDER BY title DESC"},
@@ -180,10 +170,10 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 
 	clauses, ok := validOrders[sortCol]
 	if !ok {
-		clauses = validOrders["id"] // unknown column — fall back to a safe default
+		clauses = validOrders["id"]
 	}
 
-	order := clauses[1] // default DESC
+	order := clauses[1]
 	if sortDir == "asc" {
 		order = clauses[0]
 	}
@@ -212,7 +202,6 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 		issues = append(issues, i)
 	}
 
-	// Return an empty slice (not nil) so the JSON response is "[]" not "null".
 	if issues == nil {
 		issues = []Issue{}
 	}
@@ -221,21 +210,17 @@ func ListIssues(database *sql.DB, status, priority, search, project, sortCol, so
 }
 
 // CountIssues returns the total number of issues matching the given filters.
-// It uses the same WHERE clause logic as ListIssues so the count always
-// corresponds to the paginated result set.
-func CountIssues(database *sql.DB, status, priority, search, project string) (int, error) {
+// Pass nil for userTeams to skip team filtering.
+func CountIssues(database *sql.DB, status, priority, search, project string, userTeams []string) (int, error) {
 	var n int
 
-	where, args := buildWhereClause(status, priority, search, project)
+	where, args := buildWhereClause(status, priority, search, project, userTeams)
 	err := database.QueryRow(`SELECT COUNT(*) FROM issues`+where, args...).Scan(&n)
 
 	return n, err
 }
 
 // ListChanges returns all issues whose updated_at is strictly after since.
-// The since value must be an RFC3339 timestamp string; an empty string
-// returns no rows. Results are ordered oldest-first so the caller can
-// update _lastSeenAt incrementally.
 func ListChanges(database *sql.DB, since string) ([]Issue, error) {
 	var issues []Issue
 
@@ -270,7 +255,7 @@ func ListChanges(database *sql.DB, since string) ([]Issue, error) {
 }
 
 // GetIssue fetches a single issue by its integer ID. Returns (nil, nil) when
-// no row with that ID exists — callers should treat a nil return as a 404.
+// no row with that ID exists.
 func GetIssue(database *sql.DB, id int64) (*Issue, error) {
 	var i Issue
 
@@ -289,10 +274,7 @@ func GetIssue(database *sql.DB, id int64) (*Issue, error) {
 	return &i, nil
 }
 
-// CreateIssue inserts a new issue with status "Open" and the current UTC time
-// for both created_at and updated_at. After the insert it re-reads the row via
-// GetIssue so the caller receives the complete record including the
-// auto-assigned ID. Priority defaults to "Medium" when not specified.
+// CreateIssue inserts a new issue with status "Open" and teams="any".
 func CreateIssue(database *sql.DB, title, description, reporter, assignee, priority, project, component string) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -301,68 +283,84 @@ func CreateIssue(database *sql.DB, title, description, reporter, assignee, prior
 	}
 
 	result, err := database.Exec(
-		`INSERT INTO issues (title, description, reporter, assignee, priority, status, project, component, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)`,
+		`INSERT INTO issues (title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, teams)
+		 VALUES (?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?, 'any')`,
 		title, description, reporter, assignee, priority, project, component, now, now,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// LastInsertId returns the row ID assigned by AUTOINCREMENT. We ignore the
-	// error because SQLite always populates this after a successful INSERT.
 	id, _ := result.LastInsertId()
 
 	return GetIssue(database, id)
 }
 
-// UpdateIssue replaces all editable fields of an issue in one statement and
-// sets updated_at to now. Like CreateIssue, it re-reads the row afterwards so
-// the returned struct reflects the committed state.
+// UpdateIssue replaces all editable fields of an issue.  When teams is
+// non-nil, the issue's team list is replaced; pass nil to leave it unchanged.
 //
 // resolved_at is managed automatically by status:
-//   - Transitioning to Resolved or Duplicate: set to now if currently empty
-//     (preserves the original timestamp when re-saving without status change).
-//   - Transitioning to Open or Blocked: always cleared to "" so a later
-//     resolution gets a fresh timestamp.
-//   - Any other value: ELSE branch leaves resolved_at unchanged.
-//
-// dependent_issues is stored verbatim from the caller.  The server handler
-// (server/issues.go) clears the slice before calling here when the new status
-// is Open or Resolved.
-func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string, dependentIssues []int64) (*Issue, error) {
+//   - Transitioning to Resolved or Duplicate: set to now if currently empty.
+//   - Transitioning to Open or Blocked: always cleared.
+//   - Any other value: left unchanged.
+func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string, dependentIssues []int64, teams []string) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	depStr := formatDependentIssues(dependentIssues)
 
-	_, err := database.Exec(`
-		UPDATE issues
-		SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?,
-		    dependent_issues=?,
-		    updated_at=?,
-		    resolved_at = CASE
-		        WHEN ? IN ('Resolved', 'Duplicate') AND resolved_at = '' THEN ?
-		        WHEN ? IN ('Open', 'Blocked')                            THEN ''
-		        ELSE resolved_at
-		    END
-		WHERE id=?`,
-		title, description, priority, status, assignee, project, component,
-		depStr,
-		now,
-		status, now, // CASE arm 1: set resolved_at when first closing
-		status, // CASE arm 2: clear resolved_at when reopening
-		id,
-	)
-	if err != nil {
-		return nil, err
+	if teams != nil {
+		teamsStr := FormatTeams(teams)
+
+		_, err := database.Exec(`
+			UPDATE issues
+			SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?,
+			    dependent_issues=?,
+			    teams=?,
+			    updated_at=?,
+			    resolved_at = CASE
+			        WHEN ? IN ('Resolved', 'Duplicate') AND resolved_at = '' THEN ?
+			        WHEN ? IN ('Open', 'Blocked')                            THEN ''
+			        ELSE resolved_at
+			    END
+			WHERE id=?`,
+			title, description, priority, status, assignee, project, component,
+			depStr,
+			teamsStr,
+			now,
+			status, now,
+			status,
+			id,
+		)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		_, err := database.Exec(`
+			UPDATE issues
+			SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?,
+			    dependent_issues=?,
+			    updated_at=?,
+			    resolved_at = CASE
+			        WHEN ? IN ('Resolved', 'Duplicate') AND resolved_at = '' THEN ?
+			        WHEN ? IN ('Open', 'Blocked')                            THEN ''
+			        ELSE resolved_at
+			    END
+			WHERE id=?`,
+			title, description, priority, status, assignee, project, component,
+			depStr,
+			now,
+			status, now,
+			status,
+			id,
+		)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	return GetIssue(database, id)
 }
 
-// DeleteIssue removes an issue and all of its comments. Comments are deleted
-// first because SQLite does not enforce foreign key constraints by default (it
-// requires PRAGMA foreign_keys = ON), so we perform the cascade manually to
-// avoid orphaned comment rows.
+// DeleteIssue removes an issue and all of its comments.
 func DeleteIssue(database *sql.DB, id int64) error {
 	if _, err := database.Exec(`DELETE FROM comments WHERE issue_id = ?`, id); err != nil {
 		return err

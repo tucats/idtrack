@@ -17,12 +17,13 @@ import (
 // it is the zero value (empty string) — useful for fields we don't want to
 // expose in list responses.
 type User struct {
-	Username     string `json:"username"`
-	DisplayName  string `json:"display_name"`
-	PasswordHash string `json:"password_hash,omitempty"`
-	CreatedAt    string `json:"created_at,omitempty"`
-	LastLoginAt  string `json:"last_login_at,omitempty"`
-	IsAdmin      bool   `json:"is_admin"`
+	Username     string   `json:"username"`
+	DisplayName  string   `json:"display_name"`
+	PasswordHash string   `json:"password_hash,omitempty"`
+	CreatedAt    string   `json:"created_at,omitempty"`
+	LastLoginAt  string   `json:"last_login_at,omitempty"`
+	Teams        []string `json:"teams"`
+	IsAdmin      bool     `json:"is_admin"` // derived from Teams; not stored directly
 }
 
 // hashPassword hashes a plaintext password with bcrypt at the default cost.
@@ -52,7 +53,7 @@ func VerifyPassword(storedHash, plaintext string) bool {
 	// Legacy path: compare SHA-256(plaintext) with the stored hex digest using
 	// constant-time comparison to avoid timing side-channels.
 	computed := fmt.Sprintf("%x", sha256.Sum256([]byte(plaintext)))
-	
+
 	return subtle.ConstantTimeCompare([]byte(storedHash), []byte(computed)) == 1
 }
 
@@ -73,27 +74,34 @@ func UpgradePasswordHash(database *sql.DB, username, plaintext string) error {
 
 // AddUser inserts a new user or updates an existing one (upsert). The password
 // is hashed with bcrypt before storage; the caller passes the plaintext
-// password. ON CONFLICT DO UPDATE means an existing row is overwritten rather
+// password. teams is the initial team membership; nil or empty defaults to
+// ["any"]. ON CONFLICT DO UPDATE means an existing row is overwritten rather
 // than returning an error, letting the CLI "add" command act as both create and
 // update.
-//
-// isAdmin is stored as an integer (0/1) because SQLite has no native boolean
-// type — we convert it here rather than sprinkle the conversion everywhere.
-func AddUser(database *sql.DB, username, displayName, password string, isAdmin bool) error {
+func AddUser(database *sql.DB, username, displayName, password string, teams []string) error {
 	hash, err := hashPassword(password)
 	if err != nil {
 		return fmt.Errorf("hashing password: %w", err)
 	}
 
-	adminInt := 0
-	if isAdmin {
-		adminInt = 1
+	teamsStr := FormatTeams(teams)
+
+	// is_admin is kept in sync with team membership for backward compatibility
+	// with any direct DB queries that still rely on the column.
+	isAdmin := 0
+	if ContainsTeam(teams, TeamAdmin) {
+		isAdmin = 1
 	}
 
 	_, err = database.Exec(
-		`INSERT INTO users (username, display_name, password_hash, created_at, is_admin) VALUES (?, ?, ?, ?, ?)
-		 ON CONFLICT(username) DO UPDATE SET display_name=excluded.display_name, password_hash=excluded.password_hash, is_admin=excluded.is_admin`,
-		username, displayName, hash, time.Now().UTC().Format(time.RFC3339), adminInt,
+		`INSERT INTO users (username, display_name, password_hash, created_at, teams, is_admin)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(username) DO UPDATE SET
+		     display_name=excluded.display_name,
+		     password_hash=excluded.password_hash,
+		     teams=excluded.teams,
+		     is_admin=excluded.is_admin`,
+		username, displayName, hash, time.Now().UTC().Format(time.RFC3339), teamsStr, isAdmin,
 	)
 
 	return err
@@ -109,56 +117,66 @@ func DeleteUser(database *sql.DB, username string) error {
 	return err
 }
 
+// scanUser reads the columns written by FindUser and ListUsers into a User
+// struct, deriving IsAdmin from the teams column.
+func scanUser(username, displayName, passwordHash, createdAt, lastLoginAt, teamsStr *string, u *User) {
+	u.Username = *username
+	u.DisplayName = *displayName
+	u.PasswordHash = *passwordHash
+	u.CreatedAt = *createdAt
+	u.LastLoginAt = *lastLoginAt
+	u.Teams = ParseTeams(*teamsStr)
+	u.IsAdmin = ContainsTeam(u.Teams, TeamAdmin)
+}
+
 // FindUser looks up a single user by username and returns it. Returns (nil,
 // nil) — no user and no error — when the username does not exist. The caller
 // must check for nil before using the returned pointer.
-//
-// sql.ErrNoRows is the sentinel error that database/sql returns from
-// row.Scan() when a QueryRow finds no matching record. We translate it to a
-// nil pointer so callers can write a simple "if user == nil" check.
 func FindUser(database *sql.DB, username string) (*User, error) {
 	var (
-		u        User
-		adminInt int
+		u            User
+		usernameVal  string
+		displayName  string
+		passwordHash string
+		createdAt    string
+		lastLoginAt  string
+		teamsStr     string
+		adminInt     int
 	)
 
 	row := database.QueryRow(
-		`SELECT username, display_name, password_hash, created_at, last_login_at, is_admin FROM users WHERE username = ?`, username,
+		`SELECT username, display_name, password_hash, created_at, last_login_at, teams, is_admin
+		 FROM users WHERE username = ?`, username,
 	)
 
-	if err := row.Scan(&u.Username, &u.DisplayName, &u.PasswordHash, &u.CreatedAt, &u.LastLoginAt, &adminInt); err != nil {
+	if err := row.Scan(&usernameVal, &displayName, &passwordHash, &createdAt, &lastLoginAt, &teamsStr, &adminInt); err != nil {
 		if err == sql.ErrNoRows {
-			return nil, nil // not found — not an error
+			return nil, nil
 		}
 
 		return nil, err
 	}
 
-	u.IsAdmin = adminInt != 0 // convert SQLite integer back to Go bool
+	scanUser(&usernameVal, &displayName, &passwordHash, &createdAt, &lastLoginAt, &teamsStr, &u)
 
 	return &u, nil
 }
 
 // UpdateUser modifies one or more fields of an existing user. Only fields with
-// non-empty / non-nil values are updated; others are left unchanged. This
-// allows callers to update just the display name without touching the password,
-// for example. When a non-empty password is provided it is hashed with bcrypt
-// before storage; the caller passes the plaintext.
+// non-empty / non-nil values are updated; others are left unchanged. When a
+// non-empty password is provided it is hashed with bcrypt before storage; the
+// caller passes the plaintext.  teams replaces the existing team list when
+// non-nil; pass nil to leave teams unchanged.
 //
-// isAdmin is a *bool (pointer to bool) rather than a plain bool so that nil
-// can represent "not specified". A plain false bool is ambiguous — it could
-// mean "set admin to false" or "the caller didn't pass the flag".
-//
-// The function builds a SET clause dynamically by accumulating "col = ?"
-// fragments and matching argument values, then runs a single UPDATE statement.
-func UpdateUser(database *sql.DB, username, displayName, password string, isAdmin *bool) error {
+// isAdmin is a *bool (pointer to bool) convenience alias: when non-nil it
+// adds or removes the "admin" team from the teams list.  If teams is also
+// provided, isAdmin is applied on top of it.  nil means "no change".
+func UpdateUser(database *sql.DB, username, displayName, password string, isAdmin *bool, teams []string) error {
 	var (
 		setClauses []string
 		args       []any
 	)
 
-	// Verify the user exists before attempting an update. UpdateUser must not
-	// silently create a new row — use AddUser for that.
 	u, err := FindUser(database, username)
 	if err != nil {
 		return err
@@ -168,9 +186,6 @@ func UpdateUser(database *sql.DB, username, displayName, password string, isAdmi
 		return fmt.Errorf("user %q not found", username)
 	}
 
-	// Build a dynamic UPDATE statement from whichever fields were provided.
-	// setClauses collects fragments like "display_name = ?" and args holds the
-	// corresponding values in the same order.
 	if displayName != "" {
 		setClauses = append(setClauses, "display_name = ?")
 		args = append(args, displayName)
@@ -186,25 +201,53 @@ func UpdateUser(database *sql.DB, username, displayName, password string, isAdmi
 		args = append(args, hash)
 	}
 
+	// Determine the effective new teams list.
+	effectiveTeams := u.Teams // start from current
+
+	if teams != nil {
+		effectiveTeams = teams
+	}
+
+	// Apply the isAdmin convenience alias on top.
 	if isAdmin != nil {
-		adminInt := 0
 		if *isAdmin {
+			if !ContainsTeam(effectiveTeams, TeamAdmin) {
+				effectiveTeams = append(effectiveTeams, TeamAdmin)
+			}
+		} else {
+			// Remove admin from the list.
+			filtered := make([]string, 0, len(effectiveTeams))
+
+			for _, t := range effectiveTeams {
+				if strings.ToLower(t) != TeamAdmin {
+					filtered = append(filtered, t)
+				}
+			}
+
+			effectiveTeams = filtered
+		}
+	}
+
+	if teams != nil || isAdmin != nil {
+		teamsStr := FormatTeams(effectiveTeams)
+		adminInt := 0
+
+		if ContainsTeam(effectiveTeams, TeamAdmin) {
 			adminInt = 1
 		}
 
-		setClauses = append(setClauses, "is_admin = ?")
-		args = append(args, adminInt)
+		setClauses = append(setClauses, "teams = ?", "is_admin = ?")
+		args = append(args, teamsStr, adminInt)
 	}
 
 	if len(setClauses) == 0 {
-		return nil // nothing to do
+		return nil
 	}
 
-	// The WHERE clause's ? placeholder value goes last in the args slice.
 	args = append(args, username)
 	_, err = database.Exec(
 		fmt.Sprintf("UPDATE users SET %s WHERE username = ?", strings.Join(setClauses, ", ")),
-		args..., // the ... unpacks the slice as individual arguments
+		args...,
 	)
 
 	return err
@@ -222,11 +265,14 @@ func RecordLogin(database *sql.DB, username string) error {
 	return err
 }
 
-// CountAdmins returns the number of users with admin privileges. It is used to
-// guard against operations that would leave the system with no admin account.
+// CountAdmins returns the number of users with admin privileges, determined by
+// whether "admin" is in their teams list.
 func CountAdmins(database *sql.DB) (int, error) {
 	var count int
-	err := database.QueryRow(`SELECT COUNT(*) FROM users WHERE is_admin = 1`).Scan(&count)
+
+	err := database.QueryRow(
+		`SELECT COUNT(*) FROM users WHERE ',' || lower(teams) || ',' LIKE '%,admin,%'`,
+	).Scan(&count)
 
 	return count, err
 }
@@ -242,36 +288,36 @@ func HasUsers(database *sql.DB) (bool, error) {
 func ListUsers(database *sql.DB) ([]User, error) {
 	var users []User
 
-	rows, err := database.Query(`SELECT username, display_name, last_login_at, is_admin FROM users ORDER BY username`)
+	rows, err := database.Query(
+		`SELECT username, display_name, last_login_at, teams, is_admin FROM users ORDER BY username`,
+	)
 	if err != nil {
 		return nil, err
 	}
 
-	// defer rows.Close() ensures the result set is released even if we return
-	// early due to a Scan error. Always close rows when you are done with them.
 	defer rows.Close()
 
 	for rows.Next() {
 		var (
-			u        User
-			adminInt int
+			u           User
+			lastLoginAt string
+			teamsStr    string
+			adminInt    int
 		)
 
-		if err := rows.Scan(&u.Username, &u.DisplayName, &u.LastLoginAt, &adminInt); err != nil {
+		if err := rows.Scan(&u.Username, &u.DisplayName, &lastLoginAt, &teamsStr, &adminInt); err != nil {
 			return nil, err
 		}
 
-		u.IsAdmin = adminInt != 0
+		u.LastLoginAt = lastLoginAt
+		u.Teams = ParseTeams(teamsStr)
+		u.IsAdmin = ContainsTeam(u.Teams, TeamAdmin)
 		users = append(users, u)
 	}
 
-	// Return an empty slice rather than nil so JSON encoding produces "[]"
-	// instead of "null", which is friendlier for frontend consumers.
 	if users == nil {
 		users = []User{}
 	}
 
-	// rows.Err() returns any error that occurred during iteration (e.g. a
-	// network blip mid-query). Always check it after the loop.
 	return users, rows.Err()
 }

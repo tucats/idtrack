@@ -9,9 +9,9 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
-// handleCreateUser creates a new user account. Admin-only. Returns 409 Conflict
-// if the username is already taken (unlike the CLI "add" which upserts). The
-// password is accepted as plaintext and hashed server-side with bcrypt.
+// handleCreateUser creates a new user account. Admin-only.
+// Accepts a teams list; is_admin: true is still accepted as an alias that
+// adds the "admin" team, for backward compatibility with older clients.
 func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -20,10 +20,11 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Username    string `json:"username"`
-		DisplayName string `json:"display_name"`
-		Password    string `json:"password"`
-		IsAdmin     bool   `json:"is_admin"`
+		Username    string   `json:"username"`
+		DisplayName string   `json:"display_name"`
+		Password    string   `json:"password"`
+		IsAdmin     bool     `json:"is_admin"`  // legacy alias: adds "admin" team
+		Teams       []string `json:"teams"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -45,8 +46,6 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Prevent duplicate usernames via the API (the DB layer's upsert is only
-	// used by the CLI; the API enforces strict create semantics).
 	existing, err := db.FindUser(s.database, body.Username)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
@@ -62,16 +61,18 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 
 	displayName := strings.TrimSpace(body.DisplayName)
 	if displayName == "" {
-		displayName = body.Username // default display name to login name
+		displayName = body.Username
 	}
 
-	if err := db.AddUser(s.database, body.Username, displayName, body.Password, body.IsAdmin); err != nil {
+	// Merge the is_admin alias into the teams list.
+	teams := mergeAdminAlias(body.Teams, body.IsAdmin)
+
+	if err := db.AddUser(s.database, body.Username, displayName, body.Password, teams); err != nil {
 		internalError(w, err)
 
 		return
 	}
 
-	// Log that someone new was added.
 	if body.DisplayName != "" {
 		log.Printf("added user %s (%s)", body.Username, body.DisplayName)
 	} else {
@@ -82,17 +83,11 @@ func (s *srv) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 // lastAdminError is the message returned when an operation would leave the
-// system with no admin account. It directs the user to the CLI because the
-// web app has no way to bootstrap a new admin without an existing one.
+// system with no admin account.
 const lastAdminError = "cannot leave the system with no admin account — use the idtrack CLI to manage admin accounts"
 
-// handleUpdateUser modifies an existing user. Admin-only. The is_admin flag is
-// always passed through even if the client didn't intend to change it, because
-// the JSON body always includes a zero-value bool for unset fields. This is
-// intentional — the admin UI always sends the current value. When a non-empty
-// password is provided it is hashed server-side with bcrypt.
-//
-// Demoting a user from admin is blocked when they are the last admin (S-14).
+// handleUpdateUser modifies an existing user. Admin-only.
+// Accepts a teams list; is_admin is still accepted as a convenience alias.
 func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -103,9 +98,10 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	username := strings.ToLower(r.PathValue("username"))
 
 	var body struct {
-		DisplayName string `json:"display_name"`
-		Password    string `json:"password"`
-		IsAdmin     bool   `json:"is_admin"`
+		DisplayName string   `json:"display_name"`
+		Password    string   `json:"password"`
+		IsAdmin     bool     `json:"is_admin"`  // legacy alias; applied on top of teams
+		Teams       []string `json:"teams"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -114,10 +110,12 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If the update would strip admin from a user, verify at least one other
-	// admin will remain. The admin UI always sends the current is_admin value,
-	// so body.IsAdmin==false means the caller explicitly wants to demote.
-	if !body.IsAdmin {
+	// Determine the effective teams for the last-admin guard.
+	// The guard fires when the update would leave no admin in the system.
+	effectiveTeams := mergeAdminAlias(body.Teams, body.IsAdmin)
+	wouldBeAdmin := db.ContainsTeam(effectiveTeams, db.TeamAdmin)
+
+	if !wouldBeAdmin {
 		target, err := db.FindUser(s.database, username)
 		if err != nil {
 			internalError(w, err)
@@ -141,14 +139,13 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	isAdmin := body.IsAdmin
-	if err := db.UpdateUser(s.database, username, body.DisplayName, body.Password, &isAdmin); err != nil {
+	// Pass teams directly (non-nil list) and isAdmin nil (already merged).
+	if err := db.UpdateUser(s.database, username, body.DisplayName, body.Password, nil, effectiveTeams); err != nil {
 		jsonError(w, err.Error(), http.StatusNotFound)
 
 		return
 	}
 
-	// Log that a user record was modified.
 	if body.DisplayName != "" {
 		log.Printf("modified user %s (%s)", username, body.DisplayName)
 	} else {
@@ -158,9 +155,7 @@ func (s *srv) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleDeleteUser removes a user account. Admin-only. Deletion is blocked
-// when it would leave the system with no admin account (S-14), which covers
-// both self-deletion and deletion of any other account that is the last admin.
+// handleDeleteUser removes a user account. Admin-only.
 func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -183,8 +178,6 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check last-admin guard before the self-deletion check so that the more
-	// informative "last admin" message takes priority when both conditions apply.
 	if target.IsAdmin {
 		n, err := db.CountAdmins(s.database)
 		if err != nil {
@@ -212,7 +205,6 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log that a user record was deleted.
 	if target.DisplayName != "" {
 		log.Printf("deleted user %s (%s)", username, target.DisplayName)
 	} else {
@@ -222,9 +214,7 @@ func (s *srv) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleListUsers returns all users. Available to all authenticated users (not
-// admin-only) because the frontend needs the user list to populate assignee
-// dropdowns and resolve display names for all logged-in users.
+// handleListUsers returns all users. Available to all authenticated users.
 func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := db.ListUsers(s.database)
 	if err != nil {
@@ -234,4 +224,23 @@ func (s *srv) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"users": users})
+}
+
+// mergeAdminAlias combines an explicit teams list with the legacy is_admin
+// boolean alias.  When isAdmin is true, "admin" is added to the list if
+// absent.  An empty or nil teams list defaults to ["any"].
+func mergeAdminAlias(teams []string, isAdmin bool) []string {
+	if len(teams) == 0 {
+		if isAdmin {
+			return []string{db.TeamAdmin}
+		}
+
+		return []string{db.TeamAny}
+	}
+
+	if isAdmin && !db.ContainsTeam(teams, db.TeamAdmin) {
+		teams = append(teams, db.TeamAdmin)
+	}
+
+	return teams
 }

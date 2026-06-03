@@ -53,13 +53,11 @@ struct IssueDetailView: View {
     @State private var origStatus = "Open"  // the status as of the last successful save
 
     // MARK: Dependent issues (Duplicate / Blocked)
-    //
-    // `dependentIssues` mirrors the server field for the current form state.
-    // For a Duplicate issue this holds exactly one ID; for a Blocked issue it
-    // holds one or more. It is kept in sync with the server after every save.
     @State private var dependentIssues: [Int] = []
-    // Text field for adding a new blocking issue ID inline (when already Blocked).
     @State private var addBlockingText = ""
+
+    // MARK: Teams
+    @State private var issueTeams: [String] = ["any"]
 
     // MARK: Comment input
     @State private var newComment      = ""
@@ -254,6 +252,9 @@ struct IssueDetailView: View {
                     }
                 }
 
+                // Teams — always shown; edit controls only for admins.
+                teamsSection(canEdit: canEdit)
+
                 // Dependent issues section — only visible when status is
                 // Duplicate or Blocked.
                 if status == "Duplicate" {
@@ -305,6 +306,37 @@ struct IssueDetailView: View {
             Text(value)
                 .font(.subheadline)
             Spacer()
+        }
+    }
+
+    // MARK: - Teams section
+
+    private func teamsSection(canEdit: Bool) -> some View {
+        let isAdmin = appState.currentUser?.isAdmin == true
+        return GroupBox("Teams") {
+            if isAdmin {
+                // Admins get an editable teams picker.
+                TeamsField(
+                    label: "Visible to",
+                    teams: $issueTeams,
+                    availableTeams: appState.availableTeams
+                )
+                .onChange(of: issueTeams) { _ in isDirty = true }
+            } else {
+                // Non-admins see a read-only list of team badges.
+                if issueTeams.isEmpty {
+                    Text("any")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 6) {
+                        ForEach(issueTeams, id: \.self) { t in
+                            TeamBadge(name: t)
+                        }
+                        Spacer()
+                    }
+                }
+            }
         }
     }
 
@@ -676,9 +708,12 @@ struct IssueDetailView: View {
             component       = resp.issue.component
             desc            = resp.issue.description
             dependentIssues = resp.issue.dependentIssues
-            isDirty         = false   // form is in sync with server
+            issueTeams      = resp.issue.teams.isEmpty ? ["any"] : resp.issue.teams
+            isDirty         = false
             saveError       = ""
             addBlockingText = ""
+            // Refresh team list for the picker (no-op if already loaded).
+            try? await appState.refreshTeams()
         } catch APIError.unauthorized {
             await appState.signOut()
         } catch {
@@ -814,17 +849,16 @@ struct IssueDetailView: View {
                 priority: priority, status: status,
                 assignee: assignee, project: project, component: component,
                 dependentIssues: dependentIssues,
-                comment: ""
+                comment: "",
+                teams: issueTeams
             )
-            // If the status transition produced a comment body, post it now.
-            // `try?` makes a comment failure non-fatal — the status is already
-            // updated, so the comment is best-effort.
             if let body = commentBody {
                 _ = try? await appState.api.addComment(issueId: iss.id, body: body)
             }
             issue           = updated
-            origStatus      = updated.status           // advance the "clean" status baseline
-            dependentIssues = updated.dependentIssues  // sync to server's canonical state
+            origStatus      = updated.status
+            dependentIssues = updated.dependentIssues
+            issueTeams      = updated.teams.isEmpty ? ["any"] : updated.teams
             isDirty         = false
             addBlockingText = ""
             // Reload comments to include any just-posted comment.

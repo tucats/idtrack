@@ -153,6 +153,7 @@ struct OnboardingView: View {
             appState.signIn(user: user)
             try? await appState.refreshUsers()
             try? await appState.refreshProjects()
+            try? await appState.refreshTeams()
         } catch {
             errorMsg = error.localizedDescription
         }

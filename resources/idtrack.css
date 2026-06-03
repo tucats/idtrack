@@ -1153,3 +1153,72 @@ body.dark .toggle-track::before { background: #e2e5ea; }
   html:not(.desktop-mode) .mu-table th:last-child,
   html:not(.desktop-mode) .mu-table td:last-child { display: none; }
 }
+
+/* =====================================================================
+   TEAM CHIPS
+   Shared by user, project, and issue detail team pickers.
+   ===================================================================== */
+
+.team-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 1.75rem;
+  margin-bottom: 6px;
+}
+
+.team-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 10px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-dark);
+  font-size: .78rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* "admin" chip is visually distinct (blue tint) */
+.chip-admin {
+  background: var(--open-bg);
+  color: var(--open-fg);
+  border-color: transparent;
+}
+
+/* "any" chip is neutral-green */
+.chip-any {
+  background: var(--low-bg);
+  color: var(--low-fg);
+  border-color: transparent;
+}
+
+/* × remove button inside a team chip */
+.chip-remove {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--danger);
+  font-size: .875rem;
+  line-height: 1;
+  padding: 0 0 1px 2px;
+}
+.chip-remove:hover { color: var(--danger-hov); }
+
+/* Input row: text field + Add button side by side */
+.team-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.team-input-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: .8125rem;
+}
