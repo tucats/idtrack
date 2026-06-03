@@ -77,7 +77,7 @@ const issueColumns = `id, title, description, reporter, assignee, priority, stat
 
 // scanIssue reads a single issue row from any type that exposes Scan, decoding
 // the dependent_issues column from its comma-separated string representation.
-// Centralising the Scan call avoids repeating the temporary-string boilerplate
+// centralizing the Scan call avoids repeating the temporary-string boilerplate
 // in every query function.
 func scanIssue(scanner interface {
 	Scan(...any) error
@@ -349,7 +349,7 @@ func UpdateIssue(database *sql.DB, id int64, title, description, priority, statu
 		depStr,
 		now,
 		status, now, // CASE arm 1: set resolved_at when first closing
-		status,      // CASE arm 2: clear resolved_at when reopening
+		status, // CASE arm 2: clear resolved_at when reopening
 		id,
 	)
 	if err != nil {

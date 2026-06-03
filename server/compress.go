@@ -71,7 +71,7 @@ func (bw *bufferingWriter) flush(w http.ResponseWriter) {
 		w.WriteHeader(status)
 
 		gz := gzip.NewWriter(w)
-		gz.Write(body) //nolint:errcheck — write to in-memory buffer, error impossible
+		gz.Write(body) //nolint:errcheck
 		gz.Close()     //nolint:errcheck
 
 		return

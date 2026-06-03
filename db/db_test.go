@@ -25,7 +25,7 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HasUsers after Open: %v", err)
 	}
-	
+
 	if has {
 		t.Error("fresh database should have no users")
 	}
@@ -53,15 +53,15 @@ func TestIsLegacyHash(t *testing.T) {
 	legacy := fmt.Sprintf("%x", sha256.Sum256([]byte("password")))
 
 	if !db.IsLegacyHash(legacy) {
-		t.Error("expected 64-char SHA-256 hex to be recognised as legacy")
+		t.Error("expected 64-char SHA-256 hex to be recognized as legacy")
 	}
 
 	if db.IsLegacyHash("$2a$10$somebcrypthash") {
-		t.Error("bcrypt hash should not be recognised as legacy")
+		t.Error("bcrypt hash should not be recognized as legacy")
 	}
 
 	if db.IsLegacyHash("short") {
-		t.Error("short string should not be recognised as legacy")
+		t.Error("short string should not be recognized as legacy")
 	}
 }
 
@@ -460,7 +460,7 @@ func TestUpdateIssue(t *testing.T) {
 
 	orig, _ := db.CreateIssue(d, "Original", "", "r", "", "Low", "p", "c")
 
-	updated, err := db.UpdateIssue(d, orig.ID, "Updated Title", "new desc", "High", "Open", "assignee", "p", "c")
+	updated, err := db.UpdateIssue(d, orig.ID, "Updated Title", "new desc", "High", "Open", "assignee", "p", "c", nil)
 	if err != nil {
 		t.Fatalf("UpdateIssue: %v", err)
 	}
@@ -489,7 +489,7 @@ func TestUpdateIssue_ResolvedAt(t *testing.T) {
 	}
 
 	// Resolve: resolved_at should be set.
-	resolved, err := db.UpdateIssue(d, issue.ID, "T", "", "Medium", "Resolved", "a", "p", "c")
+	resolved, err := db.UpdateIssue(d, issue.ID, "T", "", "Medium", "Resolved", "a", "p", "c", nil)
 	if err != nil {
 		t.Fatalf("UpdateIssue to Resolved: %v", err)
 	}
@@ -501,13 +501,13 @@ func TestUpdateIssue_ResolvedAt(t *testing.T) {
 	first := resolved.ResolvedAt
 
 	// Re-save as Resolved: resolved_at should NOT be overwritten.
-	resaved, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Resolved", "a", "p", "c")
+	resaved, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Resolved", "a", "p", "c", nil)
 	if resaved.ResolvedAt != first {
 		t.Errorf("resolved_at should not change on re-save: got %q, want %q", resaved.ResolvedAt, first)
 	}
 
 	// Re-open: resolved_at should be cleared.
-	reopened, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Open", "a", "p", "c")
+	reopened, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Open", "a", "p", "c", nil)
 	if reopened.ResolvedAt != "" {
 		t.Errorf("resolved_at should be cleared when reopened, got %q", reopened.ResolvedAt)
 	}
@@ -564,7 +564,7 @@ func TestListIssues_FilterByStatus(t *testing.T) {
 
 	i1, _ := db.CreateIssue(d, "A", "", "r", "a", "Medium", "p", "c")
 	i2, _ := db.CreateIssue(d, "B", "", "r", "a", "Medium", "p", "c")
-	db.UpdateIssue(d, i2.ID, "B", "", "Medium", "Resolved", "a", "p", "c")
+	db.UpdateIssue(d, i2.ID, "B", "", "Medium", "Resolved", "a", "p", "c", nil)
 
 	open, _ := db.ListIssues(d, "open", "", "", "", "", "", 0, 0)
 	if len(open) != 1 || open[0].ID != i1.ID {
