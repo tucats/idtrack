@@ -289,7 +289,6 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// -------------------------------------------------------------------------
 
 	switch newStatus {
-
 	case "Duplicate":
 		if len(body.DependentIssues) != 1 {
 			jsonError(w, "a Duplicate issue requires exactly one target issue ID in dependent_issues", http.StatusBadRequest)
@@ -438,7 +437,6 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		commentBody := fmt.Sprintf("Duplicate of issue #%d", body.DependentIssues[0])
 		// Ignore the error — a failed auto-comment does not roll back the status change.
 		_, _ = db.CreateComment(s.database, id, author, commentBody)
-
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})
