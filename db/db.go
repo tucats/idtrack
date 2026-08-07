@@ -139,6 +139,14 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	// format records how the description and comment bodies of an issue should
+	// be interpreted for display: "text" (plain, escaped), "markdown", or
+	// "html". DEFAULT 'text' backfills every existing row as part of the
+	// ALTER TABLE itself, so no separate UPDATE is needed.
+	if err := addColumnIfMissing(database, "issues", "format", "TEXT NOT NULL DEFAULT 'text'"); err != nil {
+		return err
+	}
+
 	// Seed the two reserved team names.  INSERT OR IGNORE is idempotent.
 	if _, err := database.Exec(`
 		INSERT OR IGNORE INTO teams (name, description) VALUES ('admin', '');

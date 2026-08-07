@@ -160,6 +160,7 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee    string `json:"assignee"`
 		Project     string `json:"project"`
 		Component   string `json:"component"`
+		Format      string `json:"format"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -202,7 +203,7 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	issue, err := db.CreateIssue(s.database, body.Title, body.Description, u.Username, body.Assignee, body.Priority, body.Project, body.Component)
+	issue, err := db.CreateIssue(s.database, body.Title, body.Description, u.Username, body.Assignee, body.Priority, body.Project, body.Component, body.Format)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 
@@ -239,6 +240,15 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "server error", http.StatusInternalServerError)
 
 		return
+	}
+
+	// Render the description and each comment body per the issue's format.
+	// renderFormatted returns "" for plain text, since the frontend already
+	// handles escaping and whitespace for that case.
+	issue.DescriptionHTML = renderFormatted(issue.Format, issue.Description)
+
+	for i := range comments {
+		comments[i].BodyHTML = renderFormatted(issue.Format, comments[i].Body)
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
@@ -312,6 +322,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		Assignee        string  `json:"assignee"`
 		Project         string  `json:"project"`
 		Component       string  `json:"component"`
+		Format          string  `json:"format"`
 		DependentIssues []int64 `json:"dependent_issues"`
 		// Teams replaces the issue's team list when provided. Only admins may
 		// change teams; a non-admin sending a different list receives 403.
@@ -479,7 +490,7 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 	issue, err := db.UpdateIssue(s.database, id,
 		body.Title, body.Description, body.Priority, body.Status,
-		body.Assignee, body.Project, body.Component,
+		body.Assignee, body.Project, body.Component, body.Format,
 		body.DependentIssues,
 		newTeams,
 	)
@@ -494,6 +505,10 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+
+	// Populate the transient rendered-HTML field so the client can refresh its
+	// description preview from this response without a second round-trip.
+	issue.DescriptionHTML = renderFormatted(issue.Format, issue.Description)
 
 	// -------------------------------------------------------------------------
 	// Auto-generate a comment for status transitions to Duplicate or Blocked.

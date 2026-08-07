@@ -193,6 +193,17 @@ Commands:
 		update <username>          [--name "Display Name"] [--admin true|false] [--password <password>]
 		delete <username>
 
+	ingest <file> [file...] [options]
+		Bulk-create one issue per input file. All files are validated before
+		anything is written — if any file fails to parse, no changes are made.
+		 --author <username>              required; reporter of every created issue
+		 --default-owner <username>       required; assignee of every created issue
+		 --default-project <name>         required; used when a project can't be inferred
+		 --default-component <name>       required; used when a component can't be inferred
+		 --default-status open|resolved   used when status can't be detected (default: open)
+		 --default-priority High|Medium|Low  used when priority can't be detected (default: Medium)
+		 --test                           print a report instead of writing to the database
+
 	version
 		Print the idtrack version.
 

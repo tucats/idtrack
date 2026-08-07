@@ -235,6 +235,50 @@ To proceed with a delete that has blocking issues, you must first re-assign or d
 
 ---
 
+### `idtrack ingest`
+
+Bulk-create one issue per input file — useful for importing an existing corpus of bug reports or post-mortem documents. All files are read and validated **before** anything is written to the database: if any file fails to parse, the whole run is aborted and no issues are created.
+
+```sh
+idtrack ingest <file> [file...] [options]
+```
+
+| Option | Required | Meaning |
+| --- | --- | --- |
+| `--author <username>` | yes | Must be an existing user; becomes the reporter of every created issue. |
+| `--default-owner <username>` | yes | Must be an existing user; becomes the assignee of every created issue. |
+| `--default-project <name>` | yes | Must be an existing project; used when a file's project can't be confidently inferred. |
+| `--default-component <name>` | yes | Must be an existing component of `--default-project`; used when a file's component can't be confidently inferred. |
+| `--default-status open\|resolved` | no (default `open`) | Used when a file contains no explicit resolution/status marker. |
+| `--default-priority High\|Medium\|Low` | no (default `Medium`) | Used when a file contains no explicit severity/risk marker. |
+| `--test` | no | Print a report of what would be created; makes no database changes. |
+| `--database <path>` | no | Same as other commands. |
+
+For each file:
+
+- **Title** — the first line if it is a markdown `#` heading, otherwise the first full sentence of the text.
+- **Description and comments** — the text before the first section boundary becomes the issue description; each boundary after that (a markdown `##` header, a `**Bold Label:**` line, or a plain `Label:` line) starts a new comment, posted in file order.
+- **Status** — detected from a "Resolution" section or an explicit "Status: Resolved/Fixed/Closed" marker; otherwise `--default-status`.
+- **Priority** — detected from a "Severity" or "Risk" section (High/Critical, Medium, Low/Minor); otherwise `--default-priority`.
+- **Project and component** — inferred by weighted keyword matching (file name, title, and body text) against every known project and component; falls back to the defaults independently for project and component when no match is confident enough.
+- **Format** — `.md` files are stored as `markdown`; anything else is stored as `text`.
+
+```sh
+# Preview what a batch of files would produce, without writing anything:
+idtrack ingest --test \
+  --author alice --default-owner bob \
+  --default-project "My Project" --default-component Backend \
+  docs/issues/*.md
+
+# Run it for real:
+idtrack ingest \
+  --author alice --default-owner bob \
+  --default-project "My Project" --default-component Backend \
+  docs/issues/*.md
+```
+
+---
+
 ## 3. Web Application — Regular Users
 
 Navigate to `https://localhost:8443` (or your configured host and port) to access the web interface.

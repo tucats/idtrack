@@ -14,6 +14,11 @@ type Comment struct {
 	Author    string `json:"author"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`
+	// BodyHTML is a transient, request-computed rendering of Body according to
+	// the parent issue's Format. It is never stored in the database and is
+	// only populated by handlers that need to return rendered content (e.g.
+	// handleGetIssue); omitempty keeps it out of responses that don't set it.
+	BodyHTML string `json:"body_html,omitempty"`
 }
 
 // ListComments returns all comments for a given issue in chronological order
@@ -59,7 +64,7 @@ func DeleteComment(database *sql.DB, commentID int64) error {
 // struct. Because database/sql's Exec does not return the inserted row, we
 // re-fetch it with QueryRow after the INSERT using the auto-assigned id from
 // LastInsertId.
-func CreateComment(database *sql.DB, issueID int64, author, body string) (*Comment, error) {
+func CreateComment(database Querier, issueID int64, author, body string) (*Comment, error) {
 	var c Comment
 
 	now := time.Now().UTC().Format(time.RFC3339)

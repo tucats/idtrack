@@ -616,7 +616,7 @@ func TestCreateIssue_And_GetIssue(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, err := db.CreateIssue(d, "Bug #1", "desc", "alice", "bob", "High", "proj", "comp")
+	issue, err := db.CreateIssue(d, "Bug #1", "desc", "alice", "bob", "High", "proj", "comp", "")
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestCreateIssue_DefaultPriority(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, err := db.CreateIssue(d, "Title", "", "r", "", "", "", "")
+	issue, err := db.CreateIssue(d, "Title", "", "r", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
@@ -689,9 +689,9 @@ func TestUpdateIssue(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	orig, _ := db.CreateIssue(d, "Original", "", "r", "", "Low", "p", "c")
+	orig, _ := db.CreateIssue(d, "Original", "", "r", "", "Low", "p", "c", "")
 
-	updated, err := db.UpdateIssue(d, orig.ID, "Updated Title", "new desc", "High", "Open", "assignee", "p", "c", nil, nil)
+	updated, err := db.UpdateIssue(d, orig.ID, "Updated Title", "new desc", "High", "Open", "assignee", "p", "c", "", nil, nil)
 	if err != nil {
 		t.Fatalf("UpdateIssue: %v", err)
 	}
@@ -713,14 +713,14 @@ func TestUpdateIssue_Teams(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c", "")
 
 	if !db.ContainsTeam(issue.Teams, "any") {
 		t.Error("new issue should default to teams=['any']")
 	}
 
 	// Update teams to ["platform", "database"].
-	updated, err := db.UpdateIssue(d, issue.ID, "T", "", "Medium", "Open", "", "p", "c", nil, []string{"platform", "database"})
+	updated, err := db.UpdateIssue(d, issue.ID, "T", "", "Medium", "Open", "", "p", "c", "", nil, []string{"platform", "database"})
 	if err != nil {
 		t.Fatalf("UpdateIssue with teams: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestUpdateIssue_Teams(t *testing.T) {
 	}
 
 	// Update with nil teams — should leave teams unchanged.
-	resaved, _ := db.UpdateIssue(d, issue.ID, "T2", "", "Medium", "Open", "", "p", "c", nil, nil)
+	resaved, _ := db.UpdateIssue(d, issue.ID, "T2", "", "Medium", "Open", "", "p", "c", "", nil, nil)
 	if !db.ContainsTeam(resaved.Teams, "platform") {
 		t.Error("teams should not change when nil is passed")
 	}
@@ -744,14 +744,14 @@ func TestUpdateIssue_ResolvedAt(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "a", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "a", "Medium", "p", "c", "")
 
 	if issue.ResolvedAt != "" {
 		t.Errorf("new issue should have empty resolved_at, got %q", issue.ResolvedAt)
 	}
 
 	// Resolve: resolved_at should be set.
-	resolved, err := db.UpdateIssue(d, issue.ID, "T", "", "Medium", "Resolved", "a", "p", "c", nil, nil)
+	resolved, err := db.UpdateIssue(d, issue.ID, "T", "", "Medium", "Resolved", "a", "p", "c", "", nil, nil)
 	if err != nil {
 		t.Fatalf("UpdateIssue to Resolved: %v", err)
 	}
@@ -763,13 +763,13 @@ func TestUpdateIssue_ResolvedAt(t *testing.T) {
 	first := resolved.ResolvedAt
 
 	// Re-save as Resolved: resolved_at should NOT be overwritten.
-	resaved, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Resolved", "a", "p", "c", nil, nil)
+	resaved, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Resolved", "a", "p", "c", "", nil, nil)
 	if resaved.ResolvedAt != first {
 		t.Errorf("resolved_at should not change on re-save: got %q, want %q", resaved.ResolvedAt, first)
 	}
 
 	// Re-open: resolved_at should be cleared.
-	reopened, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Open", "a", "p", "c", nil, nil)
+	reopened, _ := db.UpdateIssue(d, issue.ID, "T changed", "", "Medium", "Open", "a", "p", "c", "", nil, nil)
 	if reopened.ResolvedAt != "" {
 		t.Errorf("resolved_at should be cleared when reopened, got %q", reopened.ResolvedAt)
 	}
@@ -779,7 +779,7 @@ func TestDeleteIssue(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c", "")
 	db.CreateComment(d, issue.ID, "r", "a comment")
 
 	if err := db.DeleteIssue(d, issue.ID); err != nil {
@@ -824,9 +824,9 @@ func TestListIssues_FilterByStatus(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	i1, _ := db.CreateIssue(d, "A", "", "r", "a", "Medium", "p", "c")
-	i2, _ := db.CreateIssue(d, "B", "", "r", "a", "Medium", "p", "c")
-	db.UpdateIssue(d, i2.ID, "B", "", "Medium", "Resolved", "a", "p", "c", nil, nil)
+	i1, _ := db.CreateIssue(d, "A", "", "r", "a", "Medium", "p", "c", "")
+	i2, _ := db.CreateIssue(d, "B", "", "r", "a", "Medium", "p", "c", "")
+	db.UpdateIssue(d, i2.ID, "B", "", "Medium", "Resolved", "a", "p", "c", "", nil, nil)
 
 	open, _ := db.ListIssues(d, "open", "", "", "", "", "", 0, 0, nil)
 	if len(open) != 1 || open[0].ID != i1.ID {
@@ -843,12 +843,12 @@ func TestListIssues_FilterByTeam(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	i1, _ := db.CreateIssue(d, "Platform issue", "", "r", "", "Medium", "p", "c")
-	i2, _ := db.CreateIssue(d, "DB issue", "", "r", "", "Medium", "p", "c")
+	i1, _ := db.CreateIssue(d, "Platform issue", "", "r", "", "Medium", "p", "c", "")
+	i2, _ := db.CreateIssue(d, "DB issue", "", "r", "", "Medium", "p", "c", "")
 
 	// Assign different teams to the two issues.
-	db.UpdateIssue(d, i1.ID, "Platform issue", "", "Medium", "Open", "", "p", "c", nil, []string{"platform"})
-	db.UpdateIssue(d, i2.ID, "DB issue", "", "Medium", "Open", "", "p", "c", nil, []string{"database"})
+	db.UpdateIssue(d, i1.ID, "Platform issue", "", "Medium", "Open", "", "p", "c", "", nil, []string{"platform"})
+	db.UpdateIssue(d, i2.ID, "DB issue", "", "Medium", "Open", "", "p", "c", "", nil, []string{"database"})
 
 	// User with "platform" team sees only i1.
 	visible, _ := db.ListIssues(d, "", "", "", "", "", "", 0, 0, []string{"platform"})
@@ -873,8 +873,8 @@ func TestListIssues_FilterByPriority(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	db.CreateIssue(d, "H", "", "r", "", "High", "p", "c")
-	db.CreateIssue(d, "L", "", "r", "", "Low", "p", "c")
+	db.CreateIssue(d, "H", "", "r", "", "High", "p", "c", "")
+	db.CreateIssue(d, "L", "", "r", "", "Low", "p", "c", "")
 
 	high, _ := db.ListIssues(d, "", "High", "", "", "", "", 0, 0, nil)
 	if len(high) != 1 || high[0].Title != "H" {
@@ -886,8 +886,8 @@ func TestListIssues_FilterByProject(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	db.CreateIssue(d, "A", "", "r", "", "Medium", "proj-a", "c")
-	db.CreateIssue(d, "B", "", "r", "", "Medium", "proj-b", "c")
+	db.CreateIssue(d, "A", "", "r", "", "Medium", "proj-a", "c", "")
+	db.CreateIssue(d, "B", "", "r", "", "Medium", "proj-b", "c", "")
 
 	a, _ := db.ListIssues(d, "", "", "", "proj-a", "", "", 0, 0, nil)
 	if len(a) != 1 {
@@ -899,8 +899,8 @@ func TestListIssues_Search(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	db.CreateIssue(d, "crash in login", "", "r", "", "Medium", "p", "c")
-	db.CreateIssue(d, "UI glitch", "", "r", "", "Medium", "p", "c")
+	db.CreateIssue(d, "crash in login", "", "r", "", "Medium", "p", "c", "")
+	db.CreateIssue(d, "UI glitch", "", "r", "", "Medium", "p", "c", "")
 
 	results, _ := db.ListIssues(d, "", "", "login", "", "", "", 0, 0, nil)
 	if len(results) != 1 {
@@ -913,7 +913,7 @@ func TestListIssues_Pagination(t *testing.T) {
 	defer d.Close()
 
 	for i := 0; i < 5; i++ {
-		db.CreateIssue(d, fmt.Sprintf("Issue %d", i), "", "r", "", "Medium", "p", "c")
+		db.CreateIssue(d, fmt.Sprintf("Issue %d", i), "", "r", "", "Medium", "p", "c", "")
 	}
 
 	page, _ := db.ListIssues(d, "", "", "", "", "id", "asc", 2, 0, nil)
@@ -936,8 +936,8 @@ func TestCountIssues(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	db.CreateIssue(d, "A", "", "r", "", "High", "p", "c")
-	db.CreateIssue(d, "B", "", "r", "", "Low", "p", "c")
+	db.CreateIssue(d, "A", "", "r", "", "High", "p", "c", "")
+	db.CreateIssue(d, "B", "", "r", "", "Low", "p", "c", "")
 
 	n, err := db.CountIssues(d, "", "", "", "", nil)
 	if err != nil || n != 2 {
@@ -954,7 +954,7 @@ func TestListChanges(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	i1, _ := db.CreateIssue(d, "A", "", "r", "", "Medium", "p", "c")
+	i1, _ := db.CreateIssue(d, "A", "", "r", "", "Medium", "p", "c", "")
 
 	// Empty since returns nothing.
 	results, err := db.ListChanges(d, "")
@@ -985,7 +985,7 @@ func TestCreateComment_And_ListComments(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c", "")
 
 	c, err := db.CreateComment(d, issue.ID, "alice", "first comment")
 	if err != nil {
@@ -1017,7 +1017,7 @@ func TestListComments_Empty(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c", "")
 
 	comments, err := db.ListComments(d, issue.ID)
 	if err != nil {
@@ -1033,7 +1033,7 @@ func TestDeleteComment(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c", "")
 	c, _ := db.CreateComment(d, issue.ID, "r", "body")
 
 	if err := db.DeleteComment(d, c.ID); err != nil {
@@ -1050,7 +1050,7 @@ func TestIssue_CommentCount(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c")
+	issue, _ := db.CreateIssue(d, "T", "", "r", "", "Medium", "p", "c", "")
 
 	got, _ := db.GetIssue(d, issue.ID)
 	if got.CommentCount != 0 {
@@ -1251,7 +1251,7 @@ func TestDeleteProject_ReferencedByIssue(t *testing.T) {
 	defer d.Close()
 
 	db.CreateProject(d, "p", nil)
-	db.CreateIssue(d, "issue", "", "r", "", "Medium", "p", "c")
+	db.CreateIssue(d, "issue", "", "r", "", "Medium", "p", "c", "")
 
 	err := db.DeleteProject(d, "p")
 	if err == nil {
@@ -1287,7 +1287,7 @@ func TestDeleteComponent_ReferencedByIssue(t *testing.T) {
 
 	db.CreateProject(d, "p", nil)
 	db.AddComponent(d, "p", "comp")
-	db.CreateIssue(d, "issue", "", "r", "", "Medium", "p", "comp")
+	db.CreateIssue(d, "issue", "", "r", "", "Medium", "p", "comp", "")
 
 	err := db.DeleteComponent(d, "p", "comp")
 	if err == nil {

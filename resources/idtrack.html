@@ -86,6 +86,16 @@
           <option value="">Choose component…</option>
         </select>
       </div>
+      <div class="form-group">
+        <label for="ni-format">Format</label>
+        <select id="ni-format">
+          <option value="text" selected>Text</option>
+          <option value="markdown">Markdown</option>
+          <!-- "html" is fully supported server-side and in rendering; only the
+               picker is restricted for now so ill-formed markup can't break the
+               UI. Add <option value="html">HTML</option> here to re-enable it. -->
+        </select>
+      </div>
     </div>
     <div class="form-row">
       <div class="form-group">
@@ -599,6 +609,16 @@
               <option value="">Choose component…</option>
             </select>
           </div>
+          <div class="detail-field">
+            <label>Format</label>
+            <select id="detail-format" class="detail-select" onchange="markDetailDirty()">
+              <option value="text">Text</option>
+              <option value="markdown">Markdown</option>
+              <!-- "html" is fully supported server-side and in rendering; only the
+                   picker is restricted for now so ill-formed markup can't break the
+                   UI. Add <option value="html">HTML</option> here to re-enable it. -->
+            </select>
+          </div>
         </div>
         <!-- Teams — always visible; input row shown only for admins -->
         <div class="detail-field">
@@ -638,6 +658,10 @@
         <div class="detail-field">
           <label>Description</label>
           <textarea id="detail-desc" class="detail-textarea" rows="6" oninput="markDetailDirty()"></textarea>
+        </div>
+        <div id="detail-desc-preview-wrap" class="detail-field" style="display:none">
+          <label>Preview</label>
+          <div id="detail-desc-preview" class="rendered-html"></div>
         </div>
         <div id="detail-error" class="error-text"></div>
 

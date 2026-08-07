@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+// Querier is satisfied by both *sql.DB and *sql.Tx, letting callers choose
+// whether a write should be part of a larger transaction (e.g. the bulk
+// ingest command, which must be all-or-nothing) or run standalone.
+type Querier interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
 // Issue represents a row in the issues table plus its JSON serialization.
 type Issue struct {
 	ID              int64    `json:"id"`
@@ -23,7 +32,32 @@ type Issue struct {
 	ResolvedAt      string   `json:"resolved_at"`
 	DependentIssues []int64  `json:"dependent_issues"`
 	Teams           []string `json:"teams"`
+	Format          string   `json:"format"`
 	CommentCount    int      `json:"comment_count"`
+	// DescriptionHTML is a transient, request-computed rendering of Description
+	// according to Format. It is never stored in the database and is only
+	// populated by handlers that need to return rendered content (e.g.
+	// handleGetIssue); omitempty keeps it out of responses that don't set it.
+	DescriptionHTML string `json:"description_html,omitempty"`
+}
+
+// validIssueFormats are the only accepted values for Issue.Format. Anything
+// else (including empty string) normalizes to "text".
+var validIssueFormats = map[string]bool{
+	"text":     true,
+	"markdown": true,
+	"html":     true,
+}
+
+// NormalizeFormat maps any non-recognized format value to "text", the
+// default. This keeps the stored value constrained to a known set even
+// though SQLite has no native enum/check-constraint support here.
+func NormalizeFormat(format string) string {
+	if !validIssueFormats[format] {
+		return "text"
+	}
+
+	return format
 }
 
 // parseDependentIssues converts the comma-separated string stored in the DB
@@ -64,11 +98,11 @@ func formatDependentIssues(ids []int64) string {
 
 // issueColumns is the SELECT column list shared by ListIssues, ListChanges,
 // and GetIssue.
-const issueColumns = `id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, resolved_at, dependent_issues, teams, (SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`
+const issueColumns = `id, title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, resolved_at, dependent_issues, teams, format, (SELECT COUNT(*) FROM comments WHERE issue_id = issues.id) AS comment_count`
 
 // scanIssue reads a single issue row from any type that exposes Scan.
 func scanIssue(scanner interface {
-	Scan(...any) error //golint: inamedparam
+	Scan(...any) error //nolint:inamedparam
 }, i *Issue) error {
 	var depStr, teamsStr string
 
@@ -78,6 +112,7 @@ func scanIssue(scanner interface {
 		&i.CreatedAt, &i.UpdatedAt, &i.ResolvedAt,
 		&depStr,
 		&teamsStr,
+		&i.Format,
 		&i.CommentCount,
 	)
 	if err != nil {
@@ -256,7 +291,7 @@ func ListChanges(database *sql.DB, since string) ([]Issue, error) {
 
 // GetIssue fetches a single issue by its integer ID. Returns (nil, nil) when
 // no row with that ID exists.
-func GetIssue(database *sql.DB, id int64) (*Issue, error) {
+func GetIssue(database Querier, id int64) (*Issue, error) {
 	var i Issue
 
 	row := database.QueryRow(
@@ -275,7 +310,7 @@ func GetIssue(database *sql.DB, id int64) (*Issue, error) {
 }
 
 // CreateIssue inserts a new issue with status "Open" and teams="any".
-func CreateIssue(database *sql.DB, title, description, reporter, assignee, priority, project, component string) (*Issue, error) {
+func CreateIssue(database Querier, title, description, reporter, assignee, priority, project, component, format string) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	if priority == "" {
@@ -283,9 +318,9 @@ func CreateIssue(database *sql.DB, title, description, reporter, assignee, prior
 	}
 
 	result, err := database.Exec(
-		`INSERT INTO issues (title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, teams)
-		 VALUES (?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?, 'any')`,
-		title, description, reporter, assignee, priority, project, component, now, now,
+		`INSERT INTO issues (title, description, reporter, assignee, priority, status, project, component, created_at, updated_at, teams, format)
+		 VALUES (?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?, 'any', ?)`,
+		title, description, reporter, assignee, priority, project, component, now, now, NormalizeFormat(format),
 	)
 	if err != nil {
 		return nil, err
@@ -303,9 +338,10 @@ func CreateIssue(database *sql.DB, title, description, reporter, assignee, prior
 //   - Transitioning to Resolved or Duplicate: set to now if currently empty.
 //   - Transitioning to Open or Blocked: always cleared.
 //   - Any other value: left unchanged.
-func UpdateIssue(database *sql.DB, id int64, title, description, priority, status, assignee, project, component string, dependentIssues []int64, teams []string) (*Issue, error) {
+func UpdateIssue(database Querier, id int64, title, description, priority, status, assignee, project, component, format string, dependentIssues []int64, teams []string) (*Issue, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	depStr := formatDependentIssues(dependentIssues)
+	format = NormalizeFormat(format)
 
 	if teams != nil {
 		teamsStr := FormatTeams(teams)
@@ -315,6 +351,7 @@ func UpdateIssue(database *sql.DB, id int64, title, description, priority, statu
 			SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?,
 			    dependent_issues=?,
 			    teams=?,
+			    format=?,
 			    updated_at=?,
 			    resolved_at = CASE
 			        WHEN ? IN ('Resolved', 'Duplicate') AND resolved_at = '' THEN ?
@@ -325,6 +362,7 @@ func UpdateIssue(database *sql.DB, id int64, title, description, priority, statu
 			title, description, priority, status, assignee, project, component,
 			depStr,
 			teamsStr,
+			format,
 			now,
 			status, now,
 			status,
@@ -338,6 +376,7 @@ func UpdateIssue(database *sql.DB, id int64, title, description, priority, statu
 			UPDATE issues
 			SET title=?, description=?, priority=?, status=?, assignee=?, project=?, component=?,
 			    dependent_issues=?,
+			    format=?,
 			    updated_at=?,
 			    resolved_at = CASE
 			        WHEN ? IN ('Resolved', 'Duplicate') AND resolved_at = '' THEN ?
@@ -347,6 +386,7 @@ func UpdateIssue(database *sql.DB, id int64, title, description, priority, statu
 			WHERE id=?`,
 			title, description, priority, status, assignee, project, component,
 			depStr,
+			format,
 			now,
 			status, now,
 			status,

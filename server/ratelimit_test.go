@@ -6,10 +6,12 @@ import (
 	"testing"
 )
 
+const testIP = "1.2.3.4"
+
 func TestRateLimiter_AllowsInitially(t *testing.T) {
 	rl := newRateLimiter()
 
-	if !rl.allow("1.2.3.4") {
+	if !rl.allow(testIP) {
 		t.Error("fresh IP should be allowed")
 	}
 }
@@ -85,19 +87,19 @@ func TestClientIP_WithPort(t *testing.T) {
 	r.RemoteAddr = "1.2.3.4:5678"
 
 	ip := clientIP(r)
-	if ip != "1.2.3.4" {
-		t.Errorf("clientIP: got %q, want %q", ip, "1.2.3.4")
+	if ip != testIP {
+		t.Errorf("clientIP: got %q, want %q", ip, testIP)
 	}
 }
 
 func TestClientIP_NoPort(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	r.RemoteAddr = "1.2.3.4"
+	r.RemoteAddr = testIP
 
 	ip := clientIP(r)
 	// net.SplitHostPort will fail; fallback is the raw RemoteAddr.
-	if ip != "1.2.3.4" {
-		t.Errorf("clientIP fallback: got %q, want %q", ip, "1.2.3.4")
+	if ip != testIP {
+		t.Errorf("clientIP fallback: got %q, want %q", ip, testIP)
 	}
 }
 

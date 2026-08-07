@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 type pidRecord struct {
 	PID     int      `json:"pid"`
 	Version string   `json:"version,omitempty"`
+	Path    string   `json:"path"`
 	Args    []string `json:"args"` // passArgs forwarded to the background child
 }
 
@@ -157,10 +159,13 @@ func Serve(args []string, static fs.FS) {
 		port = 8443
 	}
 
+	host, _ := os.Hostname()
+	url := fmt.Sprintf("https://%s/idtrack", net.JoinHostPort(host, strconv.Itoa(port)))
+
 	// If we are not running in foreground mode, spawn a detached child process
 	// and exit. The child will call Serve again with --foreground set.
 	if !foreground {
-		launchBackground(passArgs)
+		launchBackground(passArgs, url)
 
 		return
 	}
@@ -273,13 +278,13 @@ func Restart() {
 		fmt.Println("restarting...")
 	}
 
-	launchBackground(record.Args)
+	launchBackground(record.Args, record.Path)
 }
 
 // launchBackground re-executes this binary as a detached background process.
 // It prevents duplicate servers by checking the PID file for a running process,
 // then redirects child stdout/stderr to the log file and writes the child's PID.
-func launchBackground(serveArgs []string) {
+func launchBackground(serveArgs []string, urlPath string) {
 	pidFile := serverPidPath()
 
 	// Check if a server is already running. Signal 0 tests process existence
@@ -335,13 +340,13 @@ func launchBackground(serveArgs []string) {
 
 	// Record the child's PID and serve args so Stop can find the process and
 	// Restart can relaunch with the same flags.
-	record := pidRecord{PID: cmd.Process.Pid, Version: BuildVersion, Args: serveArgs}
+	record := pidRecord{PID: cmd.Process.Pid, Path: urlPath, Version: BuildVersion, Args: serveArgs}
 	if pidData, err := json.Marshal(record); err == nil {
 		if err := os.WriteFile(pidFile, pidData, 0600); err != nil {
 			fmt.Fprintf(os.Stderr, "cannot write pid file: %v\n", err)
 		}
 	}
 
-	fmt.Printf("idtrack %s server started (pid %d)\n", BuildVersion, cmd.Process.Pid)
+	fmt.Printf("idtrack %s server started (pid %d) at %s\n", BuildVersion, cmd.Process.Pid, urlPath)
 	fmt.Printf("log: %s\n", logPath)
 }

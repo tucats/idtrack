@@ -55,6 +55,8 @@ func main() {
 		commands.Teams(args[1:])
 	case "define":
 		commands.Define(args[1:])
+	case "ingest":
+		commands.Ingest(args[1:])
 	case "delete":
 		commands.Delete(args[1:])
 	case "version", "-v", "--version":

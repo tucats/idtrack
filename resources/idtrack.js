@@ -517,8 +517,8 @@ async function fetchProjects() {
 // Creates a new issue. Description and assignee are optional; all other
 // fields are required (validated server-side).
 // Response shape: { issue: { ...newly created issue... } }
-async function createIssue(title, description, priority, assignee, project, component) {
-    return apiPost('/api/issues', { title, description, priority, assignee, project, component });
+async function createIssue(title, description, priority, assignee, project, component, format) {
+    return apiPost('/api/issues', { title, description, priority, assignee, project, component, format });
 }
 
 // PUT /api/issues/{id}
@@ -527,9 +527,9 @@ async function createIssue(title, description, priority, assignee, project, comp
 // partial update (PATCH). Only the reporter, current assignee, and
 // admins may call this; others receive 403 Forbidden.
 // Response shape: { issue: { ...updated issue... } }
-async function updateIssue(id, title, description, priority, status, assignee, project, component, dependentIssues, comment, teams) {
+async function updateIssue(id, title, description, priority, status, assignee, project, component, format, dependentIssues, comment, teams) {
     return apiPut(`/api/issues/${id}`, {
-        title, description, priority, status, assignee, project, component,
+        title, description, priority, status, assignee, project, component, format,
         dependent_issues: dependentIssues || [],
         comment: comment || '',
         teams: teams || [],
@@ -1086,6 +1086,13 @@ async function selectIssue(id) {
         // rebuild it with the appropriate options for that project.
         populateComponentDropdown('detail-component', issue.project || '', issue.component || '');
 
+        // The Format picker currently only offers "text" and "markdown" — if
+        // an issue was created with "html" (e.g. via the API before that
+        // option was hidden from the UI), inject a hidden option so its
+        // value round-trips on save instead of silently reverting to "text".
+        setDetailFormatValue(issue.format || 'text');
+        updateDescPreview(issue.format, issue.description_html);
+
         // Snapshot the dependent_issues and teams fields.
         _dependentIssues = issue.dependent_issues || [];
         _detailTeams = Array.isArray(issue.teams) ? [...issue.teams] : ['any'];
@@ -1110,7 +1117,7 @@ async function selectIssue(id) {
         // Save button never appears. The comment textarea is intentionally
         // left enabled — any authenticated user may add a comment.
         ['detail-title', 'detail-status', 'detail-priority',
-         'detail-assignee', 'detail-project', 'detail-component', 'detail-desc']
+         'detail-assignee', 'detail-project', 'detail-component', 'detail-format', 'detail-desc']
             .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !canEdit; });
 
         renderDependentIssues(issue.status, canEdit);
@@ -1153,6 +1160,42 @@ function markDetailDirty() {
     if (!_detailDirty) {
         _detailDirty = true;
         document.getElementById('detail-save-btn').style.display = '';
+        // The preview reflects the last-saved rendering, not live keystrokes
+        // (there's no client-side markdown/HTML renderer) — hide it as soon
+        // as the form diverges from that saved state so it can't mislead.
+        document.getElementById('detail-desc-preview-wrap').style.display = 'none';
+    }
+}
+
+// setDetailFormatValue selects the given format in #detail-format. If the
+// value isn't one of the picker's options (currently only "text" and
+// "markdown" are offered — "html" is supported end-to-end but hidden from
+// the UI for now), a hidden option is injected so the value round-trips on
+// save instead of silently reverting to "text".
+function setDetailFormatValue(format) {
+    const sel = document.getElementById('detail-format');
+    if (![...sel.options].some(o => o.value === format)) {
+        const opt = document.createElement('option');
+        opt.value = format;
+        opt.textContent = format;
+        opt.hidden = true;
+        sel.appendChild(opt);
+    }
+    sel.value = format;
+}
+
+// updateDescPreview shows or hides the rendered description preview.
+// descriptionHtml is the server-rendered HTML for the current format (empty
+// for "text", where the raw textarea already is the full presentation).
+function updateDescPreview(format, descriptionHtml) {
+    const wrap = document.getElementById('detail-desc-preview-wrap');
+    const el   = document.getElementById('detail-desc-preview');
+    if (format && format !== 'text' && descriptionHtml) {
+        el.innerHTML = descriptionHtml;
+        wrap.style.display = '';
+    } else {
+        el.innerHTML = '';
+        wrap.style.display = 'none';
     }
 }
 
@@ -1171,6 +1214,7 @@ async function saveIssueChanges() {
     const desc      = document.getElementById('detail-desc').value.trim();
     const project   = document.getElementById('detail-project').value;
     const component = document.getElementById('detail-component').value;
+    const format    = document.getElementById('detail-format').value;
     const err       = document.getElementById('detail-error');
 
     err.textContent = '';
@@ -1184,24 +1228,24 @@ async function saveIssueChanges() {
     // _pendingStatusData holds the form values so the dialog's confirm handler
     // can call doSaveIssue without re-reading all the fields.
     if (_originalStatus === 'Open' && status === 'Resolved') {
-        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component, format };
         showResolveDialog();
         return;
     }
     if (_originalStatus === 'Resolved' && status === 'Open') {
-        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component, format };
         showReopenDialog();
         return;
     }
     // Any → Duplicate: must supply exactly one target issue ID.
     if (_originalStatus !== 'Duplicate' && status === 'Duplicate') {
-        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component, format };
         showDuplicateDialog();
         return;
     }
     // Any → Blocked: must supply at least one blocking issue ID.
     if (_originalStatus !== 'Blocked' && status === 'Blocked') {
-        _pendingStatusData = { title, desc, priority, status, assignee, project, component };
+        _pendingStatusData = { title, desc, priority, status, assignee, project, component, format };
         showBlockedDialog();
         return;
     }
@@ -1209,7 +1253,7 @@ async function saveIssueChanges() {
     // No special transition: save directly. This covers field edits on a stable
     // status, inline add/remove on an already-Blocked issue, and Blocked→Open
     // (the server validates that all dep issues are Resolved and returns 409 if not).
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, null, '');
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, format, null, '');
 }
 
 // doSaveIssue performs the actual PUT to update the issue, then
@@ -1218,7 +1262,7 @@ async function saveIssueChanges() {
 // `serverComment` is the extra text appended to the server's auto-generated
 // "Blocked by issues #N…" comment — it is sent in the PUT body, not as a
 // separate POST.
-async function doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody, serverComment) {
+async function doSaveIssue(title, desc, priority, status, assignee, project, component, format, commentBody, serverComment) {
     const err = document.getElementById('detail-error');
     const btn = document.getElementById('detail-save-btn');
     err.textContent = '';
@@ -1226,7 +1270,7 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
     btn.textContent = 'Saving…';
     try {
         const { issue } = await updateIssue(
-            _currentId, title, desc, priority, status, assignee, project, component,
+            _currentId, title, desc, priority, status, assignee, project, component, format,
             _dependentIssues, serverComment || '', _detailTeams
         );
         if (commentBody) await addComment(_currentId, commentBody);
@@ -1237,6 +1281,8 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
         _detailDirty = false;
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
+        setDetailFormatValue(issue.format || 'text');
+        updateDescPreview(issue.format, issue.description_html);
         // Sync the dependent-issues section with what the server committed.
         renderDependentIssues(status, canModifyIssue(issue));
         // After a successful save, decide whether the issue still belongs in the
@@ -1339,9 +1385,9 @@ async function confirmStatusChange() {
     }
 
     document.getElementById('status-change-overlay').style.display = 'none';
-    const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
+    const { title, desc, priority, status, assignee, project, component, format } = _pendingStatusData;
     _pendingStatusData = null;
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody, '');
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, format, commentBody, '');
 }
 
 // cancelStatusChange dismisses the dialog without saving. It restores
@@ -1379,9 +1425,9 @@ async function confirmDuplicateDialog() {
     if (val === _currentId) { err.textContent = 'An issue cannot be a duplicate of itself.'; return; }
     _dependentIssues = [val];
     document.getElementById('duplicate-overlay').style.display = 'none';
-    const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
+    const { title, desc, priority, status, assignee, project, component, format } = _pendingStatusData;
     _pendingStatusData = null;
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, null, '');
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, format, null, '');
 }
 
 // cancelDuplicateDialog dismisses the dialog and restores the status picker.
@@ -1478,9 +1524,9 @@ async function confirmBlockedDialog() {
     const commentBody = document.getElementById('blk-comment').value.trim();
     _dependentIssues = [..._pendingBlockedIds];
     document.getElementById('blocked-overlay').style.display = 'none';
-    const { title, desc, priority, status, assignee, project, component } = _pendingStatusData;
+    const { title, desc, priority, status, assignee, project, component, format } = _pendingStatusData;
     _pendingStatusData = null;
-    await doSaveIssue(title, desc, priority, status, assignee, project, component, commentBody || null, '');
+    await doSaveIssue(title, desc, priority, status, assignee, project, component, format, commentBody || null, '');
 }
 
 // cancelBlockedDialog dismisses the overlay and restores the status picker.
@@ -1609,6 +1655,9 @@ function renderComments(comments) {
     const trashBtn = (id) => (_currentUser && _currentUser.is_admin)
         ? `<button class="btn-trash" onclick="confirmDeleteComment(${id}, event)" title="Delete comment">&#x1F5D1;</button>`
         : '';
+    // body_html is server-rendered per the issue's format (markdown/html);
+    // it's absent (undefined) for plain "text" issues, where the escaped
+    // raw body plus CSS white-space:pre-wrap is the correct presentation.
     el.innerHTML = comments.map(c => `
         <div class="comment-item">
             <div class="comment-header">
@@ -1616,7 +1665,7 @@ function renderComments(comments) {
                 <span class="comment-date">${fmtDateTime(c.created_at)}</span>
                 ${trashBtn(c.id)}
             </div>
-            <div class="comment-body">${esc(c.body)}</div>
+            <div class="comment-body${c.body_html ? ' rendered-html' : ''}">${c.body_html || esc(c.body)}</div>
         </div>
     `).join('');
 }
@@ -1699,6 +1748,7 @@ async function confirmDeleteComment(commentId, event) {
 async function showNewIssue() {
     document.getElementById('ni-title').value = '';
     document.getElementById('ni-priority').value = 'Medium';
+    document.getElementById('ni-format').value = 'text';
     document.getElementById('ni-desc').value = '';
     document.getElementById('ni-error').textContent = '';
     document.getElementById('ni-project').value = '';
@@ -1721,7 +1771,7 @@ function hideNewIssue() {
 // detail panel so the user can see it immediately.
 //
 // POST /api/issues
-//   Request body: { title, description, priority, assignee, project, component }
+//   Request body: { title, description, priority, assignee, project, component, format }
 //   Response:     { issue: { ...newly created issue... } }
 async function submitNewIssue() {
     const title     = document.getElementById('ni-title').value.trim();
@@ -1730,6 +1780,7 @@ async function submitNewIssue() {
     const desc      = document.getElementById('ni-desc').value.trim();
     const project   = document.getElementById('ni-project').value;
     const component = document.getElementById('ni-component').value;
+    const format    = document.getElementById('ni-format').value;
     const err       = document.getElementById('ni-error');
     const btn       = document.getElementById('ni-submit-btn');
 
@@ -1742,7 +1793,7 @@ async function submitNewIssue() {
     btn.textContent = 'Creating…';
 
     try {
-        const { issue: newIssue } = await createIssue(title, desc, priority, assignee, project, component);
+        const { issue: newIssue } = await createIssue(title, desc, priority, assignee, project, component, format);
         hideNewIssue();
         // Reload the full window (server determines sort order).
         await loadIssueWindow();
