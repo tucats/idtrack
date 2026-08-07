@@ -14,10 +14,12 @@ Key characteristics:
 
 - **Single binary deployment** — copy the binary to a server, run it. No installer, no runtime, no libraries.
 - **HTTPS only** — a self-signed TLS certificate is embedded at compile time; external certificates can be configured.
-- **Own user system** — bcrypt-hashed passwords, session-cookie auth, admin roles.
+- **Own user system** — bcrypt-hashed passwords, session-cookie auth, admin roles, and team-based visibility.
 - **No framework** — `net/http` with Go 1.22+ method-prefixed route patterns.
 - **SQLite** via `modernc.org/sqlite` (pure Go, no CGO required, no external `.so`).
 - **Single-page frontend** — plain HTML/CSS/JavaScript, no build step, no npm.
+- **Markdown/HTML issue formatting** — descriptions and comments can be rendered as Markdown (via `goldmark`) or trusted HTML in addition to plain text.
+- **Bulk ingestion** — `idtrack ingest` imports an existing corpus of files as issues in one atomic operation.
 
 ---
 
@@ -41,24 +43,32 @@ idtrack/
 │   ├── serve.go          # Serve(), Stop(), Restart(), launchBackground(), pid helpers
 │   ├── defaults.go       # Default() — read/write defaults.json; showDefaults()
 │   ├── users.go          # User() — list/add/update/delete user accounts
+│   ├── teams.go          # Teams() — list/add/update/delete teams
 │   ├── projects.go       # Define(), Delete() — project and component management
+│   ├── ingest.go         # Ingest() — bulk-create issues from files, transaction-wrapped
+│   ├── ingest_parse.go   # Pure parsing/inference helpers used by Ingest (no DB access)
 │   └── version.go        # Version() — print build version and timestamp
 ├── db/
 │   ├── db.go             # Open(), schema init, addColumnIfMissing() migration helper
 │   ├── users.go          # User CRUD, RecordLogin, UpdateUser, ListUsers
-│   ├── issues.go         # Issue CRUD, buildWhereClause(), CountIssues(), ListIssues()
+│   ├── teams.go          # Team CRUD, ParseTeams/FormatTeams, Issue/ProjectMatchesUserTeams
+│   ├── issues.go         # Issue CRUD, buildWhereClause(), CountIssues(), ListIssues(), Querier interface
 │   ├── comments.go       # Comment CRUD, DeleteComment
 │   └── projects.go       # Project/Component CRUD
 ├── server/
 │   ├── server.go         # srv struct, Start() — route wiring and TLS setup
 │   ├── middleware.go     # contextKey, auth(), requireJSON(), currentUser()
 │   ├── compress.go       # gzipHandler middleware, bufferingWriter
+│   ├── ratelimit.go      # per-IP login rate limiting (rateLimiter)
 │   ├── helpers.go        # issueID(), jsonResponse(), jsonError()
 │   ├── static.go         # static file handlers, handleManual()
+│   ├── minify.go         # JavaScript minifier used when serving idtrack.js
 │   ├── sessions.go       # sessionStore — create/lookup/delete session tokens
 │   ├── backup.go         # startBackups(), doBackup(), quiesce(), sizeBackups(), ageBackups()
+│   ├── render.go         # renderFormatted() — goldmark Markdown rendering for issue/comment bodies
 │   ├── auth_handlers.go  # handleVersion, handleStatus, handleOnboarding, handleLogin, handleLogout
 │   ├── users.go          # user CRUD handlers
+│   ├── teams.go          # team CRUD handlers
 │   ├── projects.go       # project/component CRUD handlers
 │   ├── issues.go         # issue CRUD handlers
 │   └── comments.go       # handleCreateComment, handleDeleteComment
@@ -146,6 +156,16 @@ Additionally, individual routes may be wrapped with:
 
 **BREACH/CRIME security note.** These TLS-compression attacks require an attacker able to force authenticated requests and observe encrypted traffic. For a self-hosted internal tool whose API responses contain only data the authenticated user already sees, the practical risk is negligible. This is consistent with the industry consensus on JSON API compression.
 
+### Markdown/HTML issue formatting
+
+Each issue has a `format` column (`text` / `markdown` / `html`), set via the `POST /api/issues` and `PUT /api/issues/{id}` request bodies. `renderFormatted(format, text)` in `server/render.go` renders once, server-side, per response:
+
+- `markdown` — converted to HTML by a package-level, concurrency-safe `goldmark.New()` instance (`github.com/yuin/goldmark`, the only markdown-related dependency).
+- `html` — passed through verbatim. An authenticated user choosing this format is an explicit, trusted opt-in — the same trust boundary as every other write in this single-tenant tool; there is no server-side sanitization.
+- `text` — returns `""`, telling the frontend to fall back to its own escaping (unchanged from before this feature existed).
+
+`handleGetIssue` and `handleUpdateIssue` populate the transient `Issue.DescriptionHTML` / `Comment.BodyHTML` fields (`json:"...,omitempty"`, never persisted) so the client can render the result without a second round-trip.
+
 ### `srv` struct
 
 All server state is on `*srv` (defined in `server/server.go`). Handler methods are attached to `*srv` rather than using package-level globals, keeping them easy to reason about and test in isolation.
@@ -205,7 +225,9 @@ SQLite is opened with `MaxOpenConns(1)`. SQLite does not support concurrent writ
 
 The schema is created with `CREATE TABLE IF NOT EXISTS` on every startup. New columns added after the initial schema are applied by `addColumnIfMissing()` in `db/db.go`, which calls `ALTER TABLE ... ADD COLUMN` and treats "duplicate column name" as a success. This means the binary upgrades any existing database automatically on startup with no migration tool.
 
-Columns added via migration: `last_login_at`, `is_admin` (users table); `project`, `component`, `resolved_at`, `dependent_issues` (issues table).
+Columns added via migration: `last_login_at`, `is_admin`, `teams` (users table); `project`, `component`, `resolved_at`, `dependent_issues`, `teams`, `format` (issues table); `teams` (projects table). A new `teams` table is also created (`CREATE TABLE IF NOT EXISTS`, not a migration).
+
+**Teams backfill.** On first startup after the teams columns are added, `initSchema` seeds the two reserved teams (`admin`, `any`) and backfills: existing admin users get team `admin`, everyone else gets `any`; all existing projects and issues get `any` (visible to everyone, preserving pre-teams behavior). Each backfill is guarded by `WHERE teams = ''`, so it never runs twice and never overwrites an explicit assignment.
 
 **`dependent_issues` column.** Stores a comma-separated list of issue IDs (e.g. `"7,12,33"`). `parseDependentIssues` converts this to `[]int64`; `formatDependentIssues` converts back. The empty string represents no dependencies. `scanIssue()` centralizes all column scanning so every query function reuses the same scan logic. For Duplicate status the list holds exactly one ID; for Blocked it holds one or more; for all other statuses it is always empty (the handler clears it automatically).
 
@@ -218,6 +240,39 @@ SQLite does not enforce foreign keys by default. `db.DeleteIssue()` manually del
 ### SQL injection prevention in the issue list
 
 `GET /api/issues` accepts `sort` and `order` query parameters. Rather than interpolating them directly into SQL, `buildWhereClause` in `db/issues.go` uses a lookup table of hardcoded `"column ASC/DESC"` literals. Unknown column names fall back to `id DESC`. All other query parameters are passed as bind parameters, never string-interpolated.
+
+### Team-based access control
+
+Teams partition project and issue visibility. `db/teams.go` defines the model:
+
+- `ParseTeams`/`FormatTeams` convert between the comma-separated, lower-case `teams` column and `[]string`; a nil/empty slice formats back to `"any"`, so new rows default to visible-to-everyone unless explicitly restricted.
+- `IssueMatchesUserTeams(issueTeams, userTeams)` and `ProjectMatchesUserTeams` implement a four-way rule: (1) a user with the reserved `admin` team sees everything; (2) a user with the reserved `any` team sees everything; (3) an issue/project tagged `any` is visible to everyone; (4) otherwise, visibility requires a non-empty intersection between the user's teams and the resource's teams.
+- `handleListIssues` passes `currentUser(r).Teams` into `db.ListIssues`/`CountIssues`, which fold it into `buildWhereClause` as a SQL `LIKE`-based filter — filtering happens in the query, not after fetching. `handleListProjects` filters the (small) project list client-side in Go after fetching. Passing `nil` for `userTeams` skips filtering entirely, used internally wherever the caller already knows the result set is unrestricted.
+- `users.is_admin` is now *derived* from team membership (`ContainsTeam(teams, TeamAdmin)`) rather than being authoritative, but the column is still stored and kept in sync for any code that queries it directly.
+- `idtrack teams` / `PUT,POST,DELETE /api/teams` manage team records; deleting or renaming a reserved team (`admin`, `any`) is rejected, and a rename cascades to every user/project/issue referencing the old name in one transaction (`db.UpdateTeam`).
+
+---
+
+## Bulk Issue Ingestion (`idtrack ingest`)
+
+`idtrack ingest <file>...` (`commands/ingest.go`, parsing/inference logic in `commands/ingest_parse.go`) bulk-creates one issue per input file — built to import an existing corpus of bug write-ups without re-entering them by hand.
+
+### Atomicity via a `Querier` interface
+
+The whole batch must succeed or fail together: if any file is invalid, no issue is created for *any* file, not just the bad one.
+
+1. **Phase 1 — parse and validate, no DB writes.** Every file is read and turned into an in-memory `ingestPlan` (title, description, comments, status, priority, project, component). Any failure here (unreadable file, no derivable title/description) aborts before Phase 2 ever starts.
+2. **Phase 2 — one transaction for the whole batch.** `db.CreateIssue`, `GetIssue`, `UpdateIssue` (`db/issues.go`), and `CreateComment` (`db/comments.go`) take a `Querier` interface (`Exec`/`QueryRow`/`Query`) instead of `*sql.DB`, satisfied by both `*sql.DB` and `*sql.Tx` — existing HTTP handler call sites are unaffected since they already pass `*sql.DB`. `runIngestTx` begins a single `*sql.Tx`, calls these functions with it for every plan, and rolls back on the first error, so a failure on file N leaves zero issues from files 1..N-1 committed either.
+
+This is the pattern to reuse for any future feature that needs multiple database writes to succeed or fail together, rather than duplicating INSERT/UPDATE SQL inline or hand-rolling rollback logic.
+
+### Parsing heuristics
+
+- **Title:** the first line if it's a markdown `#` heading, else the first sentence of the text.
+- **Description/comments:** the file is split on section boundaries — markdown `##` headers, `**Bold Label:**` / `***Bold Label:***` lines, or plain `Label:` lines (ignored inside fenced code blocks). An explicitly labeled "Description" section is preferred as the issue description over free text before the first boundary — common in files that open with metadata (`**Severity:**`, `**Affected file:**`) before the real prose. Every other section becomes a comment, posted in file order.
+- **Status/priority:** detected from a "Resolution"/"Status" section (resolved/fixed/closed) or a "Severity"/"Risk" section (High/Critical, Medium, Low/Minor); falls back to `--default-status`/`--default-priority` when no signal is found.
+- **Project/component:** `inferProjectComponent` scores every known (project, component) pair by weighted keyword matching against the file name (highest weight), title, and body text (capped occurrence count, lowest weight). Falls back to `--default-project`/`--default-component` independently for project and component when no pair scores above threshold — an inferred project is never mixed with a component from a different project.
+- `--test` prints a per-file report (each field tagged with its source — inferred with a confidence score, or default) instead of writing to the database, for validating the heuristics against real input before a live run.
 
 ---
 
@@ -268,6 +323,13 @@ No credentials or tokens are stored in localStorage. The actual session credenti
 ### Server-side pagination and live polling
 
 The issue list uses an append-only window model (`_issueWindow`). `loadIssueWindow()` resets the window and fetches the first page. An `IntersectionObserver` on a bottom sentinel `<div>` triggers `loadNextPage()` as the user scrolls. All filtering and sorting happen server-side. A `_fetchGen` counter lets `loadIssueWindow()` discard stale responses when filters change rapidly. A 30-second `setInterval` calls `GET /api/issues/changes` to detect external mutations; affected rows update in place, new external changes show a toast with a manual "Refresh" button.
+
+### Team and format management UI
+
+- Hamburger menu has three admin-only items: **Edit Users…**, **Edit Teams…**, **Edit Projects…**. All three follow the same parent/child overlay pattern — a list screen that a detail screen always returns to on close (success, cancel, or backdrop click), so the list is guaranteed fresh.
+- **Edit Teams…** (`mt-list-overlay` → `mt-detail-overlay`) lists teams, and opens a detail screen to rename/redescribe/delete one or create a new one.
+- Add/Edit User and Edit Project detail screens include a team-chip picker (`renderTeamChips`/`addTeamChip`, autocompleting against a shared `#team-names-dl` datalist) instead of a plain admin checkbox or no team control at all.
+- New Issue and Issue Detail both have a **Format** dropdown (`text`/`markdown`/`html`) that controls how the server renders the description/comment preview (`renderFormatted()`'s HTML, fetched with the issue).
 
 ### Column visibility
 
@@ -371,6 +433,8 @@ Duration-type flags are stored as strings in `defaults.json` and parsed to `time
 | Content-Type enforcement | `requireJSON` middleware on all POST/PUT endpoints with a body |
 | Body size limit | `limitBody` middleware caps at 1 MB |
 | Issue authorization | Reporter, assignee, or admin may modify/delete; others receive 403 |
+| Team-based visibility | Issues/projects tagged with non-`any` teams are hidden from users outside those teams (see "Team-based access control") |
+| HTML issue format | `html`-formatted descriptions/comments pass through unsanitized — an explicit, trusted opt-in by an authenticated user, not user-generated content from an untrusted source |
 | Login rate limiting | Per-IP rate limiter on `POST /api/login` |
 | Admin last-admin guard | `db.CountAdmins()` checked before delete/demotion; blocks lockout |
 | SQL injection | Bind parameters everywhere; sort/order columns from a hardcoded allowlist |
