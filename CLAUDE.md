@@ -24,24 +24,32 @@ idtrack/
 │   ├── serve.go          # Serve(), Stop(), Restart(), launchBackground(), pid helpers
 │   ├── defaults.go       # Default() — read/write defaults.json; showDefaults() table
 │   ├── users.go          # User() — list/add/update/delete user accounts
+│   ├── teams.go          # Teams() — list/add/update/delete teams
 │   ├── projects.go       # Define(), Delete() — project and component management
+│   ├── ingest.go         # Ingest() — bulk-create issues from files, transaction-wrapped
+│   ├── ingest_parse.go   # Pure parsing/inference helpers used by Ingest (no DB access)
 │   └── version.go        # Version() — print build version and timestamp
 ├── db/
 │   ├── db.go             # Open(), schema init, migration helper
 │   ├── users.go          # User CRUD + RecordLogin + UpdateUser + ListUsers
-│   ├── issues.go         # Issue CRUD (list/get/create/update/delete)
+│   ├── teams.go          # Team CRUD + ParseTeams/FormatTeams + Issue/ProjectMatchesUserTeams
+│   ├── issues.go         # Issue CRUD (list/get/create/update/delete); Querier interface
 │   ├── comments.go       # Comment CRUD + DeleteComment
 │   └── projects.go       # Project/Component CRUD
 ├── server/
 │   ├── server.go         # srv struct + Start() — route wiring and TLS setup
 │   ├── middleware.go     # contextKey, auth(), requireJSON(), currentUser()
+│   ├── ratelimit.go      # per-IP login rate limiting (rateLimiter)
 │   ├── helpers.go        # issueID(), jsonResponse(), jsonError()
 │   ├── static.go         # static file handlers + handleManual()
+│   ├── minify.go         # JavaScript minifier used when serving idtrack.js
 │   ├── sessions.go       # sessionStore — create/lookup/delete session tokens
 │   ├── compress.go       # gzipHandler middleware + bufferingWriter
 │   ├── backup.go         # startBackups(), doBackup(), quiesce(), sizeBackups(), ageBackups()
+│   ├── render.go         # renderFormatted() — goldmark Markdown rendering for issue/comment bodies
 │   ├── auth_handlers.go  # handleVersion, handleStatus, handleOnboarding, handleLogin, handleLogout
 │   ├── users.go          # user CRUD handlers
+│   ├── teams.go          # team CRUD handlers
 │   ├── projects.go       # project/component CRUD handlers
 │   ├── issues.go         # issue CRUD handlers
 │   └── comments.go       # handleCreateComment, handleDeleteComment
@@ -81,6 +89,7 @@ Both default to `"dev"` / `""` when built with plain `go build` (no flags).
 - **HTTPS only** — TLS cert/key embedded in the binary via `embed.FS`; external cert/key files can be configured via `--server-cert`/`--server-key` to replace the built-in self-signed certificate
 - **Session-cookie auth** — browser sends plaintext password over TLS; server hashes with bcrypt (`golang.org/x/crypto/bcrypt`, default cost) and stores the hash in the DB. On login the server issues a cryptographically random 64-hex-char session token as an `HttpOnly; Secure; SameSite=Strict` cookie. The `auth` middleware validates the cookie against an in-memory `sessionStore` on each authenticated request. `POST /api/logout` deletes the server-side session and clears the cookie. Non-browser API clients may pass `Authorization: Bearer <token>` instead. Legacy SHA-256 hashes (from the old client-side scheme) are detected by format and transparently upgraded to bcrypt on first successful login.
 - **No framework** — `net/http` mux with Go 1.22+ path patterns (`GET /api/issues/{id}`)
+- **Markdown rendering** — `github.com/yuin/goldmark` renders issue/comment bodies server-side when an issue's `format` is `"markdown"` (see `server/render.go`); the only other non-stdlib runtime dependencies are `modernc.org/sqlite` and `golang.org/x/crypto`
 
 ## Database Schema
 
@@ -92,7 +101,8 @@ CREATE TABLE users (
     created_at    TEXT NOT NULL,   -- RFC3339 UTC
     -- added via migration:
     last_login_at TEXT NOT NULL DEFAULT '',
-    is_admin      INTEGER NOT NULL DEFAULT 0   -- 0=false, 1=true
+    is_admin      INTEGER NOT NULL DEFAULT 0,  -- 0=false, 1=true; kept in sync with teams below for compatibility
+    teams         TEXT NOT NULL DEFAULT ''     -- comma-separated, lower-case team names (see teams table)
 );
 
 CREATE TABLE issues (
@@ -102,13 +112,16 @@ CREATE TABLE issues (
     reporter    TEXT NOT NULL,     -- username (login name, not display name)
     assignee    TEXT NOT NULL DEFAULT '',
     priority    TEXT NOT NULL DEFAULT 'Medium',  -- High/Medium/Low
-    status      TEXT NOT NULL DEFAULT 'Open',    -- Open/Resolved
+    status      TEXT NOT NULL DEFAULT 'Open',    -- Open/Resolved/Blocked/Duplicate
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     -- added via migration:
-    project     TEXT NOT NULL DEFAULT '',
-    component   TEXT NOT NULL DEFAULT '',
-    resolved_at TEXT NOT NULL DEFAULT ''   -- set when status → Resolved; cleared when → Open
+    project          TEXT NOT NULL DEFAULT '',
+    component        TEXT NOT NULL DEFAULT '',
+    resolved_at      TEXT NOT NULL DEFAULT '',    -- set when status → Resolved/Duplicate; cleared when → Open/Blocked
+    dependent_issues TEXT NOT NULL DEFAULT '',    -- comma-separated issue IDs: one for Duplicate, one+ for Blocked
+    teams            TEXT NOT NULL DEFAULT '',    -- comma-separated team names that can see this issue
+    format           TEXT NOT NULL DEFAULT 'text' -- "text" | "markdown" | "html" — see server/render.go
 );
 
 CREATE TABLE comments (
@@ -120,7 +133,9 @@ CREATE TABLE comments (
 );
 
 CREATE TABLE projects (
-    name TEXT PRIMARY KEY
+    name  TEXT PRIMARY KEY,
+    -- added via migration:
+    teams TEXT NOT NULL DEFAULT ''  -- comma-separated team names that can see this project
 );
 
 CREATE TABLE components (
@@ -129,13 +144,20 @@ CREATE TABLE components (
     name    TEXT NOT NULL,
     UNIQUE(project, name)
 );
+
+CREATE TABLE teams (
+    name        TEXT PRIMARY KEY,      -- lower-case; "admin" and "any" are reserved (db.TeamAdmin/db.TeamAny)
+    description TEXT NOT NULL DEFAULT ''
+);
 ```
 
 ### Schema Migrations
 
-The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added after the initial schema (like `last_login_at`, `is_admin`, `project`, `component`, `resolved_at`) are applied via `addColumnIfMissing()` in `db/db.go`, which runs `ALTER TABLE ... ADD COLUMN` and ignores "duplicate column name" errors. This means the binary upgrades existing databases automatically on startup with no migration tooling needed.
+The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added after the initial schema (`last_login_at`, `is_admin`, `project`, `component`, `resolved_at`, `dependent_issues`, `teams` on users/projects/issues, `format`) are applied via `addColumnIfMissing()` in `db/db.go`, which runs `ALTER TABLE ... ADD COLUMN` and ignores "duplicate column name" errors. This means the binary upgrades existing databases automatically on startup with no migration tooling needed.
 
 **`resolved_at` backfill migration.** When `resolved_at` is first added to an existing database, a one-time UPDATE sets it for all Resolved issues that have at least one comment, using `MAX(comments.created_at)` as the best available proxy for when the issue was actually closed. Issues with no comments keep `resolved_at = ''`. The UPDATE is guarded by `WHERE resolved_at = ''` so it is a no-op on subsequent startups.
+
+**Teams backfill migration.** `initSchema` seeds the two reserved teams (`admin`, `any`) with `INSERT OR IGNORE`, then backfills the new `teams` columns: existing admin users get `'admin'`, everyone else gets `'any'`; existing projects and issues all get `'any'` (visible to everyone, preserving pre-teams behavior). Each backfill is guarded by `WHERE teams = ''`, so it is a no-op on subsequent startups and never overwrites an operator's explicit team assignment.
 
 ## Runtime Files (`~/.idtrack/`)
 
@@ -190,6 +212,16 @@ All `user` subcommands accept an optional `--database path` flag. Actions are po
 - `idtrack user add username:password [--name text] [--admin true|false]` — display name defaults to username; admin defaults to false; upserts on existing username.
 - `idtrack user update username [--name text] [--password text] [--admin true|false]` — only updates fields explicitly provided; user must already exist; `--admin` validated as `"true"` or `"false"`.
 - `idtrack user delete username` — hard-deletes the row; does not cascade to issues/comments.
+- `--admin` is a convenience alias for team membership: `--admin true` adds the reserved `admin` team, `--admin false` removes it. See `idtrack teams` and "Team-based access control" below.
+
+### `idtrack teams <subcommand> [--database path]`
+
+Manage teams, which partition project/issue visibility (see "Team-based access control" in Important Implementation Decisions). Positional subcommands:
+
+- `idtrack teams list` — tabular output: NAME, DESCRIPTION.
+- `idtrack teams add name [--description text]` — creates a team. Errors if the name is reserved (`admin`/`any`) or already exists.
+- `idtrack teams update name [--name new-name] [--description text]` — renames and/or redescribes a team; renaming cascades to every user/project/issue that references the old name (`db.UpdateTeam`, single transaction). Reserved teams cannot be renamed, but their description can still be updated.
+- `idtrack teams delete name` — errors if the team is reserved, or still referenced by any user, project, or issue (the error lists how many of each).
 
 ### `idtrack define <subcommand> [--database path]`
 
@@ -200,6 +232,20 @@ All `user` subcommands accept an optional `--database path` flag. Actions are po
 
 - `idtrack delete project name` — deletes the project and all its components. Errors (with issue list) if any issues reference that project.
 - `idtrack delete component project-name component-name` — deletes a single component. Errors (with issue list) if any issues reference that project+component pair.
+
+### `idtrack ingest <file> [file...] [options]`
+
+Bulk-creates one issue per input file, for importing an existing corpus of bug reports (`commands/ingest.go`, parsing/inference logic in `commands/ingest_parse.go`). All files are parsed and validated before any database write; every issue/comment insert for the whole batch runs inside a single `*sql.Tx` (via the `db.Querier` interface — see below), so a failure partway through the batch leaves the database completely unchanged.
+
+- `--author name` and `--default-owner name` (both required) — must be existing users; become every created issue's reporter and assignee respectively.
+- `--default-project name` and `--default-component name` (both required) — must be an existing project/component pair; used when a file's project/component can't be confidently inferred.
+- `--default-status open|resolved` (default `open`) and `--default-priority High|Medium|Low` (default `Medium`) — used when a file has no explicit status/priority signal.
+- `--test` — prints a per-file report (title, project/component/status/priority each tagged with its source and, for inferred fields, a confidence score) instead of writing to the database. Intended for validating the heuristics against real input before a live run.
+- **Title:** the first line if it's a markdown `#` heading, else the first sentence of the text.
+- **Description/comments:** the file is split on section boundaries — markdown `##` headers, `**Bold Label:**`/`***Bold Label:***` lines, or plain `Label:` lines (ignored inside fenced code blocks). An explicitly labeled "Description" section is preferred as the issue description over free text before the first boundary (common in the corpus this was built against, where metadata like Severity precedes the real description); every other section becomes a comment, in file order.
+- **Status/priority:** detected from a "Resolution"/"Status" section (resolved/fixed/closed) or a "Severity"/"Risk" section (High/Critical, Medium, Low/Minor); falls back to the `--default-*` flags when no signal is found.
+- **Project/component:** weighted keyword scoring (`inferProjectComponent` in `commands/ingest_parse.go`) of every known (project, component) pair against the file name, title, and body text — file name matches weigh most, then title, then capped body-occurrence count. Falls back to the defaults independently for project and component when no pair scores above threshold.
+- `.md` files are stored with `format = "markdown"`; anything else is stored as `"text"`.
 
 ## HTTP API
 
@@ -216,8 +262,13 @@ Authenticated endpoints require a valid session token delivered as an `HttpOnly;
 | POST | `/api/users` | yes | **yes** |
 | PUT | `/api/users/{username}` | yes | **yes** |
 | DELETE | `/api/users/{username}` | yes | **yes** |
+| GET | `/api/teams` | yes | no |
+| POST | `/api/teams` | yes | **yes** |
+| PUT | `/api/teams/{name}` | yes | **yes** |
+| DELETE | `/api/teams/{name}` | yes | **yes** |
 | GET | `/api/projects` | yes | no |
 | POST | `/api/projects` | yes | **yes** |
+| PUT | `/api/projects/{project}/teams` | yes | **yes** |
 | POST | `/api/projects/{project}/components` | yes | **yes** |
 | DELETE | `/api/projects/{project}` | yes | **yes** |
 | DELETE | `/api/projects/{project}/components/{component}` | yes | **yes** |
@@ -294,8 +345,8 @@ Preferences (dark mode, keep-me-logged-in) are in `localStorage` under `idtrack_
 
 - Issues table shows **Project** and **Component** columns (reporter column removed from table; reporter remains visible as read-only in the issue detail panel).
 - Sorting by project and component is supported in both the table headers and client-side sort.
-- **New Issue** form: a "Project" dropdown must be selected first; selecting it enables a cascaded "Component" dropdown. Both are required — the form will not submit without a valid project and component.
-- **Issue Detail** panel: Project and Component are editable `<select>` elements. Changing the Project resets the Component to "Choose…" and refills the component dropdown. Both are required to save.
+- **New Issue** form: a "Project" dropdown must be selected first; selecting it enables a cascaded "Component" dropdown. Both are required — the form will not submit without a valid project and component. A "Format" dropdown (`#ni-format`) selects `text`/`markdown`/`html` for the description.
+- **Issue Detail** panel: Project and Component are editable `<select>` elements. Changing the Project resets the Component to "Choose…" and refills the component dropdown. Both are required to save. A "Format" dropdown (`#detail-format`) is editable the same way; changing it re-renders the description/comment preview per `renderFormatted()`'s server-side HTML (fetched with the issue).
 - `populateProjectDropdowns()` fills both `ni-project` and `detail-project` from `_projectData`.
 - `populateComponentDropdown(selectId, projectName, selected)` cascades from a selected project.
 
@@ -303,9 +354,10 @@ Preferences (dark mode, keep-me-logged-in) are in `localStorage` under `idtrack_
 
 - **Delete Issue** button appears in the detail panel header only when `_currentUser.is_admin` is true. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}`.
 - **Trash icon** (🗑) appears on each comment only for admins. Requires a `confirm()` dialog before calling `DELETE /api/issues/{id}/comments/{cid}`.
-- Hamburger menu shows two additional admin-only items: **Edit Users…** and **Edit Projects…**.
-- **Edit Users…** opens `manage-users-overlay`, which lists all users and provides add/edit/delete in a single place. See "Overlay navigation pattern" below.
-- **Edit Projects…** opens a two-screen overlay (`ep-list-overlay` → `ep-detail-overlay`). The list screen shows all projects; clicking one opens the detail screen where components can be added/deleted inline and the project can be deleted. A **+ New Project** button on the list screen opens the detail screen in new-project mode (name as a text input, components staged before creation). Both screens handle duplicate name checks case-insensitively.
+- Hamburger menu shows three additional admin-only items: **Edit Users…**, **Edit Teams…**, and **Edit Projects…**.
+- **Edit Users…** opens `manage-users-overlay`, which lists all users and provides add/edit/delete in a single place. See "Overlay navigation pattern" below. The add/edit user forms include a team-chip picker (`renderTeamChips`/`addTeamChip`, autocompleting against `#team-names-dl`) instead of a plain admin toggle.
+- **Edit Teams…** opens `mt-list-overlay` → `mt-detail-overlay` (`openManageTeams()`/`openTeamDetail()`), following the same list/detail pattern as Edit Projects: the list screen shows all teams, clicking one opens the detail screen to rename/redescribe/delete it, and **+ New Team** opens the detail screen in create mode.
+- **Edit Projects…** opens a two-screen overlay (`ep-list-overlay` → `ep-detail-overlay`). The list screen shows all projects; clicking one opens the detail screen where components can be added/deleted inline, the project's team visibility can be edited via a team-chip picker (`epSaveTeams()`), and the project can be deleted. A **+ New Project** button on the list screen opens the detail screen in new-project mode (name as a text input, components staged before creation). Both screens handle duplicate name checks case-insensitively.
 - Non-admin users never see these controls. The server enforces admin on all mutate endpoints (returns 403 Forbidden).
 
 ### Status-change dialogs
@@ -414,10 +466,18 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 
 **`GET /api/issues/changes?since=<RFC3339>`** returns `{ issues: [...] }` — all issues whose `updated_at` is strictly after the given timestamp, ordered by `updated_at ASC`. Used by the polling loop to detect mutations without fetching the entire list. Registered before the `/{id}` wildcard pattern in `server/server.go` so the literal path `/changes` takes priority.
 
-**`db.CountIssues` and `db.ListIssues` share a WHERE clause builder.** `buildWhereClause(status, priority, search, project string)` in `db/issues.go` returns a `(clause string, args []interface{})` pair that is reused by both functions, ensuring the count and the data query always agree. `ORDER BY` is constructed from a lookup table of hardcoded `"column ASC/DESC"` literals (keyed by column name) to prevent SQL injection via the `sort` and `order` query parameters.
+**`db.CountIssues` and `db.ListIssues` share a WHERE clause builder.** `buildWhereClause(status, priority, search, project string, userTeams []string)` in `db/issues.go` returns a `(clause string, args []interface{})` pair that is reused by both functions, ensuring the count and the data query always agree. The `userTeams` argument folds in the team-visibility filter (see "Team-based access control" below); pass `nil` to skip it. `ORDER BY` is constructed from a lookup table of hardcoded `"column ASC/DESC"` literals (keyed by column name) to prevent SQL injection via the `sort` and `order` query parameters.
 
 **Backup strategy: filesystem copy with RWMutex quiescing.** When `backupInterval > 0`, `server/backup.go` manages all backup logic. `startBackups()` is called in `Start()` before `httpSrv.Serve` (so the first backup is written before any requests are served). It creates an `idtrack-backups/` directory next to the database file, writes an initial backup synchronously, then launches a goroutine that fires `doBackup()` every `backupInterval`. `doBackup` takes `s.backupMu.Lock()` (write lock) to quiesce the server, calls `copyFile` (io.Copy + fsync), releases the lock, then runs `ageBackups` in a separate goroutine. Every HTTP request holds `s.backupMu.RLock()` via the `quiesce` middleware, which wraps the entire mux. The RWMutex ensures: in-flight requests finish before the backup copy starts; new requests block (briefly) while the copy is in progress; no 503 is returned to clients. `ageBackups` runs three thinning strategies in order: (1) `sizeBackups` — Time Machine-style density thinning to a total byte limit; (2) count pruning — delete oldest beyond the count limit; (3) age pruning — delete files whose embedded timestamp is before `now − backupAge`. Backup filenames embed the UTC timestamp (`idtrack-20060102T150405.db`) so alphabetical and chronological order coincide and the age can be recovered from the name without touching the filesystem mtime.
 
 **Size-based thinning uses four deletion phases.** `sizeBackups()` in `server/backup.go` categorises all backup files into hourly buckets (ages 1–23 h) and daily buckets (ages ≥ 24 h). When total size exceeds `s.backupSize` it deletes in order: (1) extras within hourly buckets, newest bucket first; (2) extras within daily buckets, newest day first; (3) the hourly-23 keeper if daily-1 already exists (pre-emptive aging); (4) the oldest daily keeper. Last-hour files (age < 1 h) are never touched. `parseBackupSize()` in `commands/common.go` converts human-readable strings (`500mb`, `.5gb`, `1tb`) to `int64` bytes; it is shared by `commands/defaults.go` (validation) and `commands/serve.go` (parsing for `server.Start()`).
 
 **HTTP response compression uses a buffering middleware with a 1,400-byte threshold.** `gzipHandler` in `server/compress.go` wraps the outermost layer of the middleware chain (outside `secureHeaders`, `limitBody`, and `quiesce`). It checks `Accept-Encoding: gzip`; if absent, it passes through unchanged. If present, it wraps the `ResponseWriter` with a `bufferingWriter` that captures the response body. After the handler returns, `bufferingWriter.flush()` checks the body size: if ≥ 1,400 bytes (one Ethernet MTU payload), it compresses with `compress/gzip` (stdlib, no new dependencies), sets `Content-Encoding: gzip`, removes `Content-Length`, and writes the compressed bytes; smaller responses are written uncompressed. Every response gets `Vary: Accept-Encoding` regardless of whether compression was applied. The 1,400-byte threshold is chosen because a payload that fits in a single TCP segment cannot arrive faster via compression — any savings require avoiding a second packet. In practice this threshold compresses all static assets (JS ≈ 80% reduction, CSS ≈ 75%), all multi-issue API responses, and large comment threads, while skipping login/status/polling responses where CPU overhead would exceed any gain.
+
+**Team-based access control uses a four-way visibility rule.** `db.IssueMatchesUserTeams(issueTeams, userTeams)` and its project counterpart `ProjectMatchesUserTeams` (`db/teams.go`) implement: (1) a user with the reserved `admin` team sees everything; (2) a user with the reserved `any` team sees everything; (3) an issue/project tagged `any` is visible to everyone; (4) otherwise, visibility requires a non-empty intersection between the user's teams and the issue's/project's teams. `handleListIssues` passes `currentUser(r).Teams` through to `db.ListIssues`/`CountIssues`, which fold it into the SQL `WHERE` clause built by `buildWhereClause`; `handleListProjects` filters client-side with `ProjectMatchesUserTeams` after fetching all projects. Passing `nil` for `userTeams` skips filtering entirely (used where the caller already knows the user can see everything). `users.is_admin` is now *derived* from team membership (`ContainsTeam(teams, TeamAdmin)`) rather than being authoritative, but is still stored and kept in sync for code that queries it directly. New users/projects/issues default to team `any` (`FormatTeams` returns `"any"` for a nil/empty slice), so the pre-teams "everyone sees everything" behavior is the default unless an operator explicitly restricts a project.
+
+**Markdown/HTML issue formatting renders server-side, once, per response.** The `format` column on `issues` (`text`/`markdown`/`html`) is set via the `POST /api/issues` and `PUT /api/issues/{id}` request bodies. `renderFormatted(format, text)` in `server/render.go` converts `markdown` to HTML using a package-level, concurrency-safe `goldmark.New()` instance; `html` passes through verbatim (an authenticated user choosing that format is an explicit, trusted opt-in — the same trust boundary as every other write in this single-tenant tool); `text` returns `""` so the frontend keeps doing its own escaping. `handleGetIssue` and `handleUpdateIssue` populate the transient `Issue.DescriptionHTML`/`Comment.BodyHTML` fields (`json:"...,omitempty"`, never persisted) so the client can render without a second round-trip.
+
+**`idtrack ingest` atomicity is built on a `db.Querier` interface, not ad hoc transaction handling.** `db.CreateIssue`, `GetIssue`, `UpdateIssue` (`db/issues.go`), and `CreateComment` (`db/comments.go`) take a `Querier` (`Exec`/`QueryRow`/`Query`) instead of `*sql.DB`, satisfied by both `*sql.DB` and `*sql.Tx`. Every existing HTTP handler call site is unaffected since it already passes `*sql.DB`. `commands.runIngestTx` begins one `*sql.Tx` for the whole file batch, calls these functions with it, and rolls back on the first error, so a failure on file N leaves zero issues from files 1..N-1 committed either. **Reuse this pattern** — widen the relevant `db.*` function signatures to `Querier` — for any future feature that needs multiple DB writes to succeed or fail together, rather than duplicating INSERT/UPDATE SQL inline.
+
+**Login attempts are rate-limited per client IP.** `server/ratelimit.go`'s `rateLimiter` (in-memory, sliding one-minute window, 10 failed attempts before lockout) is checked in `handleLogin` before password verification; a locked-out IP gets `429 Too Many Requests` with `Retry-After: 60`. `recordFailure`/`clear` are only called after the credential check, so a lockout counts failed attempts, not successful or as-yet-unattempted logins.
