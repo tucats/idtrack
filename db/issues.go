@@ -255,17 +255,28 @@ func CountIssues(database *sql.DB, status, priority, search, project string, use
 	return n, err
 }
 
-// ListChanges returns all issues whose updated_at is strictly after since.
-func ListChanges(database *sql.DB, since string) ([]Issue, error) {
+// ListChanges returns issues visible to userTeams whose updated_at is
+// strictly after since. Deliberately NOT filtered by status/priority/search/
+// project the way ListIssues is: filtering by an issue's *current* state
+// cannot detect an issue that just transitioned away from matching a filter
+// (e.g. Open → Resolved no longer matches status=Open), so a client needs to
+// see the full set of team-visible changes and decide relevance itself
+// (matchesCurrentFilters() in idtrack.js) — both to recognize new matches
+// and to remove issues that just left its active filter. Pass nil for
+// userTeams to skip team filtering.
+func ListChanges(database *sql.DB, since string, userTeams []string) ([]Issue, error) {
 	var issues []Issue
 
 	if since == "" {
 		return []Issue{}, nil
 	}
 
+	where, args := buildWhereClause("", "", "", "", userTeams)
+	args = append(args, since)
+
 	rows, err := database.Query(
-		`SELECT `+issueColumns+` FROM issues WHERE updated_at > ? ORDER BY updated_at ASC`,
-		since,
+		`SELECT `+issueColumns+` FROM issues`+where+` AND updated_at > ? ORDER BY updated_at ASC`,
+		args...,
 	)
 	if err != nil {
 		return nil, err

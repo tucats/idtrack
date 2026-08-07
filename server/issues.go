@@ -116,9 +116,19 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListChanges returns all issues whose updated_at is strictly after the
-// "since" query parameter (an RFC3339 timestamp). Used by the frontend to poll
-// for changes made by other users without discarding the current scroll state.
+// handleListChanges returns issues whose updated_at is strictly after the
+// "since" query parameter (an RFC3339 timestamp), restricted only by the
+// caller's team visibility. Used by the frontend to poll for changes made by
+// other users without discarding the current scroll state.
+//
+// Deliberately NOT filtered by status/priority/project/search: filtering by
+// an issue's current state can't represent "this issue just stopped matching
+// your filter" (e.g. Open → Resolved no longer matches status=Open), which
+// the client needs to know in order to remove that issue from a filtered
+// view. The frontend applies status/priority/project/search relevance
+// client-side (matchesCurrentFilters() in idtrack.js) against this broader,
+// team-filtered result set — both to recognize new matches and to detect
+// issues that left the active filter.
 func (s *srv) handleListChanges(w http.ResponseWriter, r *http.Request) {
 	since := r.URL.Query().Get("since")
 	if since == "" {
@@ -127,21 +137,13 @@ func (s *srv) handleListChanges(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	all, err := db.ListChanges(s.database, since)
+	userTeams := currentUser(r).Teams
+
+	issues, err := db.ListChanges(s.database, since, userTeams)
 	if err != nil {
 		jsonError(w, "server error", http.StatusInternalServerError)
 
 		return
-	}
-
-	// Filter changes by team visibility.
-	userTeams := currentUser(r).Teams
-	issues := make([]db.Issue, 0, len(all))
-
-	for _, iss := range all {
-		if db.IssueMatchesUserTeams(iss.Teams, userTeams) {
-			issues = append(issues, iss)
-		}
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{

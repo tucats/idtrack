@@ -745,6 +745,44 @@ func TestHandleListChanges(t *testing.T) {
 	}
 }
 
+// TestHandleListChanges_ReportsStatusTransitionUnfiltered confirms that
+// /api/issues/changes is NOT filtered by status: an issue that just
+// transitioned to Resolved is still reported, even though a status=open
+// filter (if applied server-side) would exclude it. The frontend relies on
+// seeing this to detect and remove issues that just left a filtered view —
+// see the handleListChanges doc comment for why server-side status filtering
+// on this endpoint would be actively wrong.
+func TestHandleListChanges_ReportsStatusTransitionUnfiltered(t *testing.T) {
+	s := newTestSrv(t)
+	token := addTestUser(t, s, testUser, false)
+	issue, _ := db.CreateIssue(s.database, "Open issue", "", testUser, testUser, "Medium", "p", "c", "")
+
+	if _, err := db.UpdateIssue(s.database, issue.ID, issue.Title, issue.Description, issue.Priority, "Resolved", issue.Assignee, issue.Project, issue.Component, issue.Format, nil, nil); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	r := jsonReq(t, http.MethodGet, "/api/issues/changes?since=2000-01-01T00:00:00Z", "", token)
+	w := do(s, s.handleListChanges, r)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status: got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+
+	json.NewDecoder(w.Body).Decode(&resp)
+
+	issues, _ := resp["issues"].([]interface{})
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(issues))
+	}
+
+	got := issues[0].(map[string]interface{})
+	if got["status"] != "Resolved" {
+		t.Errorf("status: got %v, want Resolved", got["status"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Comment handlers
 // ---------------------------------------------------------------------------

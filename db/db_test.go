@@ -957,7 +957,7 @@ func TestListChanges(t *testing.T) {
 	i1, _ := db.CreateIssue(d, "A", "", "r", "", "Medium", "p", "c", "")
 
 	// Empty since returns nothing.
-	results, err := db.ListChanges(d, "")
+	results, err := db.ListChanges(d, "", nil)
 	if err != nil {
 		t.Fatalf("ListChanges empty since: %v", err)
 	}
@@ -967,13 +967,30 @@ func TestListChanges(t *testing.T) {
 	}
 
 	// since before all records returns the issue.
-	results, err = db.ListChanges(d, "2000-01-01T00:00:00Z")
+	results, err = db.ListChanges(d, "2000-01-01T00:00:00Z", nil)
 	if err != nil {
 		t.Fatalf("ListChanges: %v", err)
 	}
 
 	if len(results) != 1 || results[0].ID != i1.ID {
 		t.Errorf("expected 1 result, got %d", len(results))
+	}
+
+	// ListChanges is deliberately unfiltered by status/priority/project/search
+	// (see the ListChanges doc comment for why) — a status change is still
+	// reported even though the issue's current status no longer matches what
+	// it "used to be", so the client can detect it left a filtered view.
+	if _, err := db.UpdateIssue(d, i1.ID, i1.Title, i1.Description, i1.Priority, "Resolved", i1.Assignee, i1.Project, i1.Component, i1.Format, nil, nil); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	results, err = db.ListChanges(d, "2000-01-01T00:00:00Z", nil)
+	if err != nil {
+		t.Fatalf("ListChanges after status change: %v", err)
+	}
+
+	if len(results) != 1 || results[0].Status != "Resolved" {
+		t.Errorf("expected 1 resolved result, got %d (status=%v)", len(results), results)
 	}
 }
 

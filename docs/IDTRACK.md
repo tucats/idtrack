@@ -292,7 +292,16 @@ Full table: see [CLAUDE.md](../CLAUDE.md#http-api) or the MANUAL.
 
 ### Changes polling
 
-`GET /api/issues/changes?since=<RFC3339>` returns all issues whose `updated_at` is strictly after `since`. The frontend polls this every 30 seconds to detect edits by other users and update the visible list in place. The `/changes` path is registered before the `/{id}` wildcard so the literal path takes priority over the pattern.
+`GET /api/issues/changes?since=<RFC3339>` returns issues whose `updated_at` is strictly after `since`, restricted only by the caller's team visibility. Unlike `GET /api/issues`, it does **not** accept status/priority/project/search filters — filtering by an issue's current state can't represent "this issue just stopped matching the filter" (e.g. Open→Resolved no longer matches `status=open`), so a status-filtered changes query can never report an issue leaving a filtered view. Instead the frontend fetches the full team-visible change set and applies relevance itself with `matchesCurrentFilters()`:
+
+- Matches the active filter and already visible → updated in place.
+- Matches the active filter but not yet visible → counted toward the refresh-hint toast (new issue, or one that just started matching).
+- No longer matches the active filter but is currently visible → removed from the list immediately (this is a complete update, so there's nothing to wait for "Refresh" to do).
+- Neither matches nor visible → ignored — this is what keeps unrelated database activity from popping the toast.
+
+The frontend polls this every 30 seconds. The `/changes` path is registered before the `/{id}` wildcard so the literal path takes priority over the pattern.
+
+**Polling cursor correctness.** The frontend's polling cursor (`_lastSeenAt`) is seeded to the current time when the window loads, not the maximum `updated_at` among the loaded page — that page is only the current filter/sort's first N rows, so its max timestamp is often much older than "now," which previously caused the poll to report unrelated, already-existing issues as fresh changes. See `_nowRFC3339()` and the `_lastSeenAt` comment in `resources/idtrack.js`.
 
 ---
 

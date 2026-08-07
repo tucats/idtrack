@@ -70,8 +70,20 @@ let _epPendingComponents = [];
 //                 Grows page-by-page; never trimmed (append-only scroll model).
 // _totalIssues  — the server-reported count of ALL matching rows (not just the
 //                 loaded ones). Used to know when there are no more pages to fetch.
-// _lastSeenAt   — the maximum updated_at timestamp seen in _issueWindow. Sent to
-//                 the server as a cursor when polling: "give me anything newer than this."
+// _lastSeenAt   — the polling cursor sent to the server as "give me anything
+//                 newer than this." Set to the current time when the window
+//                 loads (see loadIssueWindow()), NOT the max updated_at within
+//                 _issueWindow — that window is only the current filter/sort's
+//                 first page, so its max timestamp is often much older than
+//                 "now" (e.g. sorted by a column other than Updated, or
+//                 filtered to exclude a recently-touched issue), while
+//                 GET /api/issues/changes ignores the active filter entirely.
+//                 Using the window's max as the cursor previously caused
+//                 pollForChanges() to report unrelated, already-existing
+//                 issues as "new changes" on every poll. It is still
+//                 ratcheted forward (never backward) by _updateLastSeenAt()
+//                 as pages load, as a safety net against client/server clock
+//                 skew.
 // _fetchGen     — "generation counter" to prevent stale responses from landing.
 //                 Each call to loadIssueWindow() increments this before the fetch.
 //                 When the response arrives we check if the counter still matches;
@@ -475,6 +487,22 @@ async function fetchUsers() {
     return data.users || [];
 }
 
+// currentFilterParams returns a URLSearchParams populated with the active
+// status/priority/project/search filters (not sort or pagination), for
+// fetchIssuePage(). NOT used by pollForChanges() — the changes endpoint is
+// deliberately unfiltered by these fields (see its doc comment and
+// matchesCurrentFilters()) so the client can detect issues that just left
+// the active filter, not only ones that still match it.
+function currentFilterParams() {
+    const params = new URLSearchParams();
+    if (_statusFilter !== 'all')   params.set('status',   _statusFilter);
+    if (_priorityFilter !== 'all') params.set('priority', _priorityFilter);
+    if (_projectFilter !== 'all')  params.set('project',  _projectFilter);
+    const q = (document.getElementById('search-input') || {}).value || '';
+    if (q) params.set('search', q);
+    return params;
+}
+
 // GET /api/issues
 // fetchIssuePage fetches one page of issues from the server using the current
 // filter/sort state. Returns { issues, total } where total is the count of all
@@ -483,12 +511,7 @@ async function fetchUsers() {
 // Response shape: { issues: [...], total: N, offset: N, limit: N }
 async function fetchIssuePage(offset, limit) {
     limit = limit || _pageSize;
-    const params = new URLSearchParams();
-    if (_statusFilter !== 'all')   params.set('status',   _statusFilter);
-    if (_priorityFilter !== 'all') params.set('priority', _priorityFilter);
-    if (_projectFilter !== 'all')  params.set('project',  _projectFilter);
-    const q = (document.getElementById('search-input') || {}).value || '';
-    if (q) params.set('search', q);
+    const params = currentFilterParams();
     params.set('sort',   _sortCol);
     params.set('order',  _sortAsc ? 'asc' : 'desc');
     params.set('limit',  String(limit));
@@ -888,7 +911,11 @@ async function loadIssueWindow() {
         if (gen !== _fetchGen) return; // a newer filter change superseded this fetch
         _issueWindow = issues;
         _totalIssues = total;
-        _updateLastSeenAt(issues);
+        // Seed the polling cursor to "now", not the loaded page's max
+        // updated_at — see the _lastSeenAt comment above for why that
+        // previously caused false-positive "new changes" toasts.
+        _lastSeenAt = _nowRFC3339();
+        _updateLastSeenAt(issues); // ratchet forward if server clock is ahead
         renderIssueWindow();
         updateIssueCounter();
         setupScrollObserver();
@@ -932,6 +959,19 @@ function _updateLastSeenAt(issues) {
     for (const iss of issues) {
         if (!_lastSeenAt || iss.updated_at > _lastSeenAt) _lastSeenAt = iss.updated_at;
     }
+}
+
+// _nowRFC3339 returns the current time in the same textual format the server
+// uses for updated_at (Go's time.RFC3339, no fractional seconds), so
+// lexicographic comparisons against it stay valid. Date.toISOString() always
+// includes milliseconds (e.g. "...45.123Z"); comparing that directly against
+// a same-second server timestamp with no fractional part (e.g. "...45Z")
+// would be WRONG — "." (0x2E) sorts before "Z" (0x5A), so the millisecond
+// string would lexicographically compare as "less than" the whole-second one
+// even though it represents a later instant. Stripping the milliseconds
+// avoids that trap.
+function _nowRFC3339() {
+    return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 // issueRow returns the HTML string for a single table row. The data-id
@@ -2790,19 +2830,35 @@ function stopPolling() {
 }
 
 // pollForChanges is called every 30 seconds by the setInterval timer. It
-// asks the server for any issues updated after _lastSeenAt and handles them:
+// asks the server for every team-visible issue updated after _lastSeenAt
+// (deliberately NOT scoped by status/priority/project/search — see
+// handleListChanges' doc comment for why) and decides relevance itself with
+// matchesCurrentFilters(), the same check doSaveIssue() uses after the
+// user's own edits:
 //
-//   • Issues already in _issueWindow are updated in-place (same technique as
-//     doSaveIssue: replace the JS object in the array and swap the DOM row).
-//     We skip the currently-open issue so we don't clobber a user's in-progress
-//     edits with a change another user just made.
+//   • Matches the active filter AND already in _issueWindow: updated in-place
+//     (same technique as doSaveIssue: replace the JS object in the array and
+//     swap the DOM row). Skipped for the currently-open issue so we don't
+//     stomp a user's in-progress edit with a change another user just made.
 //
-//   • Issues not in the window (new issues, or issues on pages not yet loaded)
-//     are counted. If any are found we show the refresh-hint toast so the user
-//     can choose to reload the list without losing their scroll position.
+//   • Matches the active filter but NOT in the window: a genuinely new match
+//     (new issue, or an issue that just started matching the filter). Counted
+//     toward the refresh-hint toast rather than inserted directly, so the
+//     user's scroll position isn't disturbed — "Refresh" reloads the window.
 //
-//   • _lastSeenAt is advanced after each batch so the next poll only requests
-//     changes that occurred since this poll ran.
+//   • Does NOT match the active filter but IS in the window: the issue just
+//     left the current view (e.g. Resolved while filtering Status=Open).
+//     Removed from _issueWindow and the DOM immediately — this is a complete,
+//     unambiguous update, so there's nothing for "Refresh" to do and no need
+//     to wait for the user to click it.
+//
+//   • Does NOT match the active filter and is NOT in the window: irrelevant
+//     to the current view (e.g. a change in a different project). Ignored
+//     entirely — this is what keeps the toast from firing on unrelated
+//     database activity.
+//
+// _lastSeenAt is advanced after each batch so the next poll only requests
+// changes that occurred since this poll ran.
 //
 // Errors are silently swallowed — a network blip shouldn't pop an alert; the
 // next poll will pick up any missed changes. 401 Unauthorized (expired session)
@@ -2814,20 +2870,33 @@ async function pollForChanges() {
         const changed = data.issues || [];
         if (changed.length === 0) return;
         let externalChanges = 0;
+        let removed = 0;
         for (const iss of changed) {
             const idx = _issueWindow.findIndex(i => i.id === iss.id);
+            const matches = matchesCurrentFilters(iss);
             if (idx !== -1) {
-                // Already in the window: update in-place unless the user is
-                // currently editing it (don't stomp unsaved changes).
-                if (iss.id !== _currentId) {
+                if (iss.id === _currentId) {
+                    // Currently open in the detail panel: leave the row and
+                    // window entry alone regardless of match — don't stomp an
+                    // in-progress edit or yank the panel out from under the user.
+                } else if (matches) {
                     _issueWindow[idx] = iss;
                     const tr = document.querySelector(`#issues-tbody tr[data-id="${iss.id}"]`);
                     if (tr) tr.outerHTML = issueRow(iss);
+                } else {
+                    _issueWindow.splice(idx, 1);
+                    const tr = document.querySelector(`#issues-tbody tr[data-id="${iss.id}"]`);
+                    if (tr) tr.remove();
+                    removed++;
                 }
-            } else {
+            } else if (matches) {
                 externalChanges++;
             }
             if (iss.updated_at > (_lastSeenAt || '')) _lastSeenAt = iss.updated_at;
+        }
+        if (removed > 0) {
+            _totalIssues = Math.max(0, _totalIssues - removed);
+            updateIssueCounter();
         }
         if (externalChanges > 0) {
             showRefreshHint(externalChanges + ' new or updated issue' + (externalChanges === 1 ? '' : 's') + ' available.');
