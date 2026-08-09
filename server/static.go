@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 )
 
@@ -82,7 +83,10 @@ func (s *srv) handleManual(w http.ResponseWriter, r *http.Request) {
 	// id attributes on heading elements so TOC anchor links work.
 	var body bytes.Buffer
 
-	md := goldmark.New(goldmark.WithParserOptions(parser.WithAutoHeadingID()))
+	md := goldmark.New(
+		goldmark.WithExtensions(extension.GFM),
+		goldmark.WithParserOptions(parser.WithAutoHeadingID()),
+	)
 	if err := md.Convert(src, &body); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 

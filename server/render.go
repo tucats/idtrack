@@ -6,12 +6,16 @@ import (
 	"net/http"
 
 	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 )
 
 // mdRenderer is a package-level goldmark instance reused across requests —
 // goldmark.Markdown is safe for concurrent use once configured, so there is
-// no need to construct one per call.
-var mdRenderer = goldmark.New()
+// no need to construct one per call. extension.GFM adds table, strikethrough,
+// autolinking, and task-list support on top of goldmark's CommonMark-only
+// default, matching the Github-flavored markdown authors of issue reports
+// and comments already expect (e.g. "| col | col |" tables).
+var mdRenderer = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
 // renderFormatted converts text to HTML according to format, for display in
 // contexts (the issue description, comment bodies) that render per the

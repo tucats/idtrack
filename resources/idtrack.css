@@ -725,6 +725,17 @@ html.hide-col-comments  .col-comments  { display: none; }
 .rendered-html pre code { background: none; padding: 0; }
 .rendered-html a { color: var(--primary); }
 .rendered-html img { max-width: 100%; }
+.rendered-html table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: .5em 0;
+}
+.rendered-html th, .rendered-html td {
+  border: 1px solid var(--border-dark);
+  padding: .4em .7em;
+  text-align: left;
+}
+.rendered-html th { background: var(--border); }
 .btn-trash {
   margin-left: auto;
   background: none;
