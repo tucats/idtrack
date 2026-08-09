@@ -88,7 +88,7 @@
       </div>
       <div class="form-group">
         <label for="ni-format">Format</label>
-        <select id="ni-format">
+        <select id="ni-format" onchange="onNiFormatChange()">
           <option value="text" selected>Text</option>
           <option value="markdown">Markdown</option>
           <!-- "html" is fully supported server-side and in rendering; only the
@@ -114,8 +114,15 @@
       </div>
     </div>
     <div class="form-group">
-      <label for="ni-desc">Description</label>
-      <textarea id="ni-desc" rows="5" placeholder="Describe the issue in detail…"></textarea>
+      <div class="desc-label-row">
+        <label for="ni-desc">Description</label>
+        <div id="ni-desc-toggle" class="desc-toggle" style="display:none">
+          <button type="button" id="ni-desc-edit-btn" class="btn btn-secondary btn-sm" onclick="switchNiDescToEdit()">Edit</button>
+          <button type="button" id="ni-desc-preview-btn" class="btn btn-secondary btn-sm" onclick="switchNiDescToPreview()">Preview</button>
+        </div>
+      </div>
+      <textarea id="ni-desc" rows="5" placeholder="Describe the issue in detail…" onblur="onNiDescBlur()"></textarea>
+      <div id="ni-desc-preview" class="rendered-html editable-preview" style="display:none" onclick="switchNiDescToEdit()"></div>
     </div>
     <div id="ni-error" class="error-text"></div>
     <div class="button-row">
@@ -666,7 +673,7 @@
           </div>
           <textarea id="detail-desc" class="detail-textarea" rows="6"
                     oninput="markDetailDirty()" onblur="onDescBlur()"></textarea>
-          <div id="detail-desc-preview" class="rendered-html desc-preview" style="display:none" onclick="switchDescToEdit()"></div>
+          <div id="detail-desc-preview" class="rendered-html editable-preview" style="display:none" onclick="switchDescToEdit()"></div>
         </div>
         <div id="detail-error" class="error-text"></div>
 
@@ -682,7 +689,7 @@
                       placeholder="Add a comment…"
                       onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey))submitComment()"
                       onblur="onCommentBlur()"></textarea>
-            <div id="comment-preview" class="rendered-html comment-preview" style="display:none" onclick="switchCommentToEdit()"></div>
+            <div id="comment-preview" class="rendered-html editable-preview" style="display:none" onclick="switchCommentToEdit()"></div>
             <div class="button-row">
               <button class="btn btn-primary btn-sm" onclick="submitComment()">Add Comment</button>
               <span class="hint">Ctrl+Enter to submit</span>

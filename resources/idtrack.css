@@ -518,7 +518,7 @@ html.hide-col-comments  .col-comments  { display: none; }
   margin-bottom: .875rem;
 }
 .detail-field > label,
-.desc-label-row > label {
+.detail-field .desc-label-row > label {
   display: block;
   font-size: .75rem;
   font-weight: 700;
@@ -527,16 +527,27 @@ html.hide-col-comments  .col-comments  { display: none; }
   color: var(--text-muted);
   margin-bottom: .3rem;
 }
+/* .desc-label-row itself is shared with the New Issue form's .form-group,
+   where .form-group label already supplies the label styling — only the
+   flex layout is shared here, not the detail-panel label appearance. */
 .desc-label-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
 }
 .desc-toggle { display: flex; gap: .4rem; }
-#detail-desc-preview.desc-preview { cursor: text; min-height: 4.5rem; }
 
 .comment-toggle-row { display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .35rem; }
-#comment-preview.comment-preview { cursor: text; min-height: 2.5rem; margin-bottom: .35rem; }
+
+/* Shared styling for the clickable rendered-preview surfaces that pair with
+   an Edit/Preview toggle (issue description, new-comment draft, new-issue
+   description): border/padding/background match the textarea they replace,
+   and the whole box is a click target for entering edit mode. */
+.editable-preview {
+  cursor: text;
+  min-height: 4.5rem;
+}
+#comment-preview.editable-preview { min-height: 2.5rem; margin-bottom: .35rem; }
 .detail-fields-row {
   display: flex;
   gap: .75rem;
@@ -675,8 +686,7 @@ html.hide-col-comments  .col-comments  { display: none; }
 .comment-body.rendered-html {
   white-space: normal;
 }
-#detail-desc-preview.rendered-html,
-#comment-preview.rendered-html {
+.editable-preview.rendered-html {
   padding: .5rem .75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);

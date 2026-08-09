@@ -1952,6 +1952,7 @@ async function showNewIssue() {
     document.getElementById('ni-format').value = 'text';
     document.getElementById('ni-desc').value = '';
     document.getElementById('ni-error').textContent = '';
+    initNiDescToggle();
     document.getElementById('ni-project').value = '';
     const niComp = document.getElementById('ni-component');
     niComp.innerHTML = '<option value="">Choose component…</option>';
@@ -1965,6 +1966,75 @@ async function showNewIssue() {
 
 function hideNewIssue() {
     document.getElementById('new-issue-overlay').style.display = 'none';
+}
+
+// The New Issue form's description field gets the same Edit/Preview toggle
+// as the detail panel's description and the new-comment box. Like the
+// comment box (and unlike the detail description), it always starts empty,
+// so it defaults to edit mode rather than preview mode.
+
+// initNiDescToggle resets the toggle to match the form's default "text"
+// format (hidden, edit mode) when the New Issue overlay opens.
+function initNiDescToggle() {
+    updateNiDescToggleVisibility('text');
+}
+
+// updateNiDescToggleVisibility shows/hides the toggle for the given format.
+// Forces edit mode when the format no longer supports a toggle.
+function updateNiDescToggleVisibility(format) {
+    const isFormatted = !!format && format !== 'text';
+    document.getElementById('ni-desc-toggle').style.display = isFormatted ? '' : 'none';
+    if (!isFormatted) showNiDescEdit();
+}
+
+// onNiFormatChange is the onchange handler for the New Issue form's Format
+// dropdown: it updates the description toggle for the newly selected format
+// without otherwise disturbing whatever the user has already typed.
+function onNiFormatChange() {
+    updateNiDescToggleVisibility(document.getElementById('ni-format').value);
+}
+
+// showNiDescEdit displays the raw-text textarea and hides the preview.
+function showNiDescEdit() {
+    document.getElementById('ni-desc').style.display = '';
+    document.getElementById('ni-desc-preview').style.display = 'none';
+}
+
+// showNiDescPreview displays the given rendered HTML and hides the textarea.
+function showNiDescPreview(html) {
+    const preview = document.getElementById('ni-desc-preview');
+    preview.innerHTML = html;
+    preview.style.display = '';
+    document.getElementById('ni-desc').style.display = 'none';
+}
+
+// switchNiDescToEdit is called by the Edit button and by clicking directly
+// on the rendered preview. No-op for plain-text issues (there's no toggle).
+function switchNiDescToEdit() {
+    if (document.getElementById('ni-format').value === 'text') return;
+    showNiDescEdit();
+    document.getElementById('ni-desc').focus();
+}
+
+// switchNiDescToPreview renders the current draft server-side (via
+// POST /api/render) and switches the field to show the result. Called by
+// the Preview button and by the textarea losing focus. No-op for
+// plain-text issues.
+async function switchNiDescToPreview() {
+    const format = document.getElementById('ni-format').value;
+    if (format === 'text') return;
+    const text = document.getElementById('ni-desc').value;
+    try {
+        showNiDescPreview(await renderPreview(format, text));
+    } catch (e) {
+        if (e.message !== 'Unauthorized') console.error('switchNiDescToPreview:', e);
+    }
+}
+
+// onNiDescBlur reverts the description field to the formatted preview when
+// the textarea loses focus (e.g. tabbing to the next field).
+function onNiDescBlur() {
+    switchNiDescToPreview();
 }
 
 // submitNewIssue validates the form, creates the issue on the server,
