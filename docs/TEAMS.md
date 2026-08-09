@@ -6,6 +6,9 @@ platform projects and issues; a member of the **database** team sees a separate
 slice. Users and objects can belong to multiple teams, and two reserved team
 names provide escape hatches for super-users and universally-visible data.
 
+For the HTTP API endpoints referenced throughout this document (request/response
+shapes, error conditions), see [API.md](API.md).
+
 ---
 
 ## Table of Contents

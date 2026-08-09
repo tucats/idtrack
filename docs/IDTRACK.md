@@ -278,7 +278,7 @@ This is the pattern to reuse for any future feature that needs multiple database
 
 ## HTTP API
 
-Full table: see [CLAUDE.md](../CLAUDE.md#http-api) or the MANUAL.
+Full client-facing reference (request/response shapes, error conditions, pagination, auth): see [API.md](API.md). Quick-reference table: see [CLAUDE.md](../CLAUDE.md#http-api).
 
 ### Issue list pagination
 

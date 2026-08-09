@@ -251,6 +251,8 @@ Bulk-creates one issue per input file, for importing an existing corpus of bug r
 
 Authenticated endpoints require a valid session token delivered as an `HttpOnly; Secure; SameSite=Strict` cookie named `idtrack_session`, or via `Authorization: Bearer <token>`. The `auth` middleware validates the token against the in-memory `sessionStore` on every request and stores the `*db.User` in the request context. Sessions are created by `POST /api/login` and `POST /api/onboarding`; deleted by `POST /api/logout`. JSON-body endpoints additionally require `Content-Type: application/json` (enforced by the `requireJSON` middleware).
 
+For full user-facing documentation of every endpoint — request/response JSON shapes, error conditions, pagination, team-visibility rules — intended for writing a new client, see [docs/API.md](docs/API.md). The table below is a quick-reference summary only.
+
 | Method | Path | Auth | Admin required |
 | ------ | ---- | ---- | -------------- |
 | GET | `/api/version` | no | no |
@@ -272,6 +274,7 @@ Authenticated endpoints require a valid session token delivered as an `HttpOnly;
 | POST | `/api/projects/{project}/components` | yes | **yes** |
 | DELETE | `/api/projects/{project}` | yes | **yes** |
 | DELETE | `/api/projects/{project}/components/{component}` | yes | **yes** |
+| POST | `/api/render` | yes | no |
 | GET | `/api/issues` | yes | no |
 | GET | `/api/issues/changes` | yes | no |
 | POST | `/api/issues` | yes | no |

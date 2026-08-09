@@ -192,4 +192,5 @@ For developers who want to extend or self-host `idtrack`:
 - New database columns are added automatically on startup via `ALTER TABLE ... ADD COLUMN` migrations, so upgrading the binary against an existing database is safe.
 
 A much deeper dive into architectural issues, considerations, and roadmaps for extending the codebase can
-be found in the [docs/IDTRACK.md](docs/IDTRACK.md) file.
+be found in the [docs/IDTRACK.md](docs/IDTRACK.md) file. To write a new client against the HTTP API, see
+[docs/API.md](docs/API.md) for the full endpoint reference.
