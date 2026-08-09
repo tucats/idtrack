@@ -11,6 +11,12 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
+// Canonical status/priority strings (must match the exact spellings stored
+// in the issues table — see the "issues" schema in the project's CLAUDE.md)
+// and the three possible values of an ingestPlan field's "*Source" tag,
+// describing where that field's value came from: an operator-supplied
+// default, a value inferred by scoring, or a value detected via an explicit
+// marker in the file (e.g. a "Severity: High" line).
 const (
 	statusOpen     = "Open"
 	statusResolved = "Resolved"
@@ -49,7 +55,31 @@ type ingestPlan struct {
 }
 
 // Ingest handles the "ingest" sub-command: bulk-creates one issue per input
-// file. See resources/MANUAL.md for the full flag reference.
+// file, for importing an existing corpus of bug reports. See
+// resources/MANUAL.md for the full flag reference; the short version:
+//
+//   - Positional arguments are the file paths to import (at least one
+//     required); every non-flag argument is treated as a file path.
+//   - --author and --default-owner (both required) must name existing users
+//     and become every created issue's reporter/assignee.
+//   - --default-project and --default-component (both required) must name an
+//     existing project/component pair, used whenever a file's project or
+//     component can't be confidently inferred (see inferProjectComponent in
+//     ingest_parse.go).
+//   - --default-status and --default-priority supply fallback values when a
+//     file has no explicit status/priority signal (default: "open"/"Medium").
+//   - --test runs the same parsing/validation logic but prints a report
+//     instead of writing anything to the database — use this to sanity-check
+//     the heuristics against real files before a live run.
+//   - --database overrides the database path for this invocation only.
+//
+// Validation happens in two phases: first every file is read and parsed
+// (parseIngestFiles), which never touches the database; only if every file
+// parses successfully does phase two begin, creating all the issues (plus
+// their comments and any Resolved transition) inside one transaction
+// (runIngestTx) so a mid-batch failure leaves the database completely
+// unchanged. On success it prints how many issues were created; on any
+// failure it prints an error to stderr and exits with status 1.
 func Ingest(args []string) {
 	var (
 		author, defaultOwner, defaultProjectFlag, defaultComponentFlag string
@@ -274,6 +304,15 @@ func runIngestTx(d *sql.DB, plans []ingestPlan, reporterUsername, assigneeUserna
 		return 0, fmt.Errorf("starting transaction: %w", err)
 	}
 
+	// db.CreateIssue, db.CreateComment, and db.UpdateIssue are declared to take
+	// a db.Querier — a small interface exposing just Exec/QueryRow/Query —
+	// rather than a concrete *sql.DB. *sql.Tx (returned by d.Begin() above)
+	// happens to implement those same three methods, so Go lets us pass tx
+	// directly wherever a db.Querier is expected: no explicit "implements"
+	// declaration is needed (this is Go's structural/"duck" typing for
+	// interfaces — a type satisfies an interface automatically just by having
+	// the right methods). That is what lets every insert below run against
+	// this one transaction and roll back together on any failure.
 	for _, plan := range plans {
 		issue, err := db.CreateIssue(tx, plan.Title, plan.Description, reporterUsername, assigneeUsername, plan.Priority, plan.Project, plan.Component, plan.Format)
 		if err != nil {
@@ -362,6 +401,10 @@ func buildIngestPlan(path string, projects []db.Project, defaultProject, default
 	}, nil
 }
 
+// sourceLabel converts the boolean "did we detect this from the file"
+// returned by detectStatus/detectPriority into the human-readable source tag
+// ("detected" or "default") shown in --test mode's report and stored on the
+// ingestPlan for that purpose.
 func sourceLabel(matched bool) string {
 	if matched {
 		return useDetected
@@ -370,6 +413,10 @@ func sourceLabel(matched bool) string {
 	return useDefault
 }
 
+// normalizeStatusFlag validates and canonicalizes the --default-status flag
+// value (case-insensitively) into the exact "Open"/"Resolved" strings stored
+// in the database, returning an error describing the accepted values if the
+// input doesn't match either one.
 func normalizeStatusFlag(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "open":
@@ -381,6 +428,9 @@ func normalizeStatusFlag(s string) (string, error) {
 	}
 }
 
+// normalizePriorityFlag validates and canonicalizes the --default-priority
+// flag value (case-insensitively) into the exact "High"/"Medium"/"Low"
+// strings stored in the database, mirroring normalizeStatusFlag above.
 func normalizePriorityFlag(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "high":
@@ -394,6 +444,9 @@ func normalizePriorityFlag(s string) (string, error) {
 	}
 }
 
+// findProject looks up a project by name (case-insensitively) in an
+// already-loaded slice, used to validate --default-project without an extra
+// database round-trip.
 func findProject(projects []db.Project, name string) (db.Project, bool) {
 	for _, p := range projects {
 		if strings.EqualFold(p.Name, name) {
@@ -430,6 +483,8 @@ func printIngestReport(plans []ingestPlan) {
 	fmt.Printf("\n%d issue(s) would be created (--test mode, no changes made)\n", len(plans))
 }
 
+// tagValue formats one report cell as "value (inferred:N)" or "value
+// (default)" depending on where the value came from, for printIngestReport.
 func tagValue(value, source string, score int) string {
 	if source == useInferred {
 		return fmt.Sprintf("%s (inferred:%d)", value, score)
@@ -438,6 +493,9 @@ func tagValue(value, source string, score int) string {
 	return value + " (default)"
 }
 
+// truncate shortens s to at most n characters, appending an ellipsis when it
+// had to cut, so long titles don't blow out the --test report's column
+// widths.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

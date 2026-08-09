@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// loginRateWindow and loginRateLimit define a simple sliding-window rate
+// limit: at most loginRateLimit failed login attempts are allowed per IP
+// within any loginRateWindow-long span. "Sliding" here is approximate rather
+// than a true rolling window — see loginEntry — but it is enough to blunt
+// brute-force password guessing without the complexity of a precise
+// token-bucket or leaky-bucket algorithm.
 const (
 	loginRateWindow = time.Minute
 	loginRateLimit  = 10 // max failed attempts per IP per window before lockout
@@ -21,9 +27,16 @@ type loginEntry struct {
 
 // rateLimiter counts failed login attempts per IP and blocks requests that
 // exceed the threshold. It is safe for concurrent use.
+//
+// net/http runs each incoming request on its own goroutine, so two logins
+// from different IPs (or even a burst of retries from the same IP) can call
+// allow/recordFailure/clear concurrently. mu is a plain sync.Mutex (not a
+// RWMutex) because every method here mutates the entries map — there is no
+// read-only fast path worth splitting out, unlike srv.backupMu in
+// server.go/backup.go which does have a many-readers/one-writer split.
 type rateLimiter struct {
 	mu      sync.Mutex
-	entries map[string]*loginEntry
+	entries map[string]*loginEntry // keyed by client IP address
 }
 
 func newRateLimiter() *rateLimiter {
@@ -32,6 +45,14 @@ func newRateLimiter() *rateLimiter {
 
 // allow returns true when the IP has not exceeded the failure threshold.
 // It also evicts stale entries from the map to bound memory use.
+//
+// Callers (handleLogin) check allow before verifying the submitted password,
+// so a locked-out IP is rejected without the cost of a bcrypt comparison.
+// recordFailure is only called after a real credential check fails, so the
+// counter reflects failed attempts specifically — not every request that
+// merely hit the endpoint (which would let an attacker exhaust a victim's
+// login budget just by sending well-formed-but-unauthenticated requests from
+// the victim's own IP, e.g. via CSRF).
 func (rl *rateLimiter) allow(ip string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()

@@ -12,7 +12,16 @@ import (
 	"time"
 )
 
-// bkp is a local helper for sizeBackups, holding a backup file's metadata.
+// This file implements idtrack's backup strategy: a plain filesystem copy of
+// the SQLite database file, taken on a timer and thinned out over time so
+// disk usage stays bounded. This is deliberately simpler than using
+// SQLite's own online backup API — a database file that isn't being written
+// to (see quiesce, below) can just be copied byte-for-byte with io.Copy, no
+// SQLite-specific tooling required.
+
+// bkp is a local helper for sizeBackups, holding a backup file's metadata
+// (name, embedded timestamp, and size on disk) so the thinning algorithm can
+// make decisions without repeatedly re-parsing filenames or re-stat'ing files.
 type bkp struct {
 	name string
 	t    time.Time
@@ -20,10 +29,10 @@ type bkp struct {
 }
 
 const (
-	backupDirName    = "idtrack-backups"
-	backupFilePrefix = "idtrack-"
-	backupFileSuffix = ".db"
-	backupTimeLayout = "20060102T150405"
+	backupDirName    = "idtrack-backups" // subdirectory created next to the database file
+	backupFilePrefix = "idtrack-"        // every backup filename starts with this
+	backupFileSuffix = ".db"             // every backup filename ends with this
+	backupTimeLayout = "20060102T150405" // Go reference-time layout embedded in each filename
 )
 
 // startBackups creates the backup directory, performs an immediate startup
@@ -46,6 +55,16 @@ func (s *srv) startBackups() {
 		go s.ageBackups(backupDir)
 	}
 
+	// "go func() { ... }()" launches the anonymous function as a goroutine —
+	// a lightweight, concurrently-scheduled unit of execution — and returns
+	// immediately without waiting for it, so startBackups itself returns right
+	// away and the HTTP server can start serving requests. This goroutine then
+	// runs for the entire remaining lifetime of the process, independent of
+	// (and concurrent with) every request-handling goroutine net/http spawns.
+	// time.Ticker sends a value on its channel C once per s.backupInterval;
+	// "for range ticker.C" blocks until the next tick, runs one backup, and
+	// then waits for the next tick, forever (there is no code path that
+	// breaks out of this loop — it runs until the process exits).
 	go func() {
 		ticker := time.NewTicker(s.backupInterval)
 		defer ticker.Stop()
@@ -333,11 +352,19 @@ func (s *srv) ageBackups(backupDir string) {
 	}
 }
 
-// quiesce wraps each HTTP request in a read-lock on backupMu. Backup
-// operations take the write lock, so they block until in-flight requests
-// finish, and new requests block until the backup releases the write lock.
-// When backup is disabled the mutex is never write-locked and RLock is
-// essentially free.
+// quiesce wraps each HTTP request in a read-lock on backupMu. This is the
+// mechanism that makes filesystem-copy backups safe without stopping the
+// server: sync.RWMutex is the classic tool for "many readers, one writer"
+// problems, and here every ordinary request is a "reader" of the database
+// file while a backup is the occasional "writer" that needs exclusive
+// access. RLock (taken here, per request) can be held by any number of
+// requests at once, so normal traffic proceeds concurrently exactly as
+// before. Lock (taken by doBackup, see below) waits for every currently
+// held RLock to be released before it is granted, and once held it blocks
+// any new RLock attempt — so a backup only starts once all in-flight
+// requests have finished, and any request that arrives mid-backup simply
+// waits (briefly) for the copy to complete rather than failing. When backup
+// is disabled the mutex is never write-locked and RLock is essentially free.
 func (s *srv) quiesce(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.backupMu.RLock()

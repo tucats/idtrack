@@ -21,6 +21,14 @@ import (
 // schema objects, and returns the connection pool ready to use. It is safe to
 // call Open on an existing database — all DDL uses IF NOT EXISTS / ALTER TABLE
 // patterns that are harmless when the objects already exist.
+//
+// Doc-comment convention: notice that this comment (and most others in this
+// package) starts by repeating the function's own name — "Open opens...".
+// That is a Go convention, not a style choice made just for this project. Tools
+// like `go doc`, godoc.org, and IDE hover tooltips extract the first sentence
+// of a comment directly above an exported (capitalized) declaration and show
+// it as that symbol's documentation. Starting the sentence with the symbol's
+// name reads naturally in that context ("db.Open opens...").
 func Open(path string) (*sql.DB, error) {
 	database, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -212,6 +220,16 @@ func initSchema(database *sql.DB) error {
 // SQLite's ALTER TABLE ADD COLUMN returns an error containing "duplicate column
 // name" when the column is present — we treat that specific error as success
 // so that calling this function is always safe regardless of schema state.
+//
+// This function, plus the calls to it in initSchema, IS the entire migration
+// system for this project — there is no separate migration framework, no
+// numbered migration files, and no "schema_version" table. Every time the
+// binary starts, Open -> initSchema runs every one of these calls again; on
+// an up-to-date database every call hits the "duplicate column name" branch
+// and returns nil immediately, so the cost of "running migrations" on a
+// database that needs none is a handful of cheap no-op statements. Adding a
+// new column to the schema in the future means adding one more
+// addColumnIfMissing call here — nothing else to wire up.
 func addColumnIfMissing(database *sql.DB, table, column, definition string) error {
 	_, err := database.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
 	if err != nil && strings.Contains(err.Error(), "duplicate column name") {

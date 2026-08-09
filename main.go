@@ -16,6 +16,14 @@ import (
 // -ldflags "-X main.BuildVersion=... -X main.BuildTime=...".
 // When you run a plain "go build" without those flags, they keep their default
 // values so the binary still works — it just shows "dev" for the version.
+//
+// Doc-comment convention: notice that this comment starts with the name of
+// the thing it documents ("BuildVersion and BuildTime are set..."). That is
+// a Go convention, not just a style preference — tools like `go doc`, godoc.org,
+// and IDE hover tooltips pull the comment immediately above an exported
+// (capitalized) declaration and display its first sentence as the summary.
+// Every exported function, type, and package-level var/const in this project
+// follows that pattern: start the comment with the identifier's own name.
 var BuildVersion = "dev"
 var BuildTime = ""
 
@@ -26,6 +34,14 @@ var BuildTime = ""
 //go:embed resources
 var embedded embed.FS
 
+// main is the process entry point. It performs no real work itself: it wires
+// the link-time build variables into the commands package, then dispatches to
+// exactly one commands.* function based on the first command-line argument
+// (the "verb", e.g. "serve" or "user"). Everything after the verb (args[1:])
+// is passed through unparsed — each commands.* function is responsible for
+// parsing its own flags and positional arguments. Several verbs accept more
+// than one spelling (e.g. "serve"/"start"/"run") purely as user-friendly
+// aliases; they all map to the same underlying function.
 func main() {
 	// Make build-time values available to the commands package before dispatch.
 	commands.BuildVersion = BuildVersion
@@ -37,6 +53,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	// args[0] is the verb; args[1:] are that verb's own flags/positional
+	// arguments, forwarded unparsed to the matching commands.* function.
 	switch args[0] {
 	case "help", "--help", "-h":
 		commands.Usage()

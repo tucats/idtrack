@@ -9,12 +9,43 @@ import (
 	"time"
 )
 
+// offValue is the user-facing synonym for "0"/disabled accepted by the
+// duration, count, and size flags below (e.g. "--idle-timeout off" is the
+// same as "--idle-timeout 0"). Spelling it out as a named constant instead of
+// repeating the string literal "off" keeps every comparison referring back to
+// one definition.
 const offValue = "off"
 
-// Default saves one or more settings into ~/.idtrack/defaults.json. When
-// called with no arguments it prints the current defaults as a table instead.
-// Unspecified keys in the file are left unchanged — existing values are loaded
-// and merged on top of them before writing.
+// Default handles the "default" (aliases: "defaults", "config") sub-command.
+// It saves one or more settings into ~/.idtrack/defaults.json. When called
+// with no arguments it prints the current defaults as a table instead (see
+// showDefaults). Unspecified keys in the file are left unchanged — existing
+// values are loaded and merged on top of them before writing.
+//
+// Accepted flags: --port, --database, --server-cert/--cert/--cert-file,
+// --server-key/--key/--key-file, --idle-timeout, --app-name,
+// --app-description, --backup-interval, --backup-count, --backup-age,
+// --backup-size. Each duration/count/size flag also accepts the literal
+// value "off" as a synonym for its disabled/zero state (see offValue and
+// parseBackupSize). Validation failures (bad port number, malformed
+// duration, a --server-cert file that doesn't exist, etc.) print an error to
+// stderr and exit the process with status 1 — nothing is written to disk in
+// that case.
+//
+// Side effects on success: writes ~/.idtrack/defaults.json (creating
+// ~/.idtrack with mode 0700 if needed) and prints a confirmation summary of
+// the values that were just set.
+//
+// Idiom note: like every other command function in this package (see also
+// User in users.go, Teams in teams.go, Define/Delete in projects.go), this
+// function parses args by hand with a "for i := 0; i < len(args); i++"
+// loop and a switch on args[i], manually advancing i to consume each flag's
+// value, rather than using the standard library's flag.FlagSet. That
+// standard package assumes all flags precede a fixed set of positional
+// arguments and doesn't support the same flag having several accepted
+// spellings (e.g. "--server-cert"/"--cert"/"--cert-file") or custom
+// per-flag validation/parsing (like the "off" synonym here) without extra
+// boilerplate, so this codebase consistently hand-rolls the loop instead.
 func Default(args []string) {
 	var (
 		port           int
@@ -252,7 +283,7 @@ func Default(args []string) {
 		if abs, err := filepath.Abs(database); err == nil {
 			database = abs
 		}
-		
+
 		defs.Database = database
 	}
 

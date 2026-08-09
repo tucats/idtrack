@@ -67,6 +67,17 @@ func UpgradePasswordHash(database *sql.DB, username, plaintext string) error {
 		return err
 	}
 
+	// The "?" markers are placeholder parameters: database/sql sends the SQL
+	// text and the argument values to the driver separately, rather than
+	// splicing the values into the query string with fmt.Sprintf. This is the
+	// standard, safe way to pass user-controlled data (like username here) to
+	// SQL in Go — it prevents SQL injection, because a value can never be
+	// interpreted as SQL syntax no matter what characters it contains. Every
+	// data-carrying query in this package uses "?" placeholders for exactly
+	// this reason; the only place raw string formatting touches SQL text is
+	// for trusted, hardcoded identifiers such as table/column names (see
+	// addColumnIfMissing in db.go and the ORDER BY lookup table in issues.go),
+	// never for values.
 	_, err = database.Exec(`UPDATE users SET password_hash = ? WHERE username = ?`, hash, username)
 
 	return err
@@ -266,7 +277,22 @@ func RecordLogin(database *sql.DB, username string) error {
 }
 
 // CountAdmins returns the number of users with admin privileges, determined by
-// whether "admin" is in their teams list.
+// whether "admin" is in their teams list. Callers use this to guard against
+// ever removing the last admin account (see the last-admin checks in the
+// server's user handlers).
+//
+// The teams column stores a plain comma-separated string like "admin,any"
+// rather than a real array — SQLite has no native array/list column type, so
+// this whole codebase represents small string sets this way (see also
+// ParseTeams/FormatTeams in teams.go and the dependent_issues handling in
+// issues.go). To test whether "admin" is present as a whole list item, rather
+// than merely a substring of some other team name, the query pads both sides
+// of the stored string with a leading and trailing comma
+// (',' || lower(teams) || ',') and then does a LIKE match for ',admin,'.
+// Without the padding, a plain "%admin%" LIKE pattern would also match a team
+// named e.g. "readmin" or "coadmin". This padded-LIKE technique recurs
+// throughout the db package (DeleteTeam, buildWhereClause's team filter)
+// wherever a comma-separated list needs a "contains this exact item" test.
 func CountAdmins(database *sql.DB) (int, error) {
 	var count int
 
@@ -277,6 +303,9 @@ func CountAdmins(database *sql.DB) (int, error) {
 	return count, err
 }
 
+// HasUsers reports whether the users table contains at least one row. The
+// server calls this to decide whether to run the one-time onboarding flow
+// (create the first admin account) instead of showing the normal login screen.
 func HasUsers(database *sql.DB) (bool, error) {
 	var count int
 
@@ -285,9 +314,22 @@ func HasUsers(database *sql.DB) (bool, error) {
 	return count > 0, err
 }
 
+// ListUsers returns every user, ordered by username, for the admin "manage
+// users" screen. PasswordHash is intentionally not selected here (it is left
+// as the zero value on each returned User), so this function is safe to feed
+// straight into a JSON response without ever exposing a password hash.
 func ListUsers(database *sql.DB) ([]User, error) {
 	var users []User
 
+	// database.Query (as opposed to QueryRow or Exec) is used whenever a
+	// statement can return more than one row. It returns an *sql.Rows cursor
+	// that must be closed to release the underlying connection — the sole
+	// connection in this program's pool, since Open sets MaxOpenConns(1) — so
+	// every Query call in this package is immediately followed by
+	// `defer rows.Close()`. Forgetting this would eventually deadlock the
+	// program: a leaked, unclosed cursor holds the only connection, so the
+	// next query blocks forever waiting for a connection that never comes
+	// back.
 	rows, err := database.Query(
 		`SELECT username, display_name, last_login_at, teams, is_admin FROM users ORDER BY username`,
 	)
@@ -305,6 +347,11 @@ func ListUsers(database *sql.DB) ([]User, error) {
 			adminInt    int
 		)
 
+		// rows.Scan copies each column of the current row into the given
+		// pointers, in the exact order they appear in the SELECT list above.
+		// There is no name-based binding — column N in the query maps to
+		// argument N in Scan — so the argument order here must always be kept
+		// in sync with the SELECT column order if either one changes.
 		if err := rows.Scan(&u.Username, &u.DisplayName, &lastLoginAt, &teamsStr, &adminInt); err != nil {
 			return nil, err
 		}

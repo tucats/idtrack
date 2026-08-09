@@ -8,9 +8,23 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
-// contextKey is a private type used as the key when storing values in a
-// request context. Using a named type (rather than a raw string) prevents
-// accidental collisions with keys set by other packages that also use strings.
+// This file defines idtrack's HTTP middleware — small wrapper functions with
+// the signature func(http.Handler) http.Handler (or, for auth, a method with
+// that same shape on *srv). A middleware receives the "next" handler in the
+// chain and returns a new handler that runs some logic, then either calls
+// next.ServeHTTP to continue the chain or writes an error response and
+// returns early to stop it. See server.go's Start function for how these are
+// composed into the full request-processing chain.
+
+// contextKey is a private (unexported) type used as the key when storing
+// values in a request's context.Context. Using a named type defined in this
+// package — rather than a raw string like "user" — prevents accidental
+// collisions with context keys set by other packages: even if another
+// package also uses the string "user" as a key, its key has a different
+// underlying type and so cannot match ctxUser below, because context lookups
+// compare both the key's type and its value. Since contextKey is unexported,
+// no other package can even construct a value of this type, guaranteeing
+// ctxUser is unique.
 type contextKey string
 
 // ctxUser is the specific key under which the authenticated *db.User is stored

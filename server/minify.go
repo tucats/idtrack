@@ -1,6 +1,3 @@
-// Package javascript provides utilities for working with JavaScript source code.
-// Currently it includes a Minify function that compresses JavaScript by removing
-// comments, collapsing whitespace, and renaming local declarations to shorter names.
 package server
 
 import (
@@ -8,9 +5,33 @@ import (
 	"strings"
 )
 
+// This file implements Minify, a small hand-rolled JavaScript compressor used
+// by serveJS (static.go) to shrink idtrack.js before it is sent to the
+// browser — no external minifier tool or build step is needed, keeping
+// idtrack a dependency-free single binary. The approach has two stages,
+// implemented as a classic tokenizer (also called a lexer): a loop that
+// walks the source one character at a time and, at each position, decides
+// which kind of token starts there (whitespace, a comment, a string, an
+// identifier, a number, an operator, ...) and consumes the right number of
+// characters for it. Once the source is a flat slice of jsToken values
+// instead of raw bytes, later passes can safely delete or rewrite whole
+// tokens (e.g. drop every comment token, or rename every identifier token
+// that refers to a local variable) without accidentally corrupting a string
+// literal or a regular expression that happens to contain the same
+// characters. A novice reading this file does not need to trace every
+// branch of tokenize — the important thing to know is that it always
+// produces one jsToken per lexical element, and every later function
+// (stripComments, renameLocals, emit) simply filters or transforms that
+// token slice.
+
 // tokenKind identifies the syntactic category of a JavaScript token.
 type tokenKind int
 
+// iota is a Go keyword that, inside a const(...) block, starts at 0 for the
+// first entry and increments by 1 for each entry after it that has no
+// explicit value. It is the idiomatic way to define a set of related integer
+// constants (an "enum") without writing out 0, 1, 2, ... by hand — the block
+// below assigns tkWhitespace=0, tkLineComment=1, tkBlockComment=2, and so on.
 const (
 	tkWhitespace   tokenKind = iota
 	tkLineComment            // // ...
@@ -23,6 +44,8 @@ const (
 	tkPunct                  // operators and punctuation
 )
 
+// jsToken is one lexical element produced by tokenize: its kind (e.g.
+// "this is a string literal") and the exact source text it was matched from.
 type jsToken struct {
 	kind  tokenKind
 	value string
@@ -355,6 +378,13 @@ func stripComments(tokens []jsToken) []jsToken {
 
 // nameGen returns a function that yields successive short names:
 // a, b, …, z, a1, b1, …, z1, a2, etc.
+//
+// This is a Go closure: the returned func() string keeps a live reference to
+// the local variable n declared inside nameGen, even after nameGen itself
+// has returned. Each call to the returned function reads and then increments
+// that same n, so repeated calls produce a fresh name each time — nameGen()
+// effectively builds a small stateful "generator" object using nothing but a
+// function value.
 func nameGen() func() string {
 	n := 0
 

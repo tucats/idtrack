@@ -8,8 +8,14 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
-// handleListTeams returns all teams (name + description) ordered by name.
-// Available to all authenticated users so the frontend can populate pickers.
+// handleListTeams serves GET /api/teams. Auth: any authenticated user (no
+// admin check) — every user needs the team list so the frontend can render
+// team-chip pickers (e.g. when filtering, or for an admin editing another
+// user's teams) and label existing team assignments by name.
+//
+// Response (200 OK): {"teams": [...]} — each entry has name + description,
+// ordered by name. Includes the two reserved teams ("admin", "any") along
+// with any operator-defined ones.
 func (s *srv) handleListTeams(w http.ResponseWriter, r *http.Request) {
 	teams, err := db.ListTeams(s.database)
 	if err != nil {
@@ -21,8 +27,20 @@ func (s *srv) handleListTeams(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"teams": teams})
 }
 
-// handleCreateTeam creates a new team. Admin-only.
-// Body: { "name": "platform", "description": "..." }.
+// handleCreateTeam serves POST /api/teams. Auth: authenticated session plus
+// an in-handler admin-only check (currentUser(r).IsAdmin), same pattern used
+// throughout this package for admin-only mutations.
+//
+// Request body (JSON): {"name", "description"}. name is lower-cased/trimmed
+// and required; db.CreateTeam rejects reserved names ("admin"/"any") and
+// duplicates.
+//
+// Response (201 Created): {"ok": true}.
+//
+// Errors: 403 not an admin; 400 missing name; 409 if db.CreateTeam reports
+// the name is reserved or already exists (both surfaced as the same status
+// here — handleDeleteTeam and handleUpdateTeam below distinguish "reserved"
+// as 400 instead, see their comments).
 func (s *srv) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -57,8 +75,22 @@ func (s *srv) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]bool{"ok": true})
 }
 
-// handleDeleteTeam removes a team. Admin-only.
-// Returns 400 if the name is reserved; 409 if the team is still in use.
+// handleDeleteTeam serves DELETE /api/teams/{name}. Auth: authenticated
+// session plus in-handler admin-only check. {name} is a path parameter,
+// lower-cased before use.
+//
+// db.DeleteTeam refuses to delete a reserved team ("admin"/"any") or one
+// still referenced by any user/project/issue; the handler distinguishes
+// those two failure modes purely by sniffing the word "reserved" in the
+// returned error's message (strings.Contains(msg, "reserved")) to pick the
+// HTTP status — a reserved-name attempt is a client mistake (400 Bad
+// Request), while "still in use" is a conflict with existing data (409
+// Conflict, the default).
+//
+// Response (200 OK): {"ok": true}.
+//
+// Errors: 403 not an admin; 400 team name is reserved; 409 team is still
+// referenced by a user, project, or issue (the error message lists counts).
 func (s *srv) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)
@@ -84,10 +116,27 @@ func (s *srv) handleDeleteTeam(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// handleUpdateTeam renames a team and/or updates its description. Admin-only.
-// Body: { "name": "new-name", "description": "..." } — either field may be omitted.
-// Renaming a reserved team returns 400; updating the description of a reserved
-// team is allowed.
+// handleUpdateTeam serves PUT /api/teams/{name}. Auth: authenticated session
+// plus in-handler admin-only check. {name} (the current/old name) is a path
+// parameter, lower-cased before use.
+//
+// Request body (JSON): {"name", "description"} — name is the desired new
+// name (may be the same as the current one to only change the description);
+// either field may be effectively omitted (empty description is allowed,
+// and db.UpdateTeam treats an empty new name as "keep the current name").
+// Renaming cascades inside db.UpdateTeam to every user/project/issue that
+// referenced the old team name, all within a single transaction, so
+// visibility rules stay consistent after the rename.
+//
+// Same reserved-name detection as handleDeleteTeam: db.UpdateTeam refuses to
+// rename (but does allow describing) a reserved team, and the handler maps
+// that specific failure to 400 by checking the error text for "reserved" or
+// "required"; any other failure (e.g. name collision) is 409.
+//
+// Response (200 OK): {"ok": true}.
+//
+// Errors: 403 not an admin; 400 renaming a reserved team or a missing
+// required field; 409 the new name collides with an existing team.
 func (s *srv) handleUpdateTeam(w http.ResponseWriter, r *http.Request) {
 	if !currentUser(r).IsAdmin {
 		jsonError(w, "forbidden", http.StatusForbidden)

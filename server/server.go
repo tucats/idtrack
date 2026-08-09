@@ -16,12 +16,20 @@ import (
 	"time"
 )
 
-// srv holds the shared dependencies that all handler methods need. Attaching
-// handlers as methods on a struct (rather than using global variables) keeps
-// the code easy to test and avoids package-level state.
+// srv holds the shared dependencies that all handler methods need: the
+// database handle, embedded static assets, in-memory session/rate-limit
+// state, and server-wide configuration. Every HTTP handler in this package is
+// declared as a method on *srv (e.g. "func (s *srv) handleLogin(...)")
+// instead of a free function. This is a common Go pattern for giving request
+// handlers access to shared state without resorting to package-level global
+// variables: each handler receives its dependencies through the receiver "s"
+// the same way it would through constructor-injected fields in other
+// languages. It also makes the server trivially testable — a test can build
+// its own *srv with a temporary database and in-memory session store instead
+// of relying on global mutable state that would leak between test cases.
 type srv struct {
 	database        *sql.DB
-	static          fs.FS
+	static          fs.FS // embedded (or, in tests, on-disk) filesystem holding resources/*
 	version         string
 	buildTime       string
 	idleTimeout     int
@@ -29,8 +37,8 @@ type srv struct {
 	appDescription  string
 	loginLimiter    *rateLimiter
 	sessions        *sessionStore
-	mu              sync.Mutex
-	backupMu        sync.RWMutex
+	mu              sync.Mutex   // guards onboardingToken, statusHasUsers, and statusCachedAt below
+	backupMu        sync.RWMutex // request-quiescing lock; see quiesce() and doBackup() in backup.go
 	onboardingToken string
 	statusHasUsers  bool          // cached result of db.HasUsers (S-09)
 	statusCachedAt  time.Time     // zero value forces refresh on first call
@@ -51,6 +59,15 @@ type srv struct {
 // Go 1.22+ route patterns support an HTTP method prefix, e.g. "GET /path".
 // The mux dispatches based on both method and path, so registering
 // "GET /api/issues" and "POST /api/issues" as separate patterns is fine.
+// The static parameter is typed as the fs.FS interface rather than the
+// concrete embed.FS so this package never needs to import "embed" itself.
+// In production main.go passes an embed.FS populated at compile time by a
+// "//go:embed resources" directive — the contents of the resources/ directory
+// (HTML, CSS, JS, the manual, and the fallback TLS cert/key) are compiled
+// directly into the binary, so there is nothing to copy or mount at deploy
+// time beyond the single executable. Because the parameter is an interface,
+// tests can substitute any other fs.FS (such as os.DirFS) without changing
+// this function.
 func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string) error {
 	s := &srv{
 		database:       database,
@@ -73,6 +90,17 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	mux := http.NewServeMux()
 
+	// Every pattern below is a Go 1.22+ "enhanced" ServeMux pattern: an HTTP
+	// method prefix ("GET ", "POST ", ...) plus a path that may contain
+	// "{name}" wildcard segments (e.g. "/api/issues/{id}"). Before Go 1.22 the
+	// standard library mux only matched on path prefix and every handler had
+	// to check r.Method and parse path segments itself (or projects reached
+	// for a third-party router). Now the mux does both jobs: it dispatches to
+	// the handler whose method and path both match, and a wildcard segment's
+	// matched text is retrieved inside the handler via r.PathValue("id") (see
+	// issueID in helpers.go for an example). No external routing package is
+	// used anywhere in idtrack because of this.
+	//
 	// Static asset routes — no authentication required for the browser to load
 	// the page and its assets.
 	mux.HandleFunc("GET /idtrack", s.serveHTML)
@@ -189,12 +217,27 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	log.Printf("idtrack listening on https://localhost%s", addr)
 
+	// Each of gzipHandler, secureHeaders, limitBody, and s.quiesce is
+	// "middleware": a function with the signature func(http.Handler) http.Handler
+	// that takes a handler and returns a new handler wrapping it. A middleware
+	// typically does some work, calls the wrapped ("inner") handler, and
+	// optionally does more work with the result. Nesting them like this —
+	// gzipHandler(secureHeaders(limitBody(s.quiesce(mux)))) — builds a chain
+	// that every request passes through outside-in on the way to mux
+	// (gzipHandler runs first, then secureHeaders, then limitBody, then
+	// quiesce, then the matched route handler) and back outside-out on the
+	// way to the client (the same order in reverse). This "decorator" style
+	// composition is idiomatic Go for cross-cutting concerns — logging,
+	// auth, compression — that many handlers need without each handler
+	// having to remember to apply them itself.
+	//
 	// gzipHandler sits at the outermost layer so it can inspect and compress
 	// any response — JSON API payloads, static assets, the manual page — before
 	// it leaves the server. secureHeaders and limitBody sit inside it so their
 	// headers are set on the pre-compression ResponseWriter. quiesce holds a
 	// read-lock on backupMu for each request so the backup goroutine can pause
-	// the server briefly by acquiring the write lock.
+	// the server briefly by acquiring the write lock (see quiesce in backup.go
+	// for the full reader/writer-lock explanation).
 	handler := gzipHandler(secureHeaders(limitBody(s.quiesce(mux))))
 
 	// Use an explicit http.Server so we can set read/write/idle timeouts.

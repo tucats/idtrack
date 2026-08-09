@@ -16,6 +16,14 @@ type section struct {
 	Body  string // the full raw text of the section, including its own boundary line
 }
 
+// These regular expressions are compiled once, at package load time, and
+// reused by every call into this file — recompiling a pattern on every call
+// would be wasted work since the patterns never change. regexp.MustCompile
+// (as opposed to regexp.Compile) panics immediately if a pattern is invalid;
+// that's the right choice here because these patterns are fixed string
+// literals known at compile time, so a bad pattern is a programming bug that
+// should fail loudly and immediately (at startup) rather than being handled
+// as a runtime error somewhere deep in file parsing.
 var (
 	h1Pattern         = regexp.MustCompile(`^#\s+(.+)$`)
 	headerPattern     = regexp.MustCompile(`^#{2,6}\s+(.+?)\s*$`)
@@ -264,6 +272,9 @@ func detectPriority(comments []section) (priority string, matched bool) {
 	return "", false
 }
 
+// priorityFromText matches s against the high/medium/low priority word
+// patterns declared above, returning the first one that hits (checked in
+// High, Medium, Low order) and false if none match.
 func priorityFromText(s string) (string, bool) {
 	switch {
 	case highPriorityPattern.MatchString(s):
@@ -337,6 +348,7 @@ func tokenizeFilename(filename string) []string {
 	return out
 }
 
+// containsToken reports whether t is present (exact match) in tokens.
 func containsToken(tokens []string, t string) bool {
 	for _, tok := range tokens {
 		if tok == t {
@@ -376,12 +388,18 @@ func scoreName(name string, filenameTokens, titleTokens []string, bodyLower stri
 			score += titleWeight
 		}
 
+		// min is a built-in function (added in Go 1.21) that returns the
+		// smaller of its arguments — no import needed. Here it caps how much
+		// a single very-repetitive file can inflate the body-occurrence score.
 		score += min(wordCount(bodyLower, nt), bodyOccurrenceCap) * bodyWeight
 	}
 
 	return score
 }
 
+// containsComponentCI reports whether name is present in components,
+// comparing case-insensitively (component names are stored and matched
+// without regard to case throughout this package).
 func containsComponentCI(components []string, name string) bool {
 	for _, c := range components {
 		if strings.EqualFold(c, name) {

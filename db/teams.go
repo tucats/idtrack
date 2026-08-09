@@ -168,6 +168,10 @@ func DeleteTeam(database *sql.DB, name string) error {
 		return fmt.Errorf("team %q is reserved and cannot be deleted", name)
 	}
 
+	// Same padded-LIKE technique used by CountAdmins in users.go: pad the
+	// stored comma-separated list with a leading/trailing comma so the LIKE
+	// pattern matches "name" as a whole list entry, not as a substring of a
+	// longer team name.
 	pattern := "%," + name + ",%"
 
 	var userCount, projectCount, issueCount int

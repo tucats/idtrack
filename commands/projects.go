@@ -9,9 +9,25 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
-// Define handles the "define" sub-command. The first positional argument is a
-// subcommand: "project" (creates a new project) or "component" (adds a
-// component to an existing project). Both operations are idempotent.
+// Define handles the "define" sub-command.
+//
+//	idtrack define project <name> [--database path] [--teams a,b,...]
+//	idtrack define component <project-name> <component-name> [--database path]
+//
+// The first positional argument (args[0]) is itself a subcommand word —
+// "project" or "component" — not a flag. This "positional subcommand"
+// pattern (verb, then its own required positional values, then optional
+// named flags) is used consistently across this package: see also Delete
+// below, and User in users.go and Teams in teams.go. It reads naturally as
+// an English sentence ("define project foo") and keeps the verb from being
+// confused with an option, at the cost of not being parseable by the
+// standard flag.FlagSet (which expects flags before positional arguments,
+// not a verb of their own).
+//
+// Both "project" and "component" creation are idempotent — running the same
+// command twice is not an error, it just leaves the row already present.
+// On success it prints a one-line confirmation; on any validation or
+// database error it prints to stderr and exits with status 1.
 func Define(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "define requires a subcommand: project or component")
@@ -20,7 +36,7 @@ func Define(args []string) {
 	}
 
 	subcommand := args[0]
-	rest := args[1:]
+	rest := args[1:] // rest holds the subcommand's own args, with args[0] consumed
 
 	var project, component, database, teamsStr string
 
@@ -115,10 +131,17 @@ func Define(args []string) {
 	}
 }
 
-// Delete handles the "delete" sub-command. The first positional argument is a
-// subcommand: "project" (removes the whole project and all its components) or
-// "component" (removes one component). Both refuse to delete if any issues
-// reference the target, returning the blocking issue IDs.
+// Delete handles the "delete" sub-command.
+//
+//	idtrack delete project <name> [--database path]
+//	idtrack delete component <project-name> <component-name> [--database path]
+//
+// Same positional-subcommand shape as Define above: args[0] is "project" or
+// "component". Both operations refuse to delete their target if any issue
+// still references it — the underlying db.DeleteProject/db.DeleteComponent
+// calls return an error listing the blocking issue IDs, which is printed to
+// stderr verbatim before exiting with status 1. This is a safety check, not
+// a cascading delete: issues are never modified or removed by this command.
 func Delete(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "delete requires a subcommand: project or component")

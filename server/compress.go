@@ -27,7 +27,7 @@ func gzipHandler(next http.Handler) http.Handler {
 
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
-			
+
 			return
 		}
 
@@ -39,18 +39,27 @@ func gzipHandler(next http.Handler) http.Handler {
 
 // bufferingWriter captures the response body written by a handler so that
 // gzipHandler can inspect the final size before deciding whether to compress.
+// It embeds http.ResponseWriter (an interface, not a struct) — a common Go
+// idiom sometimes called "interface embedding": bufferingWriter automatically
+// gets every method of http.ResponseWriter (Header, Write, WriteHeader) for
+// free by forwarding to the embedded value, and satisfies the
+// http.ResponseWriter interface itself. Only WriteHeader and Write are
+// overridden below to intercept and buffer the response instead of sending
+// it immediately; Header() is left to the embedded default implementation.
 type bufferingWriter struct {
 	http.ResponseWriter
-	buf    bytes.Buffer
-	status int
+	buf    bytes.Buffer // accumulates the body written by the wrapped handler
+	status int          // status code passed to WriteHeader; 0 means "not set yet"
 }
 
+// WriteHeader intercepts the status code instead of sending it immediately.
 func (bw *bufferingWriter) WriteHeader(status int) {
 	// Do not forward yet — Content-Encoding must be set before the status
 	// line and headers are sent to the client.
 	bw.status = status
 }
 
+// Write intercepts body bytes into buf instead of sending them immediately.
 func (bw *bufferingWriter) Write(p []byte) (int, error) {
 	return bw.buf.Write(p)
 }

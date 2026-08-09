@@ -102,7 +102,8 @@ func CreateProject(database *sql.DB, name string, teams []string) error {
 	return err
 }
 
-// SetProjectTeams replaces the teams list for an existing project.
+// SetProjectTeams replaces the teams list for an existing project. Returns an
+// error if project does not exist.
 func SetProjectTeams(database *sql.DB, project string, teams []string) error {
 	teamsStr := FormatTeams(teams)
 	result, err := database.Exec(
@@ -114,6 +115,14 @@ func SetProjectTeams(database *sql.DB, project string, teams []string) error {
 		return err
 	}
 
+	// An UPDATE with a WHERE clause that matches zero rows is not an error in
+	// SQL — it silently succeeds and updates nothing. RowsAffected is the way
+	// to detect that case in Go: it reports how many rows the statement
+	// actually changed, so a count of 0 here means "no project named this
+	// exists" even though Exec returned no error. The error from
+	// RowsAffected itself is ignored (`n, _ :=`) because the SQLite driver
+	// always supports it; the RowsAffected value, not that error, is what we
+	// check.
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("project %q not found", project)
@@ -187,7 +196,11 @@ func DeleteProject(database *sql.DB, name string) error {
 	return err
 }
 
-// DeleteComponent removes a single component from a project.
+// DeleteComponent removes a single component from a project. Like
+// DeleteProject, it first checks for any issues still filed against this
+// exact (project, component) pair and refuses to delete — returning an error
+// that lists the referencing issue IDs — rather than leaving those issues
+// pointing at a component that no longer exists.
 func DeleteComponent(database *sql.DB, project, component string) error {
 	var ids []int64
 

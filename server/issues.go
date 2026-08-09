@@ -22,20 +22,43 @@ const (
 // arbitrarily long patterns that force a full table scan on every column (S-10).
 const maxSearchLen = 200
 
-// handleListIssues reads optional query parameters and delegates filtering,
-// sorting, and pagination to db.ListIssues / db.CountIssues. All filtering is
-// done in SQL rather than in Go to keep memory usage low for large issue lists.
+// handleListIssues serves GET /api/issues. Auth: any authenticated user (no
+// admin check) — results are restricted per-user by team visibility (see
+// below), not by an all-or-nothing permission check.
 //
-// Query parameters:
+// It reads optional query parameters (via r.URL.Query(), which parses the
+// "?key=value&..." portion of the URL into a map-like Values type) and
+// delegates filtering, sorting, and pagination to db.ListIssues /
+// db.CountIssues. All filtering is done in SQL rather than in Go to keep
+// memory usage low for large issue lists — this handler never loads the
+// full issues table into the server's memory.
+//
+// Query parameters (all optional):
 //
 //	status   open|resolved|blocked|duplicate — filter by status
 //	priority High|Medium|Low                 — filter by priority
 //	project  <name>                          — filter by project
-//	search   <text>                          — full-text substring match
+//	search   <text>                          — full-text substring match (capped at maxSearchLen)
 //	sort     <column>                        — column to sort by
 //	order    asc|desc                        — sort direction
-//	limit    <n>                             — page size (0 = return all)
+//	limit    <n>                             — page size (0 = return all, the legacy/default mode)
 //	offset   <n>                             — rows to skip for pagination
+//
+// Team visibility: currentUser(r).Teams is passed through to db.ListIssues
+// and db.CountIssues so the SQL WHERE clause itself excludes issues the
+// caller's teams cannot see (an admin or "any"-team member sees everything;
+// see CLAUDE.md's "Team-based access control" section for the full rule).
+// This handler does not need to filter results itself — the database only
+// ever returns rows the caller is entitled to.
+//
+// Response (200 OK): {"issues": [...], "total": N, "offset": N, "limit": N}.
+// When limit > 0, total is a separate COUNT(*) query result (the total
+// number of matching rows across all pages, for a "N of M" UI); when
+// limit == 0, total is simply len(issues) since every matching row was
+// already returned.
+//
+// Errors: 400 if search exceeds maxSearchLen, or limit/offset are not
+// non-negative integers; 500 on any db error.
 func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 
@@ -48,6 +71,13 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 
 	limit, offset := 0, 0
 
+	// Query string values arrive as strings; strconv.Atoi ("ASCII to
+	// integer") parses one into an int and returns a non-nil error if the
+	// text isn't a valid integer. This "parse, check error, bail out" shape
+	// — a value combined with an error, checked immediately with an
+	// early return — is the standard way Go signals failure: there are no
+	// exceptions, so every call that can fail returns an error value that
+	// the caller must explicitly check.
 	if v := q.Get("limit"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
@@ -116,10 +146,19 @@ func (s *srv) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleListChanges returns issues whose updated_at is strictly after the
-// "since" query parameter (an RFC3339 timestamp), restricted only by the
-// caller's team visibility. Used by the frontend to poll for changes made by
-// other users without discarding the current scroll state.
+// handleListChanges serves GET /api/issues/changes. Auth: any authenticated
+// user; results are restricted by team visibility the same way as
+// handleListIssues. Registered in server.go before the wildcard
+// "GET /api/issues/{id}" pattern so the literal "/changes" path segment is
+// matched here rather than being captured as an {id} value.
+//
+// Query parameter: since (required) — an RFC3339 timestamp string. Returns
+// issues whose updated_at is strictly after that value, restricted only by
+// the caller's team visibility. Used by the frontend to poll for changes
+// made by other users without discarding the current scroll state.
+//
+// Response (200 OK): {"issues": [...]}, ordered by updated_at ascending.
+// Errors: 400 if since is missing; 500 on db error.
 //
 // Deliberately NOT filtered by status/priority/project/search: filtering by
 // an issue's current state can't represent "this issue just stopped matching
@@ -151,9 +190,31 @@ func (s *srv) handleListChanges(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleCreateIssue creates a new issue. The reporter is always set to the
-// authenticated user's username. The chosen project must be visible to the
-// user given their team membership.
+// handleCreateIssue serves POST /api/issues. Auth: any authenticated user —
+// there is no admin requirement to file a new issue.
+//
+// Request body (JSON): {"title", "description", "priority", "assignee",
+// "project", "component", "format"}. title is required (non-blank after
+// trimming); all other fields are optional and take their database defaults
+// when omitted (see the issues table schema in CLAUDE.md — priority
+// defaults to "Medium", status always starts as "Open", format defaults to
+// "text"). The reporter field is never taken from the request body — it is
+// always set to the authenticated caller's own username
+// (currentUser(r).Username), so a client cannot file an issue that appears
+// to be reported by someone else.
+//
+// When project is non-blank, the handler re-fetches the full project list
+// and confirms the named project both exists and is visible to the caller's
+// teams (db.ProjectMatchesUserTeams) before allowing the issue to be
+// created against it — this prevents a user from filing an issue into a
+// project they are not permitted to see, even though the create-issue
+// endpoint itself has no admin gate.
+//
+// Response (201 Created): {"issue": {...}} — the newly created issue record
+// as returned by db.CreateIssue.
+//
+// Errors: 400 missing title; 403 the named project doesn't exist or isn't
+// visible to the caller; 500 on any other db error.
 func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Title       string `json:"title"`
@@ -215,9 +276,29 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"issue": issue})
 }
 
-// handleGetIssue returns a single issue together with all of its comments in
-// one response, so the frontend can display the full detail view without a
-// second round-trip.
+// handleGetIssue serves GET /api/issues/{id}. Auth: any authenticated user —
+// note there is no team-visibility check here (unlike handleListIssues):
+// any authenticated user who knows or guesses a valid issue ID can fetch it
+// directly. This is a pre-existing gap relative to the list endpoint's
+// team filtering; see the note in the final report for this review.
+//
+// Path parameter: {id} — parsed and validated by the shared issueID() helper
+// in helpers.go, which writes the 400 response itself and returns ok=false
+// on a missing/non-numeric/non-positive value; callers just check ok and
+// return.
+//
+// Returns a single issue together with all of its comments in one response,
+// so the frontend can display the full detail view without a second
+// round-trip.
+//
+// Response (200 OK): {"issue": {...}, "comments": [...]}. The issue's
+// DescriptionHTML field and each comment's BodyHTML field are populated here
+// via renderFormatted (see server/render.go) based on the issue's format
+// ("text" | "markdown" | "html") — these are transient, request-scoped
+// fields (json:"...,omitempty", never persisted to the database) that let
+// the client render formatted content without a separate render request.
+//
+// Errors: 400 invalid id; 404 no issue with that id; 500 on db error.
 func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -261,15 +342,37 @@ func (s *srv) handleGetIssue(w http.ResponseWriter, r *http.Request) {
 
 // issueModifier returns true when the user is authorized to edit or delete the
 // given issue. Admins, the original reporter, and the current assignee may all
-// make changes; any other authenticated user is a read-only third party.
+// make changes; any other authenticated user is a read-only third party. Both
+// handleUpdateIssue and handleDeleteIssue call this after fetching the
+// current issue record, so the check is always evaluated against the issue's
+// state as it exists right now, not against any (possibly different) values
+// the client is trying to write.
 func issueModifier(u *db.User, issue *db.Issue) bool {
 	return u.IsAdmin || u.Username == issue.Reporter || u.Username == issue.Assignee
 }
 
-// handleUpdateIssue replaces all editable fields of an issue. All fields must
-// be sent in the request body — this is a full replacement (PUT semantics), not
-// a partial update (PATCH semantics). Only the reporter, assignee, or an admin
-// may update an issue; all other authenticated users receive 403.
+// handleUpdateIssue serves PUT /api/issues/{id}. Auth: any authenticated
+// user may attempt the request, but the handler itself enforces via
+// issueModifier (above) that only the issue's reporter, its current
+// assignee, or an admin may actually apply changes — everyone else gets 403.
+//
+// It replaces all editable fields of an issue. All fields must be sent in
+// the request body — this is a full replacement (PUT semantics), not a
+// partial update (PATCH semantics): a client that omits a field is sending
+// an empty value for it, not "leave unchanged."
+//
+// Path parameter: {id}, parsed via issueID() (see helpers.go).
+//
+// Request body (JSON): {"title", "description", "priority", "status",
+// "assignee", "project", "component", "format", "dependent_issues",
+// "teams", "comment"}. teams is special-cased: it is only applied when
+// non-empty, and only an admin may actually change it (a non-admin sending
+// back the issue's existing team list is fine — see teamsEqual below —
+// but sending a different list is rejected with 403). comment is not a
+// column on the issue at all; it exists only for symmetry with the
+// frontend's dialog flow (see CLAUDE.md's "Status-change dialogs" section)
+// but is not read anywhere in this handler — the client posts status-change
+// comments itself via a separate POST to the comments endpoint.
 //
 // Additional rules for the new status values:
 //
@@ -277,16 +380,30 @@ func issueModifier(u *db.User, issue *db.Issue) bool {
 //     The server auto-posts a "Duplicate of issue #N" comment on transition.
 //
 //   - Blocked: dependent_issues must contain at least one existing issue ID.
-//     The server auto-posts a "Blocked by issues #N[, #M...]" comment on
-//     transition; the optional `comment` request field appends user text.
-//     Non-admins may only ADD entries to an already-blocked issue's
-//     dependent_issues — they cannot remove entries.
+//     Unlike Duplicate, the server does NOT auto-post a comment for this
+//     transition — the frontend posts a "Blocked by issues #N[, #M...]"
+//     comment itself (seeded text plus any user additions) as a separate
+//     request after this PUT succeeds; the `comment` body field on this
+//     endpoint is not used by this handler at all (see above). Non-admins
+//     may only ADD entries to an already-blocked issue's dependent_issues —
+//     they cannot remove entries.
 //
 //   - Open (from Blocked): all entries in the current dependent_issues must
 //     have status Resolved before the transition is allowed (HTTP 409 otherwise).
 //
 //   - Open or Resolved: dependent_issues is cleared automatically by this
 //     handler regardless of what the client sends.
+//
+// Response (200 OK): {"issue": {...}} — the updated issue as returned by
+// db.UpdateIssue, with DescriptionHTML populated the same way as
+// handleGetIssue.
+//
+// Errors: 400 invalid id, missing title, or an invalid dependent_issues
+// list for the requested status; 403 the caller is not the reporter,
+// assignee, or an admin, a non-admin tried to remove a Blocked dependency,
+// or a non-admin tried to change teams; 404 issue not found (either the
+// target issue or a referenced dependent_issues entry that doesn't exist);
+// 409 attempting Blocked→Open while a dependency is still unresolved.
 func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -551,8 +668,25 @@ func teamsEqual(a, b []string) bool {
 	return true
 }
 
-// handleDeleteIssue permanently removes an issue and all its comments. Only
-// the reporter, assignee, or an admin may delete an issue.
+// handleDeleteIssue serves DELETE /api/issues/{id}. Auth: any authenticated
+// user may attempt the request, but issueModifier (above) restricts the
+// actual delete to the issue's reporter, its current assignee, or an admin —
+// same authorization rule as handleUpdateIssue.
+//
+// Path parameter: {id}, parsed via issueID().
+//
+// db.DeleteIssue permanently removes the issue row and, first, all comments
+// attached to it — SQLite here has no foreign-key constraint wired up
+// between comments.issue_id and issues.id (that requires
+// "PRAGMA foreign_keys = ON", which this project does not enable), so the
+// application code does that cleanup manually rather than relying on a
+// cascading delete at the database level.
+//
+// Request: no body.
+// Response (200 OK): {"ok": true}.
+//
+// Errors: 400 invalid id; 403 caller is not the reporter/assignee/admin;
+// 404 no issue with that id; 500 on db error.
 func (s *srv) handleDeleteIssue(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {

@@ -9,8 +9,33 @@ import (
 	"github.com/tucats/idtrack/db"
 )
 
-// Teams handles the "teams" sub-command.
-// Subcommands: list, add, delete, update.
+// Teams handles the "teams" (alias: "team") sub-command, which manages the
+// teams used to partition project/issue visibility (see the "Team-based
+// access control" note in the project's CLAUDE.md — briefly: a user only
+// sees a project/issue if their teams overlap with its teams, unless either
+// side is the reserved "admin" or "any" team).
+//
+//	idtrack teams list
+//	idtrack teams add <name> [--description text] [--database path]
+//	idtrack teams update <name> [--name new-name] [--description text] [--database path]
+//	idtrack teams delete <name> [--database path]
+//
+// args[0] is the positional subcommand word (list/add/delete/update — same
+// pattern as Define/Delete in projects.go and User in users.go); the
+// remaining args are that subcommand's own flags.
+//
+//   - list prints a NAME/DESCRIPTION table of every team.
+//   - add creates a new team; fails if the name is already taken or is one
+//     of the two reserved names ("admin", "any").
+//   - update requires at least one of --name or --description. Renaming a
+//     team cascades to every user, project, and issue that references the
+//     old name (db.UpdateTeam does this in a single transaction). Reserved
+//     teams cannot be renamed but their description can still be changed.
+//   - delete removes a team; fails if it is reserved or still referenced by
+//     any user, project, or issue.
+//
+// Every subcommand prints a one-line confirmation on success, or an error to
+// stderr followed by os.Exit(1) on failure.
 func Teams(args []string) {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "teams requires a subcommand: list, add, delete, or update")

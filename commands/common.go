@@ -12,12 +12,18 @@ import (
 	"strings"
 )
 
+// Shared string constants used across the command-parsing switch statements
+// in this package (users.go, teams.go, projects.go, ingest.go, ...). Defining
+// them once here means the flag spelling ("--database") and the positional
+// subcommand words ("list"/"add"/"delete"/"update") only need to be changed
+// in one place, and the compiler catches typos in the switch cases (a typo in
+// a bare string literal would just silently fail to match).
 const (
-	databaseFlag = "--database"
-	defaultDB    = "idtrack.db"
-	trueValue    = "true"
-	listCommand = "list"
-	addCommand = "add"
+	databaseFlag  = "--database"
+	defaultDB     = "idtrack.db"
+	trueValue     = "true"
+	listCommand   = "list"
+	addCommand    = "add"
 	deleteCommand = "delete"
 	updateCommand = "update"
 )
@@ -30,11 +36,18 @@ var (
 )
 
 // defaults holds the persisted user preferences stored in
-// ~/.idtrack/defaults.json. Fields tagged omitempty are omitted from the file
-// when they hold their zero value so the JSON stays minimal.
+// ~/.idtrack/defaults.json. The text after each field type (e.g.
+// `json:"port"`) is a Go "struct tag" — metadata read by reflection at
+// runtime, here by encoding/json, to decide the field's key name in the
+// JSON file. Fields tagged omitempty are left out of the file entirely when
+// they hold their zero value ("", 0, nil, ...), which keeps a fresh
+// defaults.json minimal instead of listing every possible setting at its
+// zero value. loadDefaults (below) and Default (in defaults.go) are the two
+// places that turn this struct into/from the JSON file via
+// json.Unmarshal/json.MarshalIndent.
 type defaults struct {
-	Port           int    `json:"port"`
-	Database       string `json:"database"`
+	Port           int    `json:"port"`                      // listen port; 0 means "use the built-in default" (8443)
+	Database       string `json:"database"`                  // absolute path to the SQLite database file
 	ServerCert     string `json:"server_cert,omitempty"`     // absolute path to TLS cert file; empty = auto-generated self-signed cert
 	ServerKey      string `json:"server_key,omitempty"`      // absolute path to TLS key file; empty = auto-generated self-signed key
 	IdleTimeout    int    `json:"idle_timeout,omitempty"`    // seconds; 0 means disabled
@@ -114,7 +127,7 @@ func parseBackupSize(s string) (int64, error) {
 		if strings.HasSuffix(s, u.suffix) {
 			scale = u.bytes
 			numStr = strings.TrimSuffix(s, u.suffix)
-			
+
 			break
 		}
 	}

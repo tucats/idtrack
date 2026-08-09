@@ -1,3 +1,14 @@
+// This file serves idtrack's static, unauthenticated assets: the single-page
+// app's HTML/CSS/JS, and the user manual rendered from Markdown. All of them
+// are read from s.static, an fs.FS (filesystem interface) that in production
+// is backed by a Go embed.FS. embed.FS comes from the standard library
+// "embed" package: a "//go:embed resources" directive elsewhere in the
+// codebase (main.go) tells the Go compiler to read the resources/ directory
+// at build time and bake its contents directly into the compiled binary as
+// a virtual, read-only filesystem. The practical effect is that deploying
+// idtrack is copying one executable file — there is no separate step to
+// upload HTML/CSS/JS/certificate files alongside it, and fs.ReadFile below
+// reads from memory, not from disk.
 package server
 
 import (
@@ -38,6 +49,7 @@ func (s *srv) serveHTML(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// serveCSS serves the embedded stylesheet unchanged.
 func (s *srv) serveCSS(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.css")
 	if err != nil {
@@ -50,6 +62,11 @@ func (s *srv) serveCSS(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+// serveJS serves the embedded frontend script, minified on every request.
+// Minify (see minify.go) strips comments and collapses whitespace so the
+// browser downloads a smaller payload; shortenNames is passed false so the
+// function/variable names visible in the browser's dev tools still match
+// the source, which is useful when debugging the running app in production.
 func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.js")
 	if err != nil {
