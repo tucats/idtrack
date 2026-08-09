@@ -124,6 +124,13 @@ const _colVisibilityDefaults = {
     resolved:  false,
     comments:  false,
 };
+// `{ ..._colVisibilityDefaults }` uses the object "spread" syntax to copy
+// every key/value pair out of _colVisibilityDefaults into a brand-new
+// object. Without the spread, `let _colVisibility = _colVisibilityDefaults`
+// would make both names point at the *same* object, so later code that
+// mutates _colVisibility (toggleColumn) would also silently corrupt the
+// "defaults" object. The spread gives _colVisibility its own independent
+// copy to mutate, loaded over with any saved preference in loadPrefs().
 let _colVisibility = { ..._colVisibilityDefaults };
 
 // The id of the issue currently open in the detail panel. null = none open.
@@ -200,6 +207,13 @@ let _detailTeams     = [];   // issue detail panel
 //
 // The inner setText helper silently skips elements that don't exist yet,
 // which makes it safe to call before the app shell is visible.
+//
+// setText is an "arrow function" — a shorter syntax for writing small
+// functions: `(params) => expression-or-block`. It behaves like a normal
+// function here (this file doesn't rely on arrow functions' other
+// difference, that they don't have their own `this`); think of it as a
+// compact, unnamed function assigned to a local variable, handy for
+// tiny one-off helpers like this that are only used inside applyBranding.
 function applyBranding() {
     document.title = _appName + ' — ' + _appDesc;
     const setText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
@@ -228,20 +242,55 @@ async function loadTeamData() {
 }
 
 // teamNames returns just the name strings from _teamData.
+//
+// .map() is an Array.prototype method: it walks the array, calls the
+// given function once per element, and builds a brand-new array from
+// the return values — it does NOT change _teamData itself. This
+// "functional" style (map/filter/join/some/find, used throughout this
+// file) is different from writing a manual for-loop that pushes into
+// an array or mutates one in place; get used to reading `.map(x => ...)`
+// as "produce a new array, transforming each x".
 function teamNames() {
     return _teamData.map(t => t.name);
 }
 
 // updateTeamDatalist rebuilds the shared <datalist id="team-names-dl">
 // so every team chip picker input gets the same autocomplete options.
+//
+// The string inside backticks below is a "template literal" — text
+// wrapped in ` ` (backticks) instead of quotes, which lets you embed
+// live JavaScript expressions using ${...}. It's the primary way this
+// file builds HTML: assemble a string (often via .map(...).join('')
+// to turn an array into one big concatenated string), then assign it
+// to an element's .innerHTML. That REPLACES all of the element's
+// existing markup with the new string — there's no framework doing
+// incremental "diffing" here, so any child DOM nodes / event listeners
+// inside it are thrown away and recreated from scratch. Because
+// .innerHTML parses its string as real HTML, any value that came from
+// user input (a team name, a title, etc.) MUST be passed through esc()
+// first — otherwise a team named `<script>...</script>` would execute
+// as code for every user who sees this datalist (XSS).
 function updateTeamDatalist() {
     const dl = document.getElementById('team-names-dl');
     if (dl) dl.innerHTML = _teamData.map(t => `<option value="${esc(t.name)}">`).join('');
 }
 
-// renderTeamChips rebuilds a chip container from an array of team names.
-// 'editable' controls whether × remove buttons are shown.
-// 'prefix' is used to generate the removeTeam callback name.
+// renderTeamChips rebuilds a chip container (e.g. #au-teams-chips) from an
+// array of team names — the visual "chips" (small pill buttons) seen next
+// to add/edit-user, edit-project, and issue-detail team pickers.
+//   containerId — id of the element whose innerHTML gets replaced
+//   teams       — array of team-name strings to render, in order
+//   prefix      — which picker this is ('au', 'eu', 'ep', 'detail'); used
+//                 to build the onclick attribute string so each chip's ×
+//                 button calls the right per-picker remove function
+//                 (auRemoveTeam, euRemoveTeam, etc. — see below)
+//   editable    — when true, each chip gets a × remove button; when false
+//                 (read-only contexts) the chip is just a label
+// The .map((t, i) => ...) callback takes both the array element (t) and
+// its index (i) — the index is what lets the × button know which chip to
+// splice out later. Every dynamic value (t, i, prefix) is either escaped
+// with esc() or is a value this code itself controls (never inserted
+// straight from user input unescaped).
 function renderTeamChips(containerId, teams, prefix, editable) {
     const container = document.getElementById(containerId);
     if (!container) return;
@@ -255,7 +304,12 @@ function renderTeamChips(containerId, teams, prefix, editable) {
 }
 
 // addTeamChip reads the input for 'prefix', validates, adds to the correct
-// team array, and re-renders the chips.
+// team array, and re-renders the chips. Called when the user types a team
+// name (autocompleted from #team-names-dl, populated by updateTeamDatalist)
+// and presses Enter or clicks "Add" next to one of the four chip pickers.
+// Names are lower-cased and de-duplicated before being added. If this is
+// the issue-detail picker ('detail'), markDetailDirty() flags the form so
+// the Save button becomes active.
 function addTeamChip(prefix) {
     const input = document.getElementById(`${prefix}-teams-input`);
     if (!input) return;
@@ -392,10 +446,23 @@ function canModifyIssue(issue) {
 // The 'async' keyword means the function always returns a Promise.
 // Inside an async function, 'await' pauses execution until the Promise
 // resolves, making asynchronous code read like normal sequential code.
+//
+// fetch() is the modern browser API for making HTTP requests; it's a
+// built-in global, not something this codebase defines. It returns a
+// Promise that resolves once the response headers arrive — you then
+// call .json() (also Promise-based) to read and parse the body. This
+// replaces the older, callback-based XMLHttpRequest API you may see in
+// legacy JS code; fetch + async/await is what lets the code below read
+// top-to-bottom like synchronous code instead of nesting callbacks.
 
 // apiFetch is the lowest-level wrapper. It calls the browser's built-in
 // fetch() with whatever options the caller provides, intercepts 401s,
 // and returns the raw Response object for higher-level wrappers to parse.
+//
+// `options = {}` is a "default parameter": if the caller omits the
+// second argument entirely, options is set to a fresh empty object
+// instead of being undefined. This lets callers write apiFetch(url)
+// when they don't need to customize the request (method, headers, body).
 async function apiFetch(url, options = {}) {
     const res = await fetch(url, options);
 
@@ -790,16 +857,27 @@ function _closeColPickerOnOutside() {
 // handles all filtering, sorting, and pagination. Each change below
 // resets the issue window and re-fetches from offset 0.
 
+// setStatusFilter is the onchange handler for the status <select> in the
+// filter bar. val is one of 'all' | 'open' | 'resolved' | 'blocked' |
+// 'duplicate'. Updates the shared _statusFilter state and re-fetches the
+// issue list from the server (offset 0) so the new filter takes effect —
+// see currentFilterParams(), which reads _statusFilter on every fetch.
 function setStatusFilter(val) {
     _statusFilter = val;
     loadIssueWindow();
 }
 
+// setPriorityFilter is the onchange handler for the priority <select>.
+// val is one of 'all' | 'High' | 'Medium' | 'Low'. Same pattern as
+// setStatusFilter: update state, then reload the issue window.
 function setPriorityFilter(val) {
     _priorityFilter = val;
     loadIssueWindow();
 }
 
+// setProjectFilter is the onchange handler for the project <select>.
+// val is 'all' or a project name from _projectData. Same pattern as
+// setStatusFilter: update state, then reload the issue window.
 function setProjectFilter(val) {
     _projectFilter = val;
     loadIssueWindow();
@@ -985,13 +1063,21 @@ function _nowRFC3339() {
     return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
-// issueRow returns the HTML string for a single table row. The data-id
-// attribute embeds the issue id directly on the DOM element so we can later
-// find and update a specific row with:
+// issueRow returns the HTML string for a single table row. It is built with
+// a template literal — a string delimited by backticks (`) instead of quotes,
+// which allows both multi-line text and ${expression} interpolation directly
+// inside the string. Every ${...} slot below gets converted to text and
+// spliced into the result. The data-id attribute embeds the issue id
+// directly on the DOM element so we can later find and update a specific
+// row with:
 //   document.querySelector('#issues-tbody tr[data-id="42"]')
 // without iterating over every row or keeping a separate id→element map.
-// esc() is called on every user-supplied string to prevent XSS — it converts
-// characters like < > & " into safe HTML entities before they reach innerHTML.
+// esc() (defined earlier in this file) is called on every user-supplied
+// string before it goes into the template — it converts characters like
+// < > & " into safe HTML entities. This matters because the resulting
+// string is later assigned to .innerHTML, which the browser parses as real
+// HTML: an unescaped issue title of `<script>evil()</script>` would
+// actually execute in the page. Escaping first turns it into inert text.
 function issueRow(issue) {
     const sel = issue.id === _currentId ? ' selected' : '';
     return `<tr class="issue-row${sel}" data-id="${issue.id}" onclick="selectIssue(${issue.id})">
@@ -1026,6 +1112,14 @@ function renderIssueWindow() {
     }
     table.style.display = '';
     empty.style.display = 'none';
+    // _issueWindow.map(issueRow) runs issueRow() over every issue object and
+    // collects the returned HTML strings into a new array (one <tr>...</tr>
+    // string per issue); .join('') concatenates that array into one long
+    // string with nothing between the pieces. That single string is then
+    // assigned to innerHTML, which asks the browser to parse it as HTML and
+    // replace the tbody's entire contents in one shot. This "build a string,
+    // then set innerHTML" approach is how this whole app renders — there is
+    // no virtual DOM or diffing, just re-parsing fresh HTML from scratch.
     tbody.innerHTML = _issueWindow.map(issueRow).join('');
     updateSortUI();
 }
@@ -1146,6 +1240,12 @@ async function selectIssue(id) {
 
         // Snapshot the dependent_issues and teams fields.
         _dependentIssues = issue.dependent_issues || [];
+        // [...issue.teams] is the "spread" syntax: it copies every element of
+        // issue.teams into a brand-new array. This matters because arrays in
+        // JS are reference types — writing `_detailTeams = issue.teams`
+        // (no spread) would make _detailTeams point at the very same array
+        // object, so later edits via addTeamChip()/removeTeamChip() would
+        // silently mutate the issue object too. Spreading breaks that link.
         _detailTeams = Array.isArray(issue.teams) ? [...issue.teams] : ['any'];
 
         const canEdit = canModifyIssue(issue);
@@ -1227,6 +1327,12 @@ function markDetailDirty() {
 // save instead of silently reverting to "text".
 function setDetailFormatValue(format) {
     const sel = document.getElementById('detail-format');
+    // sel.options is not a real array (it's an HTMLOptionsCollection), so
+    // [...sel.options] spreads it into a real array first. .some() then
+    // returns true as soon as any element satisfies the callback (here:
+    // any <option> whose value matches `format`) — it short-circuits rather
+    // than checking every element once it finds a match, and returns a
+    // plain boolean rather than the matching element itself.
     if (![...sel.options].some(o => o.value === format)) {
         const opt = document.createElement('option');
         opt.value = format;
@@ -1454,7 +1560,6 @@ async function saveIssueChanges() {
 }
 
 // doSaveIssue performs the actual PUT to update the issue, then
-// doSaveIssue performs the actual PUT to update the issue, then
 // optionally POSTs a client-side comment (for Resolve/Reopen notes).
 // `serverComment` is the extra text appended to the server's auto-generated
 // "Blocked by issues #N…" comment — it is sent in the PUT body, not as a
@@ -1521,6 +1626,28 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
     }
 }
 
+// The next several functions implement a "confirmation dialog" pattern that
+// repeats (with small variations) for every status transition that needs
+// extra input: Resolve, Reopen, Duplicate, and Blocked. The shape is always
+// the same:
+//   1. saveIssueChanges() detects that the new status needs a dialog, saves
+//      the already-validated form field values into a module-level
+//      "_pending..." variable (_pendingStatusData, and for Blocked also
+//      _pendingBlockedIds), and calls the matching show*Dialog() function.
+//   2. show*Dialog() makes the overlay visible (`style.display = 'flex'`)
+//      and pre-fills its fields.
+//   3. The user either clicks "Confirm" (routes to confirm*Dialog(), which
+//      reads the dialog's own input fields, validates them, hides the
+//      overlay, and finally calls doSaveIssue() using the stashed pending
+//      data) or clicks "Cancel"/closes the overlay (routes to
+//      cancel*Dialog(), which resets the status dropdown back to
+//      _originalStatus, clears the pending variable, and hides the overlay
+//      without saving anything).
+// Splitting the flow this way lets the dialog's own inputs (e.g. the
+// resolution comment) be combined with the detail panel's fields (title,
+// priority, etc.) into one PUT request once the user confirms, while still
+// letting them back out cleanly at any point before that.
+
 // showResolveDialog configures and opens the status-change overlay for
 // the Open → Resolved transition. The "Fixed Version" field is shown
 // and the comment is optional.
@@ -1583,6 +1710,10 @@ async function confirmStatusChange() {
     }
 
     document.getElementById('status-change-overlay').style.display = 'none';
+    // Object destructuring: this one line pulls each named property off
+    // _pendingStatusData and declares a same-named local variable for it —
+    // equivalent to writing `const title = _pendingStatusData.title;` etc.
+    // for every field, just far more compact.
     const { title, desc, priority, status, assignee, project, component, format } = _pendingStatusData;
     _pendingStatusData = null;
     await doSaveIssue(title, desc, priority, status, assignee, project, component, format, commentBody, '');
@@ -1681,6 +1812,10 @@ function addBlockedDialogIssue() {
 }
 
 // removeBlockedDialogIssue removes one ID from the staging list.
+// Array.prototype.filter() returns a new array containing only the elements
+// for which the callback returns true — here, every id except the one being
+// removed. It never mutates the original array, so the "removal" is really
+// "replace _pendingBlockedIds with a shorter copy that excludes `id`".
 function removeBlockedDialogIssue(id) {
     _pendingBlockedIds = _pendingBlockedIds.filter(x => x !== id);
     renderBlockedDialogList();
@@ -1752,6 +1887,10 @@ function onDetailStatusChange() {
     }
     // Compute canEdit from the currently open issue (may be undefined if not
     // yet loaded, in which case we default to false for safety).
+    // Array.prototype.find() scans the array and returns the first element
+    // for which the callback returns true (here: the issue whose id matches
+    // _currentId), or undefined if none match — unlike filter(), it returns
+    // a single element, not a new array.
     const issue   = _issueWindow.find(i => i.id === _currentId);
     const canEdit = issue ? canModifyIssue(issue) : false;
     renderDependentIssues(status, canEdit);
@@ -1964,6 +2103,9 @@ async function showNewIssue() {
     document.getElementById('ni-title').focus();
 }
 
+// hideNewIssue closes the New Issue overlay without saving anything. There
+// is no dirty-check here (unlike closeDetail/selectIssue) — an abandoned
+// New Issue draft is simply discarded.
 function hideNewIssue() {
     document.getElementById('new-issue-overlay').style.display = 'none';
 }
@@ -2091,6 +2233,19 @@ async function submitNewIssue() {
 // The previous selection is preserved after rebuilding so that calling
 // this function (e.g. after adding a user) does not silently clear an
 // in-progress assignment.
+//
+// Note on the rendering pattern used throughout the rest of this file:
+// options are built with `Array.prototype.map()` (transform each user into
+// an `<option>` string) followed by `.join('')` (glue the array of strings
+// into one big string), using backtick template literals (`` `...${expr}...` ``)
+// to interpolate values into the markup. The finished string is assigned to
+// an element's `.innerHTML`, which is how this codebase renders dynamic
+// content — there is no UI framework doing this for us. Every value that
+// came from user input (here, `u.username` and `u.display_name`) is passed
+// through `esc()` (defined earlier in this file) before interpolation, so a
+// user-chosen display name containing `<script>` can't inject markup — this
+// is the standard defense against cross-site scripting (XSS) when building
+// HTML by hand.
 async function populateAssigneeDropdowns() {
     let users = [];
     try { users = await fetchUsers(); } catch {}
@@ -2439,6 +2594,10 @@ function onDetailProjectChange() {
 // Two-screen overlay stack: mt-list-overlay → mt-detail-overlay.
 // Follows the same parent/child pattern as Edit Projects.
 
+// openManageTeams shows the team list overlay. Unlike openManageUsers it
+// makes no network call — _teamData is expected to already be populated
+// (loaded once at login by loadTeamData(), and refreshed by mtSaveTeam()/
+// mtDeleteTeam() after any change) so opening the list is instant.
 function openManageTeams() {
     _closeMenuOnOutside();
     mtRenderTeamList();
@@ -2449,6 +2608,10 @@ function hideManageTeams() {
     document.getElementById('mt-list-overlay').style.display = 'none';
 }
 
+// mtRenderTeamList builds the clickable team rows inside the list overlay
+// from the in-memory _teamData array. The reserved teams ("admin" and
+// "any") are marked with a small lock emoji since they can't be renamed
+// or deleted — see openTeamDetail().
 function mtRenderTeamList() {
     const body = document.getElementById('mt-list-body');
     if (!_teamData || _teamData.length === 0) {
@@ -2468,6 +2631,17 @@ function mtRenderTeamList() {
     }).join('');
 }
 
+// openTeamDetail switches from the team list to the detail screen, the
+// "child" overlay in the same parent/child pattern used by Manage Users
+// and Edit Projects (see the comments at the top of this section and at
+// "UI — EDIT PROJECTS" above). Pass null for 'name' to open in "new team"
+// mode; pass an existing team's name to edit it.
+//
+// The reserved teams "admin" and "any" (see db.TeamAdmin/db.TeamAny in the
+// Go backend) have special meaning to the access-control logic and so
+// cannot be renamed or deleted here — the name input is disabled and the
+// Delete button hidden whenever isReserved is true, though their
+// description can still be edited.
 function openTeamDetail(name) {
     _mtTeam = name;
     const isNew = name === null;
@@ -2487,12 +2661,26 @@ function openTeamDetail(name) {
     document.getElementById(isNew ? 'mt-name-input' : 'mt-desc-input').focus();
 }
 
+// hideTeamDetail closes the detail screen and returns to a freshly
+// re-rendered team list — the same "every exit path re-shows the parent"
+// rule followed by hideEditUser()/hideProjectDetail().
 function hideTeamDetail() {
     document.getElementById('mt-detail-overlay').style.display = 'none';
     mtRenderTeamList();
     document.getElementById('mt-list-overlay').style.display = 'flex';
 }
 
+// mtSaveTeam creates a new team or saves changes to an existing one,
+// depending on whether _mtTeam is null (new-team mode, set by
+// openTeamDetail(null)) or holds the name of the team being edited.
+//
+// POST /api/teams              (new team)
+//   Request body: { name, description }
+// PUT /api/teams/{name}        (existing team)
+//   Request body: { description } plus 'name' only when it changed —
+//   renaming a team cascades server-side to every user/project/issue
+//   that referenced the old name.
+//   Both endpoints are admin-only.
 async function mtSaveTeam() {
     const newName = document.getElementById('mt-name-input').value.trim().toLowerCase();
     const desc    = document.getElementById('mt-desc-input').value.trim();
@@ -2524,6 +2712,14 @@ async function mtSaveTeam() {
     }
 }
 
+// mtDeleteTeam permanently deletes the team currently open in the detail
+// screen, after a confirm() prompt. The Delete button is only shown for
+// non-reserved, non-new teams (see openTeamDetail()), so _mtTeam is always
+// an existing, deletable team name here.
+//
+// DELETE /api/teams/{name}
+//   Admin-only. The server refuses if the team is still referenced by any
+//   user, project, or issue, and returns an error describing how many.
 async function mtDeleteTeam() {
     if (!_mtTeam) return;
     if (!confirm(`Delete team "${_mtTeam}"? This cannot be undone.`)) return;
