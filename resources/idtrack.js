@@ -560,6 +560,16 @@ async function updateIssue(id, title, description, priority, status, assignee, p
     });
 }
 
+// POST /api/render
+// Server-renders arbitrary text per format (using the same goldmark
+// renderer as the saved issue view), for live-previewing unsaved
+// description edits without duplicating markdown parsing in JavaScript.
+// Response shape: { html: "..." }
+async function renderPreview(format, text) {
+    const data = await apiPost('/api/render', { format, text });
+    return data.html || '';
+}
+
 // DELETE /api/issues/{id}
 // Permanently deletes an issue and all its comments. Admin-only.
 async function deleteIssue(id) {
@@ -1132,7 +1142,7 @@ async function selectIssue(id) {
         // option was hidden from the UI), inject a hidden option so its
         // value round-trips on save instead of silently reverting to "text".
         setDetailFormatValue(issue.format || 'text');
-        updateDescPreview(issue.format, issue.description_html);
+        initDescPreview(issue.format, issue.description_html);
 
         // Snapshot the dependent_issues and teams fields.
         _dependentIssues = issue.dependent_issues || [];
@@ -1160,6 +1170,11 @@ async function selectIssue(id) {
         ['detail-title', 'detail-status', 'detail-priority',
          'detail-assignee', 'detail-project', 'detail-component', 'detail-format', 'detail-desc']
             .forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !canEdit; });
+        // The Edit button lets a read-only viewer attempt to start editing
+        // the description; hide it entirely rather than relying solely on
+        // the disabled textarea to block entry. Preview stays available so
+        // read-only viewers can still toggle back to the formatted view.
+        document.getElementById('detail-desc-edit-btn').style.display = canEdit ? '' : 'none';
 
         renderDependentIssues(issue.status, canEdit);
 
@@ -1167,6 +1182,7 @@ async function selectIssue(id) {
 
         renderComments(comments);
         document.getElementById('comment-input').value = '';
+        initCommentToggle(issue.format);
         document.getElementById('detail-panel').style.display = '';
         // Signal the responsive CSS that the detail panel is now open.
         const layout = document.getElementById('main-layout');
@@ -1201,10 +1217,6 @@ function markDetailDirty() {
     if (!_detailDirty) {
         _detailDirty = true;
         document.getElementById('detail-save-btn').style.display = '';
-        // The preview reflects the last-saved rendering, not live keystrokes
-        // (there's no client-side markdown/HTML renderer) — hide it as soon
-        // as the form diverges from that saved state so it can't mislead.
-        document.getElementById('detail-desc-preview-wrap').style.display = 'none';
     }
 }
 
@@ -1225,19 +1237,163 @@ function setDetailFormatValue(format) {
     sel.value = format;
 }
 
-// updateDescPreview shows or hides the rendered description preview.
-// descriptionHtml is the server-rendered HTML for the current format (empty
-// for "text", where the raw textarea already is the full presentation).
-function updateDescPreview(format, descriptionHtml) {
-    const wrap = document.getElementById('detail-desc-preview-wrap');
-    const el   = document.getElementById('detail-desc-preview');
-    if (format && format !== 'text' && descriptionHtml) {
-        el.innerHTML = descriptionHtml;
-        wrap.style.display = '';
+// The description field toggles between two mutually exclusive views for
+// markdown/html-formatted issues: a raw-text textarea (edit mode) and a
+// rendered HTML div (preview mode). Plain-text issues never show the
+// toggle — the textarea is the only view, exactly as before this feature.
+//
+// initDescPreview sets up the field for a freshly loaded or saved issue:
+// the Edit/Preview buttons appear only for non-text formats, and the field
+// defaults to preview mode using the server-rendered HTML that already
+// came back with the issue (no extra round-trip needed on open).
+function initDescPreview(format, descriptionHtml) {
+    const isFormatted = !!format && format !== 'text';
+    document.getElementById('detail-desc-toggle').style.display = isFormatted ? '' : 'none';
+    if (isFormatted) {
+        showDescPreview(descriptionHtml || '');
     } else {
-        el.innerHTML = '';
-        wrap.style.display = 'none';
+        showDescEdit();
     }
+}
+
+// showDescEdit displays the raw-text textarea and hides the rendered preview.
+function showDescEdit() {
+    document.getElementById('detail-desc').style.display = '';
+    document.getElementById('detail-desc-preview').style.display = 'none';
+}
+
+// showDescPreview displays the given rendered HTML and hides the textarea.
+function showDescPreview(html) {
+    const preview = document.getElementById('detail-desc-preview');
+    preview.innerHTML = html;
+    preview.style.display = '';
+    document.getElementById('detail-desc').style.display = 'none';
+}
+
+// switchDescToEdit is called by the Edit button and by clicking directly on
+// the rendered preview (clicking "in the field" starts an edit). No-op for
+// plain-text issues (there's no toggle) and for read-only viewers (the
+// textarea is disabled, so there's nothing to edit).
+function switchDescToEdit() {
+    const textarea = document.getElementById('detail-desc');
+    if (textarea.disabled) return;
+    if (document.getElementById('detail-format').value === 'text') return;
+    showDescEdit();
+    textarea.focus();
+}
+
+// switchDescToPreview asks the server to render the current raw text (via
+// POST /api/render, the same goldmark renderer used for the saved view) and
+// switches the field to show the result. Called by the Preview button and
+// by the textarea losing focus, so tabbing away always reverts to the
+// formatted view. No-op for plain-text issues.
+async function switchDescToPreview() {
+    const format = document.getElementById('detail-format').value;
+    if (format === 'text') return;
+    const text = document.getElementById('detail-desc').value;
+    try {
+        showDescPreview(await renderPreview(format, text));
+    } catch (e) {
+        if (e.message !== 'Unauthorized') console.error('switchDescToPreview:', e);
+    }
+}
+
+// onDescBlur reverts the description field to the formatted preview when the
+// textarea loses focus (e.g. tabbing to the next field).
+function onDescBlur() {
+    switchDescToPreview();
+}
+
+// onDetailFormatChange handles the Format dropdown changing before save.
+// It marks the panel dirty as usual, then updates the Edit/Preview toggle
+// for the newly selected format: hidden (and forced to edit mode) for
+// "text", shown for markdown/html. If the field is already showing a
+// preview, that preview is refreshed against the new format rather than
+// left displaying HTML rendered for the old one.
+function onDetailFormatChange() {
+    markDetailDirty();
+    const format = document.getElementById('detail-format').value;
+    const toggle = document.getElementById('detail-desc-toggle');
+    if (format === 'text') {
+        toggle.style.display = 'none';
+        showDescEdit();
+        return;
+    }
+    toggle.style.display = '';
+    if (document.getElementById('detail-desc-preview').style.display !== 'none') {
+        switchDescToPreview();
+    }
+    // The new-comment box shares the same format-driven toggle rules.
+    updateCommentToggleVisibility(format);
+}
+
+// The new-comment textarea gets the same Edit/Preview toggle as the
+// description field, for the same reason: composing markdown/HTML blind is
+// awkward without a way to check the rendered result before posting. Unlike
+// the description, a fresh comment box starts empty, so it always defaults
+// to edit mode rather than preview mode — there's nothing to preview yet.
+// The comment textarea is never disabled (any authenticated user may
+// comment), so unlike switchDescToEdit there's no disabled/canEdit check.
+
+// initCommentToggle shows/hides the toggle for the current issue's format
+// and resets the field to (empty) edit mode. Used when opening an issue.
+function initCommentToggle(format) {
+    updateCommentToggleVisibility(format);
+    showCommentEdit();
+}
+
+// updateCommentToggleVisibility shows/hides the toggle for the given format
+// without otherwise disturbing an in-progress draft — used when the format
+// changes out from under an already-open comment box (the Format dropdown,
+// or a save that persists a format change). Forces edit mode when the new
+// format no longer supports a toggle.
+function updateCommentToggleVisibility(format) {
+    const isFormatted = !!format && format !== 'text';
+    document.getElementById('comment-toggle').style.display = isFormatted ? '' : 'none';
+    if (!isFormatted) showCommentEdit();
+}
+
+// showCommentEdit displays the raw-text textarea and hides the preview.
+function showCommentEdit() {
+    document.getElementById('comment-input').style.display = '';
+    document.getElementById('comment-preview').style.display = 'none';
+}
+
+// showCommentPreview displays the given rendered HTML and hides the textarea.
+function showCommentPreview(html) {
+    const preview = document.getElementById('comment-preview');
+    preview.innerHTML = html;
+    preview.style.display = '';
+    document.getElementById('comment-input').style.display = 'none';
+}
+
+// switchCommentToEdit is called by the Edit button and by clicking directly
+// on the rendered preview. No-op for plain-text issues (there's no toggle).
+function switchCommentToEdit() {
+    if (document.getElementById('detail-format').value === 'text') return;
+    showCommentEdit();
+    document.getElementById('comment-input').focus();
+}
+
+// switchCommentToPreview renders the current draft server-side (via
+// POST /api/render) and switches the field to show the result. Called by
+// the Preview button and by the textarea losing focus. No-op for
+// plain-text issues.
+async function switchCommentToPreview() {
+    const format = document.getElementById('detail-format').value;
+    if (format === 'text') return;
+    const text = document.getElementById('comment-input').value;
+    try {
+        showCommentPreview(await renderPreview(format, text));
+    } catch (e) {
+        if (e.message !== 'Unauthorized') console.error('switchCommentToPreview:', e);
+    }
+}
+
+// onCommentBlur reverts the comment field to the formatted preview when the
+// textarea loses focus (e.g. tabbing to the "Add Comment" button).
+function onCommentBlur() {
+    switchCommentToPreview();
 }
 
 // saveIssueChanges reads all editable fields from the detail panel,
@@ -1323,7 +1479,8 @@ async function doSaveIssue(title, desc, priority, status, assignee, project, com
         btn.style.display = 'none';
         document.getElementById('detail-updated').textContent = fmtDateTime(issue.updated_at);
         setDetailFormatValue(issue.format || 'text');
-        updateDescPreview(issue.format, issue.description_html);
+        initDescPreview(issue.format, issue.description_html);
+        updateCommentToggleVisibility(issue.format);
         // Sync the dependent-issues section with what the server committed.
         renderDependentIssues(status, canModifyIssue(issue));
         // After a successful save, decide whether the issue still belongs in the
@@ -1726,6 +1883,9 @@ async function submitComment() {
     try {
         await addComment(_currentId, body);
         input.value = '';
+        // Reset to (empty) edit mode — a stale preview of the just-posted
+        // text would otherwise linger for the next comment.
+        showCommentEdit();
         // Re-fetch rather than appending locally so we get the
         // server-assigned id and creation timestamp.
         const { comments } = await fetchIssue(_currentId);

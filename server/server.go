@@ -113,6 +113,8 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle("DELETE /api/projects/{project}", s.auth(http.HandlerFunc(s.handleDeleteProject)))
 	mux.Handle("DELETE /api/projects/{project}/components/{component}", s.auth(http.HandlerFunc(s.handleDeleteComponent)))
 
+	mux.Handle("POST /api/render", s.auth(requireJSON(http.HandlerFunc(s.handleRenderPreview))))
+
 	mux.Handle("GET /api/issues", s.auth(http.HandlerFunc(s.handleListIssues)))
 	// /changes must be registered before /{id} so the literal path takes
 	// priority over the wildcard. (Go 1.22+ routing always prefers literals,

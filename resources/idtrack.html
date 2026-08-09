@@ -612,7 +612,7 @@
           </div>
           <div class="detail-field">
             <label>Format</label>
-            <select id="detail-format" class="detail-select" onchange="markDetailDirty()">
+            <select id="detail-format" class="detail-select" onchange="onDetailFormatChange()">
               <option value="text">Text</option>
               <option value="markdown">Markdown</option>
               <!-- "html" is fully supported server-side and in rendering; only the
@@ -657,12 +657,16 @@
           </div>
         </div>
         <div class="detail-field">
-          <label>Description</label>
-          <textarea id="detail-desc" class="detail-textarea" rows="6" oninput="markDetailDirty()"></textarea>
-        </div>
-        <div id="detail-desc-preview-wrap" class="detail-field" style="display:none">
-          <label>Preview</label>
-          <div id="detail-desc-preview" class="rendered-html"></div>
+          <div class="desc-label-row">
+            <label>Description</label>
+            <div id="detail-desc-toggle" class="desc-toggle" style="display:none">
+              <button type="button" id="detail-desc-edit-btn" class="btn btn-secondary btn-sm" onclick="switchDescToEdit()">Edit</button>
+              <button type="button" id="detail-desc-preview-btn" class="btn btn-secondary btn-sm" onclick="switchDescToPreview()">Preview</button>
+            </div>
+          </div>
+          <textarea id="detail-desc" class="detail-textarea" rows="6"
+                    oninput="markDetailDirty()" onblur="onDescBlur()"></textarea>
+          <div id="detail-desc-preview" class="rendered-html desc-preview" style="display:none" onclick="switchDescToEdit()"></div>
         </div>
         <div id="detail-error" class="error-text"></div>
 
@@ -670,9 +674,15 @@
           <h4 class="comments-heading">Comments</h4>
           <div id="comments-list"></div>
           <div class="add-comment">
+            <div id="comment-toggle" class="comment-toggle-row" style="display:none">
+              <button type="button" id="comment-edit-btn" class="btn btn-secondary btn-sm" onclick="switchCommentToEdit()">Edit</button>
+              <button type="button" id="comment-preview-btn" class="btn btn-secondary btn-sm" onclick="switchCommentToPreview()">Preview</button>
+            </div>
             <textarea id="comment-input" class="comment-textarea" rows="3"
                       placeholder="Add a comment…"
-                      onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey))submitComment()"></textarea>
+                      onkeydown="if(event.key==='Enter'&&(event.ctrlKey||event.metaKey))submitComment()"
+                      onblur="onCommentBlur()"></textarea>
+            <div id="comment-preview" class="rendered-html comment-preview" style="display:none" onclick="switchCommentToEdit()"></div>
             <div class="button-row">
               <button class="btn btn-primary btn-sm" onclick="submitComment()">Add Comment</button>
               <span class="hint">Ctrl+Enter to submit</span>

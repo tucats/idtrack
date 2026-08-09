@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
+	"net/http"
 
 	"github.com/yuin/goldmark"
 )
@@ -33,4 +35,25 @@ func renderFormatted(format, text string) string {
 	default:
 		return ""
 	}
+}
+
+// handleRenderPreview renders arbitrary text server-side for the live
+// Edit/Preview toggle on the issue detail description field. Unlike
+// handleGetIssue/handleUpdateIssue, the text here need not be persisted or
+// even belong to an existing issue — it lets the frontend preview unsaved
+// edits using the same goldmark renderer as the saved view, instead of
+// duplicating markdown parsing in JavaScript.
+func (s *srv) handleRenderPreview(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Format string `json:"format"`
+		Text   string `json:"text"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonError(w, "invalid request body", http.StatusBadRequest)
+
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]string{"html": renderFormatted(body.Format, body.Text)})
 }

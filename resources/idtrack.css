@@ -517,7 +517,8 @@ html.hide-col-comments  .col-comments  { display: none; }
 .detail-field {
   margin-bottom: .875rem;
 }
-.detail-field > label {
+.detail-field > label,
+.desc-label-row > label {
   display: block;
   font-size: .75rem;
   font-weight: 700;
@@ -526,6 +527,16 @@ html.hide-col-comments  .col-comments  { display: none; }
   color: var(--text-muted);
   margin-bottom: .3rem;
 }
+.desc-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.desc-toggle { display: flex; gap: .4rem; }
+#detail-desc-preview.desc-preview { cursor: text; min-height: 4.5rem; }
+
+.comment-toggle-row { display: flex; justify-content: flex-end; gap: .4rem; margin-bottom: .35rem; }
+#comment-preview.comment-preview { cursor: text; min-height: 2.5rem; margin-bottom: .35rem; }
 .detail-fields-row {
   display: flex;
   gap: .75rem;
@@ -664,7 +675,8 @@ html.hide-col-comments  .col-comments  { display: none; }
 .comment-body.rendered-html {
   white-space: normal;
 }
-#detail-desc-preview.rendered-html {
+#detail-desc-preview.rendered-html,
+#comment-preview.rendered-html {
   padding: .5rem .75rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
