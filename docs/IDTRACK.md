@@ -2,8 +2,6 @@
 
 This document describes the internal architecture, design decisions, and implementation details of idtrack for developers, administrators, and contributors. It is the engineering companion to the user-facing [MANUAL.md](../resources/MANUAL.md) and the [BACKUPS.md](BACKUPS.md) operations reference.
 
-> **Historical note.** An earlier version of idtrack ran as a plugin on the Ego server, using the Ego `@sql` endpoint for all database operations and relying on Ego's user system for authentication. That version is completely replaced. The current codebase is a standalone Go binary with no dependency on Ego or any other runtime.
-
 ---
 
 ## Overview
