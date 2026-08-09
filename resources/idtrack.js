@@ -163,7 +163,8 @@ let _originalStatus = 'Open';
 let _pendingStatusData = null;
 
 // User preference flags. Loaded from localStorage at startup by loadPrefs().
-let _darkMode       = false;  // body.dark CSS class active
+let _darkModePref   = 'off'; // 'off' | 'on' | 'auto' — the saved setting
+let _darkMode       = false;  // body.dark CSS class active (resolved from _darkModePref)
 let _keepLoggedIn   = false;  // request 30-day session cookie on next login
 let _desktopMode    = false;  // html.desktop-mode class active (disables RWD CSS)
 
@@ -2678,7 +2679,7 @@ function hideAbout() {
 // reflect the true current preferences.
 function openSettings() {
     _closeMenuOnOutside();
-    document.getElementById('dark-mode-toggle').checked = _darkMode;
+    document.getElementById('dark-mode-select').value = _darkModePref;
     document.getElementById('keep-logged-in-toggle').checked = _keepLoggedIn;
     document.getElementById('desktop-mode-toggle').checked = _desktopMode;
     const psSel = document.getElementById('page-size-select');
@@ -2710,15 +2711,32 @@ function toggleDesktopMode(on) {
     } catch {}
 }
 
-// toggleDarkMode adds or removes the 'dark' class from <body>. All dark
-// mode color overrides in idtrack.css use the 'body.dark' selector, so
-// adding this class is all that's needed to switch themes.
-function toggleDarkMode(on) {
-    _darkMode = on;
-    document.body.classList.toggle('dark', on);
+// prefersDarkColorScheme reports the browser/OS default color scheme, used
+// to resolve the 'auto' dark mode setting.
+function prefersDarkColorScheme() {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+// applyDarkMode adds or removes the 'dark' class from <body> based on the
+// resolved effective state (mode 'on', or 'auto' when the browser prefers
+// a dark scheme). All dark mode color overrides in idtrack.css use the
+// 'body.dark' selector, so toggling this class is all that's needed to
+// switch themes.
+function applyDarkMode(mode) {
+    _darkMode = mode === 'on' || (mode === 'auto' && prefersDarkColorScheme());
+    document.body.classList.toggle('dark', _darkMode);
+}
+
+// setDarkMode is called from the Settings 'Dark mode' select (off/on/auto).
+// It persists the chosen mode and applies it immediately. When 'auto' is
+// selected, a media-query listener (installed once in loadPrefs) keeps the
+// theme in sync with the browser's color scheme for the rest of the session.
+function setDarkMode(mode) {
+    _darkModePref = mode;
+    applyDarkMode(mode);
     try {
         const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
-        p.darkMode = on;
+        p.darkMode = mode;
         localStorage.setItem(PREFS_KEY, JSON.stringify(p));
     } catch {}
 }
@@ -2960,9 +2978,12 @@ function loadPrefs() {
     try {
         const p = JSON.parse(localStorage.getItem(PREFS_KEY));
         if (p) {
-            if (p.darkMode) {
-                _darkMode = true;
-                document.body.classList.add('dark');
+            // p.darkMode was historically a boolean (true = dark, unset/false =
+            // light). Newer prefs store one of 'off'/'on'/'auto' directly.
+            if (typeof p.darkMode === 'string') {
+                _darkModePref = p.darkMode;
+            } else if (p.darkMode) {
+                _darkModePref = 'on';
             }
             if (p.keepLoggedIn) {
                 _keepLoggedIn = true;
@@ -2990,6 +3011,14 @@ function loadPrefs() {
     // set these classes before first render to prevent a flash; calling
     // applyColVisibility() here keeps _colVisibility in sync with the DOM.
     applyColVisibility();
+    applyDarkMode(_darkModePref);
+    // Keep 'auto' mode in sync with the browser's color scheme for the rest
+    // of the session (e.g. the OS switches to Night Shift mid-session).
+    if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (_darkModePref === 'auto') applyDarkMode('auto');
+        });
+    }
 }
 
 // mainLayoutClick is the onclick handler for the main layout container

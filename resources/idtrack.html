@@ -131,10 +131,11 @@
     <h3>Settings</h3>
     <div class="settings-row">
       <span class="settings-label">Dark mode</span>
-      <label class="toggle">
-        <input type="checkbox" id="dark-mode-toggle" onchange="toggleDarkMode(this.checked)">
-        <span class="toggle-track"></span>
-      </label>
+      <select id="dark-mode-select" class="settings-select" onchange="setDarkMode(this.value)">
+        <option value="off">Off</option>
+        <option value="on">On</option>
+        <option value="auto">Auto</option>
+      </select>
     </div>
     <div class="settings-row">
       <span class="settings-label">Keep me logged in</span>

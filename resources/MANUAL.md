@@ -546,7 +546,7 @@ Open the hamburger menu (☰) and choose **Settings**.
 
 ### Dark Mode
 
-Toggle **Dark Mode** on or off. This preference is saved in your browser's `localStorage` and persists across sessions.
+Set **Dark Mode** to **Off**, **On**, or **Auto**. Auto follows your browser/OS color scheme setting and updates live if you change it while the app is open. This preference is saved in your browser's `localStorage` and persists across sessions.
 
 ### Keep me logged in
 
