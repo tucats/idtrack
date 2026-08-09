@@ -14,6 +14,12 @@ import (
 const (
 	statusOpen     = "Open"
 	statusResolved = "Resolved"
+	priorityLow    = "Low"
+	priorityMedium = "Medium"
+	priorityHigh   = "High"
+	useDefault     = "default"
+	useInferred    = "inferred"
+	useDetected    = "detected"
 )
 
 // ingestPlan is the fully-resolved, DB-independent result of parsing one
@@ -48,7 +54,7 @@ func Ingest(args []string) {
 	var (
 		author, defaultOwner, defaultProjectFlag, defaultComponentFlag string
 		defaultStatusFlag                                              = "open"
-		defaultPriorityFlag                                            = "Medium"
+		defaultPriorityFlag                                            = priorityMedium
 		database                                                       string
 		test                                                           bool
 		files                                                          []string
@@ -248,6 +254,7 @@ func parseIngestFiles(files []string, projects []db.Project, defaultProject, def
 		plan, err := buildIngestPlan(path, projects, defaultProject, defaultComponent, defaultStatus, defaultPriority)
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", path, err))
+
 			continue
 		}
 
@@ -357,10 +364,10 @@ func buildIngestPlan(path string, projects []db.Project, defaultProject, default
 
 func sourceLabel(matched bool) string {
 	if matched {
-		return "detected"
+		return useDetected
 	}
 
-	return "default"
+	return useDefault
 }
 
 func normalizeStatusFlag(s string) (string, error) {
@@ -377,11 +384,11 @@ func normalizeStatusFlag(s string) (string, error) {
 func normalizePriorityFlag(s string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "high":
-		return "High", nil
+		return priorityHigh, nil
 	case "medium":
-		return "Medium", nil
+		return priorityMedium, nil
 	case "low":
-		return "Low", nil
+		return priorityLow, nil
 	default:
 		return "", fmt.Errorf("--default-priority must be 'High', 'Medium', or 'Low', got %q", s)
 	}
@@ -424,7 +431,7 @@ func printIngestReport(plans []ingestPlan) {
 }
 
 func tagValue(value, source string, score int) string {
-	if source == "inferred" {
+	if source == useInferred {
 		return fmt.Sprintf("%s (inferred:%d)", value, score)
 	}
 

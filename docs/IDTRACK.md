@@ -366,7 +366,7 @@ Two CSS breakpoints handle phone and tablet layouts. Both are gated on `html:not
 Valid statuses: `Open`, `Resolved`, `Blocked`, `Duplicate`. All transitions are possible (any status can change to any other), subject to these rules enforced in `handleUpdateIssue`:
 
 | Transition | Requirement |
-|---|---|
+| --- | --- |
 | Any → Duplicate | Exactly one valid, non-self target issue ID in `dependent_issues` |
 | Any → Blocked | At least one valid, non-self issue ID in `dependent_issues`; non-admins can only add IDs to an already-Blocked issue |
 | Blocked → Open | Every ID in `dependent_issues` must have status `Resolved` (HTTP 409 otherwise) |

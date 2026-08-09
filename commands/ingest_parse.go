@@ -101,6 +101,7 @@ func splitSections(content string) (description string, comments []section) {
 		trimmed := strings.TrimSpace(lines[start])
 		if trimmed == "" {
 			start++
+
 			continue
 		}
 
@@ -125,6 +126,7 @@ func splitSections(content string) (description string, comments []section) {
 
 		if fenceLinePattern.MatchString(trimmed) {
 			inFence = !inFence
+
 			continue
 		}
 
@@ -169,6 +171,7 @@ func splitSections(content string) (description string, comments []section) {
 	for i, s := range allSections {
 		if strings.EqualFold(s.Label, "description") {
 			descIdx = i
+
 			break
 		}
 	}
@@ -228,7 +231,7 @@ func detectStatus(comments []section, fullText string) (status string, matched b
 		label := strings.ToLower(c.Label)
 
 		if strings.Contains(label, "resolution") {
-			return "Resolved", true
+			return statusResolved, true
 		}
 
 		if strings.Contains(label, "status") && resolvedWordPattern.MatchString(firstLineOf(c.Body)) {
@@ -264,11 +267,11 @@ func detectPriority(comments []section) (priority string, matched bool) {
 func priorityFromText(s string) (string, bool) {
 	switch {
 	case highPriorityPattern.MatchString(s):
-		return "High", true
+		return priorityHigh, true
 	case mediumPriorityPattern.MatchString(s):
-		return "Medium", true
+		return priorityMedium, true
 	case lowPriorityPattern.MatchString(s):
-		return "Low", true
+		return priorityLow, true
 	}
 
 	return "", false
@@ -439,9 +442,9 @@ func inferProjectComponent(filename, title, description string, comments []secti
 
 	result := inferenceResult{
 		Project:         defaultProject,
-		ProjectSource:   "default",
+		ProjectSource:   useDefault,
 		Component:       defaultComponent,
-		ComponentSource: "default",
+		ComponentSource: useDefault,
 	}
 
 	if bestPairScore >= minInferScore && bestPairProject.Name != "" && bestPairCompOnly > 0 {
@@ -452,10 +455,10 @@ func inferProjectComponent(filename, title, description string, comments []secti
 		// and showing a per-field split could misleadingly read as
 		// "inferred:0" when the project name itself had no direct hits.
 		result.Project = bestPairProject.Name
-		result.ProjectSource = "inferred"
+		result.ProjectSource = useInferred
 		result.ProjectScore = bestPairScore
 		result.Component = bestPairComp
-		result.ComponentSource = "inferred"
+		result.ComponentSource = useInferred
 		result.ComponentScore = bestPairScore
 
 		return result
@@ -466,10 +469,8 @@ func inferProjectComponent(filename, title, description string, comments []secti
 
 		if containsComponentCI(bestProject.Components, defaultComponent) {
 			result.Project = bestProject.Name
-			result.ProjectSource = "inferred"
+			result.ProjectSource = useInferred
 		}
-		// else: keep the full default pair rather than mixing an inferred
-		// project with a component from an unrelated project.
 	}
 
 	return result

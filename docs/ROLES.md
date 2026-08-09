@@ -12,7 +12,7 @@ Two reserved team names have fixed semantics regardless of how they appear in
 the data:
 
 | Reserved name | Meaning as a **user** team | Meaning as a **project / issue** team |
-|---|---|---|
+| --- | --- | --- |
 | `admin` | Full superuser access — sees and can edit everything | (not used on objects; admin users are granted by `admin` team membership) |
 | `any` | Matches every project/issue regardless of team | Visible to every user regardless of their team |
 
