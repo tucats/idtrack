@@ -85,6 +85,7 @@ func Serve(args []string, static fs.FS) {
 	keyFile := defs.ServerKey
 	certFile := defs.ServerCert
 	database := defs.Database
+	insecure := defs.Insecure
 	foreground := false
 
 	for i := 0; i < len(args); i++ {
@@ -121,6 +122,25 @@ func Serve(args []string, static fs.FS) {
 
 		case "--foreground":
 			foreground = true
+
+		case "--insecure", "-k":
+			insecure = true
+			passArgs = append(passArgs, "--insecure")
+
+			// Optional explicit value lets the setting be turned back off
+			// (overriding a stored default of insecure=true) without a
+			// separate flag; a bare "--insecure" is the common case.
+			if i+1 < len(args) {
+				switch strings.ToLower(args[i+1]) {
+				case "false", "off":
+					insecure = false
+					passArgs = append(passArgs, "false")
+					i++
+				case "true", "on":
+					passArgs = append(passArgs, "true")
+					i++
+				}
+			}
 
 		case "--port", "-p":
 			if i+1 < len(args) {
@@ -159,8 +179,13 @@ func Serve(args []string, static fs.FS) {
 		port = 8443
 	}
 
+	scheme := "https"
+	if insecure {
+		scheme = "http"
+	}
+
 	host, _ := os.Hostname()
-	url := fmt.Sprintf("https://%s/idtrack", net.JoinHostPort(host, strconv.Itoa(port)))
+	url := fmt.Sprintf("%s://%s/idtrack", scheme, net.JoinHostPort(host, strconv.Itoa(port)))
 
 	// If we are not running in foreground mode, spawn a detached child process
 	// and exit. The child will call Serve again with --foreground set.
@@ -199,7 +224,7 @@ func Serve(args []string, static fs.FS) {
 		backupSize, _ = parseBackupSize(defs.BackupSize)
 	}
 
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile, insecure); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}

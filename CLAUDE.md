@@ -86,7 +86,7 @@ Both default to `"dev"` / `""` when built with plain `go build` (no flags).
 
 - **Go 1.25**, single binary, no runtime dependencies
 - **SQLite** via `modernc.org/sqlite` (pure-Go, no CGO required)
-- **HTTPS only** — TLS cert/key embedded in the binary via `embed.FS`; external cert/key files can be configured via `--server-cert`/`--server-key` to replace the built-in self-signed certificate
+- **HTTPS by default** — TLS cert/key embedded in the binary via `embed.FS`; external cert/key files can be configured via `--server-cert`/`--server-key` to replace the built-in self-signed certificate. `--insecure`/`-k` switches the listener to plain HTTP with no cert/key at all, for deployments behind a TLS-terminating reverse proxy (see "Insecure mode" below)
 - **Session-cookie auth** — browser sends plaintext password over TLS; server hashes with bcrypt (`golang.org/x/crypto/bcrypt`, default cost) and stores the hash in the DB. On login the server issues a cryptographically random 64-hex-char session token as an `HttpOnly; Secure; SameSite=Strict` cookie. The `auth` middleware validates the cookie against an in-memory `sessionStore` on each authenticated request. `POST /api/logout` deletes the server-side session and clears the cookie. Non-browser API clients may pass `Authorization: Bearer <token>` instead. Legacy SHA-256 hashes (from the old client-side scheme) are detected by format and transparently upgraded to bcrypt on first successful login.
 - **No framework** — `net/http` mux with Go 1.22+ path patterns (`GET /api/issues/{id}`)
 - **Markdown rendering** — `github.com/yuin/goldmark` renders issue/comment bodies server-side when an issue's `format` is `"markdown"` (see `server/render.go`); the only other non-stdlib runtime dependencies are `modernc.org/sqlite` and `golang.org/x/crypto`
@@ -165,7 +165,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb"}` — persisted defaults; all fields are omitempty |
+| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb", "insecure": true}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -175,7 +175,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size]`
+### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size] [--insecure | -k [true|false]]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag. Running with no flags prints a two-column table of the current defaults.
 
@@ -189,8 +189,9 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--backup-count` is a non-negative integer. Use `0` or `off` for no count limit.
 - `--backup-age` accepts any Go duration string. Use `0` or `off` to disable age-based pruning. Stored as a string in `defaults.json`.
 - `--backup-size` accepts a number with optional unit suffix (`b`, `kb`, `mb`, `gb`, `tb`, case-insensitive); decimal values like `.5gb` are accepted. Use `0` or `off` to disable size-based thinning. Stored as a raw string in `defaults.json` (e.g. `"500mb"`) and parsed to `int64` bytes by `parseBackupSize()` in `commands/common.go` before being passed to `server.Start()`.
+- `--insecure` / `-k` sets the server to listen with plain HTTP instead of TLS, requiring no cert/key at all — see "Insecure mode" below. A bare `--insecure` sets it to `true`; an explicit following value of `true`/`on` or `false`/`off` sets it accordingly, which is how a stored `true` default is turned back off (e.g. `idtrack default --insecure false`).
 
-### `idtrack serve [--port n] [--database path] [--server-cert path] [--server-key path]`
+### `idtrack serve [--port n] [--database path] [--server-cert path] [--server-key path] [--insecure | -k [true|false]]`
 
 - **Does not block the terminal.** Re-execs itself with `--foreground` as a background process using `exec.Command` + `Setsid: true` (new session, survives terminal close).
 - Checks for a stale/live PID file before starting; errors if a server is already running.
@@ -198,6 +199,7 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - Writes child PID to `~/.idtrack/idtrack.pid`.
 - Default port: **8443**. Default database: `idtrack.db` in the working directory.
 - `--server-cert` / `--cert` / `--cert-file` and `--server-key` / `--key` / `--key-file` override the TLS credentials for this run only (do not persist to `defaults.json`). When absent, values from `defaults.json` are used; if those are also absent, the built-in self-signed cert/key are used.
+- `--insecure` / `-k` overrides the stored `insecure` default for this run only. When set, `server.Start()` skips reading/parsing any TLS cert or key (embedded, defaults-configured, or flag-overridden) entirely and binds a plain `net.Listener` instead of wrapping it with `tls.NewListener`. Forwarded into `passArgs` (as `--insecure` or `--insecure false`) so `Restart` relaunches with the same setting.
 - The `--foreground` flag is **internal** for direct host usage — it tells the re-exec'd child to run the server directly. It is exposed and documented in the Docker section of MANUAL.md because containers require foreground operation (Docker manages the process lifecycle; the main process must not exit).
 
 ### `idtrack stop`
@@ -416,6 +418,8 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **Docker containers require `--foreground` to stay alive.** `idtrack serve` without `--foreground` re-execs a background child and exits. In a container that exit kills the container because PID 1 has ended. The `Dockerfile` CMD and `tools/start-container.sh` always pass `--foreground`. The SQLite database and backup files are stored outside the container via a host bind mount at `/data`. The `tools/build-container.sh` script reads `tools/buildver.txt` and passes `--build-arg BUILD_VERSION` so the image's version output matches the tag. The binary is built with `CGO_ENABLED=0` inside the Docker builder stage (safe because `modernc.org/sqlite` is pure Go), producing a fully static binary that runs in the Alpine runtime image without any C runtime dependency.
 
 **External TLS cert/key replaces the embedded self-signed certificate.** When `server_cert` and `server_key` are set in `defaults.json` (or passed directly to `idtrack serve`), `server.Start()` reads the PEM files from disk via `os.ReadFile` instead of from the embedded `embed.FS`. Both must be set together — the server will fail to start if only one is present (the cert and key must form a matching pair for `tls.X509KeyPair`). `idtrack default --server-cert` validates that the file exists and resolves it to an absolute path before saving, so a relative path at save time won't silently break after a working-directory change. Use `off` as the value to clear either setting and revert to the built-in certificate.
+
+**`--insecure`/`-k` bypasses TLS entirely for reverse-proxy deployments.** `server.Start()` opens a plain `net.Listen("tcp", addr)` and, when `insecure` is true, serves directly off that listener — the cert/key-loading branch (embedded, defaults-configured, or flag-overridden) is skipped completely, so no cert or key file needs to exist on disk at all in this mode. When `insecure` is false (the default), the same raw listener is instead wrapped with `tls.NewListener` after loading a cert/key pair exactly as before. This is for operators who already terminate TLS at a front-end reverse proxy (e.g. nginx) and want idtrack to speak plain HTTP on a private network or loopback interface to that proxy. Session cookies still set `Secure` unconditionally (`server/sessions.go`, `server/auth_handlers.go`) because the intended topology keeps HTTPS on the browser-facing hop — the proxy presents the real certificate; only the proxy-to-idtrack hop drops TLS. Operators who instead expose `--insecure` mode directly to browsers get no session cookie (browsers refuse to send a `Secure` cookie over plain HTTP) and cannot log in; this is intentional, not a bug — insecure mode is only correct when something in front of idtrack is providing the HTTPS layer. `commands.Serve` computes the printed URL's scheme (`http://` vs `https://`) from the same flag. Follows the same `defaults` struct → CLI flag → `server.Start()` parameter → `srv` field pattern as every other server-wide setting (see "`server.Start()` signature pattern" below), except it is a bool rather than a string/duration/count, parsed with an optional trailing `true|false`/`on|off` value (default `true` when the flag is present with no value) rather than requiring one.
 
 **`off` is a synonym for the zero/disabled value on duration, count, and size flags.** `--idle-timeout off`, `--backup-interval off`, `--backup-count off`, `--backup-age off`, and `--backup-size off` all behave identically to `0`. This makes the intent explicit in shell scripts or documentation where the word "off" reads more clearly than the number zero.
 

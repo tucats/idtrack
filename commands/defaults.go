@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -64,6 +65,8 @@ func Default(args []string) {
 		serverCertSet  bool
 		serverKey      string
 		serverKeySet   bool
+		insecure       bool
+		insecureSet    bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -247,6 +250,25 @@ func Default(args []string) {
 				}
 			}
 
+		case "--insecure", "-k":
+			insecure = true
+			insecureSet = true
+
+			// Optional explicit value lets the setting be turned back off
+			// (e.g. "idtrack default --insecure false") without needing a
+			// separate flag; a bare "--insecure" is the common case and
+			// turns it on.
+			if i+1 < len(args) {
+				switch strings.ToLower(args[i+1]) {
+				case "false", offValue:
+					insecure = false
+					i++
+				case "true", "on":
+					insecure = true
+					i++
+				}
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			Usage()
@@ -255,7 +277,7 @@ func Default(args []string) {
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
-		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet
+		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet || insecureSet
 	if !anySet {
 		showDefaults()
 
@@ -313,6 +335,10 @@ func Default(args []string) {
 
 	if backupSizeSet {
 		defs.BackupSize = backupSize
+	}
+
+	if insecureSet {
+		defs.Insecure = insecure
 	}
 
 	home, err := os.UserHomeDir()
@@ -378,6 +404,10 @@ func Default(args []string) {
 
 	if defs.BackupSize != "" {
 		fmt.Printf("  backup-size:     %s\n", defs.BackupSize)
+	}
+
+	if insecureSet {
+		fmt.Printf("  insecure:        %t\n", defs.Insecure)
 	}
 }
 
@@ -458,5 +488,11 @@ func showDefaults() {
 		row("backup-size", defs.BackupSize)
 	} else {
 		row("backup-size", "no limit")
+	}
+
+	if defs.Insecure {
+		row("insecure", "true (plain HTTP, no TLS)")
+	} else {
+		row("insecure", "false (TLS)")
 	}
 }

@@ -49,6 +49,7 @@ type srv struct {
 	backupSize      int64         // 0 = no size limit
 	certFile        string        // absolute path to TLS cert file; empty = use embedded cert
 	keyFile         string        // absolute path to TLS key file; empty = use embedded key
+	insecure        bool          // true = listen with plain HTTP, no TLS at all (e.g. behind a TLS-terminating reverse proxy)
 }
 
 // Start wires up all routes, loads the TLS certificate, opens a TCP listener,
@@ -68,7 +69,7 @@ type srv struct {
 // time beyond the single executable. Because the parameter is an interface,
 // tests can substitute any other fs.FS (such as os.DirFS) without changing
 // this function.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string) error {
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool) error {
 	s := &srv{
 		database:       database,
 		static:         static,
@@ -86,6 +87,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		backupSize:     backupSize,
 		certFile:       certFile,
 		keyFile:        keyFile,
+		insecure:       insecure,
 	}
 
 	mux := http.NewServeMux()
@@ -155,67 +157,76 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle("POST /api/issues/{id}/comments", s.auth(requireJSON(http.HandlerFunc(s.handleCreateComment))))
 	mux.Handle("DELETE /api/issues/{id}/comments/{cid}", s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
-	// Read the TLS certificate and key. If a file name was provided from the defaults
-	// data, use that as the name. Otherwise, read the values from the embedded filesystem.
-	var (
-		certData []byte
-		keyData  []byte
-		err      error
-	)
-
-	if certFile != "" {
-		certData, err = os.ReadFile(certFile)
-		if err != nil {
-			return fmt.Errorf("reading TLS cert: %w", err)
-		}
-
-		log.Printf("idtrack using cert file: %s", certFile)
-	} else {
-		certData, err = fs.ReadFile(static, "resources/https-server.crt")
-		if err != nil {
-			return fmt.Errorf("reading TLS cert: %w", err)
-		}
-	}
-
-	if keyFile != "" {
-		keyData, err = os.ReadFile(keyFile)
-		if err != nil {
-			return fmt.Errorf("reading TLS key: %w", err)
-		}
-
-		log.Printf("idtrack using key file: %s", keyFile)
-	} else {
-		keyData, err = fs.ReadFile(static, "resources/https-server.key")
-		if err != nil {
-			return fmt.Errorf("reading TLS key: %w", err)
-		}
-	}
-
-	// X509KeyPair parses the PEM-encoded certificate and key into a struct
-	// that the TLS stack can use.
-	cert, err := tls.X509KeyPair(certData, keyData)
-	if err != nil {
-		return fmt.Errorf("loading TLS credentials: %w", err)
-	}
-
-	tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
 	addr := fmt.Sprintf(":%d", port)
 
-	// Open a plain TCP listener first, then wrap it with TLS. This two-step
-	// approach (rather than http.ListenAndServeTLS) lets us get a nice error
-	// message if the port is already in use before we try to start serving.
-	ln, err := net.Listen("tcp", addr)
+	// Open a plain TCP listener first, then (unless running insecure) wrap it
+	// with TLS. This two-step approach (rather than http.ListenAndServeTLS)
+	// lets us get a nice error message if the port is already in use before we
+	// try to start serving.
+	rawLn, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", addr, err)
 	}
 
-	tlsLn := tls.NewListener(ln, tlsCfg)
+	var ln net.Listener
+
+	if insecure {
+		// Plain HTTP: no cert/key needed at all. This mode is intended for
+		// deployments where a reverse proxy (e.g. nginx) terminates TLS and
+		// forwards plaintext HTTP to idtrack on a private network/loopback.
+		ln = rawLn
+
+		log.Printf("idtrack listening on http://localhost%s (insecure — no TLS; a reverse proxy is expected to provide TLS termination)", addr)
+	} else {
+		// Read the TLS certificate and key. If a file name was provided from
+		// the defaults data, use that as the name. Otherwise, read the values
+		// from the embedded filesystem.
+		var certData, keyData []byte
+
+		if certFile != "" {
+			certData, err = os.ReadFile(certFile)
+			if err != nil {
+				return fmt.Errorf("reading TLS cert: %w", err)
+			}
+
+			log.Printf("idtrack using cert file: %s", certFile)
+		} else {
+			certData, err = fs.ReadFile(static, "resources/https-server.crt")
+			if err != nil {
+				return fmt.Errorf("reading TLS cert: %w", err)
+			}
+		}
+
+		if keyFile != "" {
+			keyData, err = os.ReadFile(keyFile)
+			if err != nil {
+				return fmt.Errorf("reading TLS key: %w", err)
+			}
+
+			log.Printf("idtrack using key file: %s", keyFile)
+		} else {
+			keyData, err = fs.ReadFile(static, "resources/https-server.key")
+			if err != nil {
+				return fmt.Errorf("reading TLS key: %w", err)
+			}
+		}
+
+		// X509KeyPair parses the PEM-encoded certificate and key into a struct
+		// that the TLS stack can use.
+		cert, err := tls.X509KeyPair(certData, keyData)
+		if err != nil {
+			return fmt.Errorf("loading TLS credentials: %w", err)
+		}
+
+		tlsCfg := &tls.Config{Certificates: []tls.Certificate{cert}}
+		ln = tls.NewListener(rawLn, tlsCfg)
+
+		log.Printf("idtrack listening on https://localhost%s", addr)
+	}
 
 	if s.backupInterval > 0 {
 		s.startBackups()
 	}
-
-	log.Printf("idtrack listening on https://localhost%s", addr)
 
 	// Each of gzipHandler, secureHeaders, limitBody, and s.quiesce is
 	// "middleware": a function with the signature func(http.Handler) http.Handler
@@ -249,5 +260,5 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		IdleTimeout:  120 * time.Second,
 	}
 
-	return httpSrv.Serve(tlsLn)
+	return httpSrv.Serve(ln)
 }

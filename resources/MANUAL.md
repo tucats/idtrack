@@ -85,6 +85,7 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--backup-count N` | Maximum number of backup files to keep. Oldest files are deleted first when the count is exceeded. Use `0` or `off` for no limit. |
 | `--backup-age DURATION` | Delete backup files whose name-embedded timestamp is older than this duration, e.g. `168h` (7 days). Use `0` or `off` for no age limit. |
 | `--backup-size SIZE` | Maximum total disk space for backup files, e.g. `500mb`, `2gb`. Accepts suffixes `b`, `kb`, `mb`, `gb`, `tb` (case-insensitive); decimal values like `.5gb` are accepted. When the total size exceeds this limit, older backups are thinned using a Time Machine-style density algorithm — see [Retention policy](#retention-policy) below. Use `0` or `off` for no size limit. |
+| `--insecure`, `-k` | Listen with plain HTTP instead of TLS; no certificate or key is required. Pass `false` or `off` as an explicit following value to turn a stored default back off, e.g. `idtrack default --insecure false`. See [Running Behind a Reverse Proxy](#running-behind-a-reverse-proxy) below. |
 
 The path given to `--server-cert` and `--server-key` must already exist; the command validates the file before saving and stores its absolute path.
 
@@ -109,10 +110,15 @@ Start the server in the background.
 | `--database PATH` | Override the database path for this run |
 | `--server-cert PATH` | Override the TLS certificate file for this run |
 | `--server-key PATH` | Override the TLS private key file for this run |
+| `--insecure`, `-k` | Listen with plain HTTP instead of TLS for this run; no certificate or key is required. |
 
 The server process is detached from the terminal. Its PID is written to `~/.idtrack/idtrack.pid` and its output is logged to `~/.idtrack/idtrack.log`.
 
 If `--server-cert` and `--server-key` are not specified (either on the command line or via `idtrack default`), the server uses its built-in self-signed certificate. Your browser will show a security warning for self-signed certificates — this is expected. To avoid the warning, configure a certificate from a trusted authority using the flags above.
+
+#### Running Behind a Reverse Proxy
+
+By default idtrack always speaks HTTPS, using either its built-in self-signed certificate or a cert/key pair you supply. If you already run a reverse proxy such as nginx in front of idtrack and want *it* to terminate TLS, pass `--insecure` (or `-k`) — either as a one-off flag on `idtrack serve` or saved with `idtrack default --insecure` — and idtrack listens with plain HTTP instead, requiring no certificate or key at all. Point the proxy's upstream at idtrack's HTTP port and configure the proxy itself with a real certificate; browsers still see HTTPS end-to-end because the proxy is the one presenting it. Only run idtrack in `--insecure` mode when it is not directly reachable from untrusted networks — the connection between the proxy and idtrack carries session cookies and credentials in the clear.
 
 ---
 

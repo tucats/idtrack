@@ -57,6 +57,7 @@ type defaults struct {
 	BackupCount    int    `json:"backup_count,omitempty"`    // max backups to retain; 0 = no limit
 	BackupAge      string `json:"backup_age,omitempty"`      // Go duration string; empty = no limit
 	BackupSize     string `json:"backup_size,omitempty"`     // human-readable size string, e.g. "500mb"; empty = disabled
+	Insecure       bool   `json:"insecure,omitempty"`        // true = listen with plain HTTP, no TLS (e.g. behind a TLS-terminating reverse proxy)
 }
 
 // loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
@@ -168,6 +169,7 @@ Commands:
 		 --backup-count <n> | off
 		 --backup-age <duration> | off
 		 --backup-size <size> | off
+		 --insecure | -k [true|false]
 
 	define [subcommand] [options]
 		Create projects and components.
@@ -187,8 +189,11 @@ Commands:
 		on port 8443, but you can override these with options on the command.
 		 --port <n>
 		 --database <path>
-		 --server-cert <path> 
-		 --server-key <path> 
+		 --server-cert <path>
+		 --server-key <path>
+		 --insecure | -k
+			 Listen with plain HTTP instead of TLS; no cert/key required. For
+			 use behind a TLS-terminating reverse proxy (e.g. nginx).
 
 	stop
 		Stop the running idtrack server.

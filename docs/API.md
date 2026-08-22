@@ -8,12 +8,19 @@ see [IDTRACK.md](IDTRACK.md); for team-based visibility rules in depth, see
 
 ## Base URL and transport
 
-idtrack serves **HTTPS only**, on the configured port (default `8443`). By
-default the server presents a self-signed certificate, so a generic HTTP
+idtrack serves **HTTPS by default**, on the configured port (default `8443`).
+By default the server presents a self-signed certificate, so a generic HTTP
 client will need to be configured to accept it (or trust the operator's
-externally-configured cert — see `idtrack default --server-cert`). There is
-no plaintext HTTP fallback and no separate API host/port — the API is served
-from the same origin as the web app, under the `/api/` path prefix.
+externally-configured cert — see `idtrack default --server-cert`). There is no
+separate API host/port — the API is served from the same origin as the web
+app, under the `/api/` path prefix.
+
+An operator can instead run the server with `--insecure`/`-k` (see
+`idtrack serve`/`idtrack default` in the main docs), which switches the
+listener to plain HTTP with no certificate at all. This is intended for
+deployments sitting behind a reverse proxy that itself terminates TLS for
+browser/client-facing traffic — clients should keep talking HTTPS to the
+proxy; only the proxy-to-idtrack hop becomes plaintext HTTP.
 
 All request and response bodies are JSON (`Content-Type: application/json`),
 with the following exceptions: `GET` requests and `DELETE` requests never
