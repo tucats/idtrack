@@ -67,6 +67,8 @@ func Default(args []string) {
 		serverKeySet   bool
 		insecure       bool
 		insecureSet    bool
+		basePath       string
+		basePathSet    bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -269,6 +271,20 @@ func Default(args []string) {
 				}
 			}
 
+		case "--base-path":
+			if i+1 < len(args) {
+				i++
+
+				v, err := validateBasePath(args[i])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%v\n", err)
+					os.Exit(1)
+				}
+
+				basePath = v
+				basePathSet = true
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			Usage()
@@ -277,7 +293,7 @@ func Default(args []string) {
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
-		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet || insecureSet
+		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet || insecureSet || basePathSet
 	if !anySet {
 		showDefaults()
 
@@ -339,6 +355,10 @@ func Default(args []string) {
 
 	if insecureSet {
 		defs.Insecure = insecure
+	}
+
+	if basePathSet {
+		defs.BasePath = basePath
 	}
 
 	home, err := os.UserHomeDir()
@@ -408,6 +428,14 @@ func Default(args []string) {
 
 	if insecureSet {
 		fmt.Printf("  insecure:        %t\n", defs.Insecure)
+	}
+
+	if basePathSet {
+		if defs.BasePath != "" {
+			fmt.Printf("  base-path:       %s\n", defs.BasePath)
+		} else {
+			fmt.Printf("  base-path:       disabled\n")
+		}
 	}
 }
 
@@ -494,5 +522,11 @@ func showDefaults() {
 		row("insecure", "true (plain HTTP, no TLS)")
 	} else {
 		row("insecure", "false (TLS)")
+	}
+
+	if defs.BasePath != "" {
+		row("base-path", defs.BasePath)
+	} else {
+		row("base-path", "(not set — mounted at origin root)")
 	}
 }

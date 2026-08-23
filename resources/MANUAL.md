@@ -86,6 +86,7 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--backup-age DURATION` | Delete backup files whose name-embedded timestamp is older than this duration, e.g. `168h` (7 days). Use `0` or `off` for no age limit. |
 | `--backup-size SIZE` | Maximum total disk space for backup files, e.g. `500mb`, `2gb`. Accepts suffixes `b`, `kb`, `mb`, `gb`, `tb` (case-insensitive); decimal values like `.5gb` are accepted. When the total size exceeds this limit, older backups are thinned using a Time Machine-style density algorithm — see [Retention policy](#retention-policy) below. Use `0` or `off` for no size limit. |
 | `--insecure`, `-k` | Listen with plain HTTP instead of TLS; no certificate or key is required. Pass `false` or `off` as an explicit following value to turn a stored default back off, e.g. `idtrack default --insecure false`. See [Running Behind a Reverse Proxy](#running-behind-a-reverse-proxy) below. |
+| `--base-path PATH` | Mount the whole app (page, static assets, and every API route) under a URL prefix instead of the origin root, e.g. `/idtrack`. Must start with `/` and must not end with `/`. Use `off` (or an empty value) to revert to origin-root mounting. See [Running Behind a Reverse Proxy](#running-behind-a-reverse-proxy) below. |
 
 The path given to `--server-cert` and `--server-key` must already exist; the command validates the file before saving and stores its absolute path.
 
@@ -111,6 +112,7 @@ Start the server in the background.
 | `--server-cert PATH` | Override the TLS certificate file for this run |
 | `--server-key PATH` | Override the TLS private key file for this run |
 | `--insecure`, `-k` | Listen with plain HTTP instead of TLS for this run; no certificate or key is required. |
+| `--base-path PATH` | Mount the whole app under a URL prefix for this run; overrides any stored default. |
 
 The server process is detached from the terminal. Its PID is written to `~/.idtrack/idtrack.pid` and its output is logged to `~/.idtrack/idtrack.log`.
 
@@ -118,7 +120,28 @@ If `--server-cert` and `--server-key` are not specified (either on the command l
 
 #### Running Behind a Reverse Proxy
 
-By default idtrack always speaks HTTPS, using either its built-in self-signed certificate or a cert/key pair you supply. If you already run a reverse proxy such as nginx in front of idtrack and want *it* to terminate TLS, pass `--insecure` (or `-k`) — either as a one-off flag on `idtrack serve` or saved with `idtrack default --insecure` — and idtrack listens with plain HTTP instead, requiring no certificate or key at all. Point the proxy's upstream at idtrack's HTTP port and configure the proxy itself with a real certificate; browsers still see HTTPS end-to-end because the proxy is the one presenting it. Only run idtrack in `--insecure` mode when it is not directly reachable from untrusted networks — the connection between the proxy and idtrack carries session cookies and credentials in the clear.
+By default idtrack always speaks HTTPS, using either its built-in self-signed certificate or a cert/key pair you supply, and every page/asset/API route lives at the origin root (`/idtrack`, `/assets/idtrack/...`, `/api/...`, `/manual`). Two independent settings let you fit idtrack into a reverse-proxy deployment:
+
+**TLS termination.** If you already run a reverse proxy such as nginx in front of idtrack and want *it* to terminate TLS, pass `--insecure` (or `-k`) — either as a one-off flag on `idtrack serve` or saved with `idtrack default --insecure` — and idtrack listens with plain HTTP instead, requiring no certificate or key at all. Point the proxy's upstream at idtrack's HTTP port and configure the proxy itself with a real certificate; browsers still see HTTPS end-to-end because the proxy is the one presenting it. Only run idtrack in `--insecure` mode when it is not directly reachable from untrusted networks — the connection between the proxy and idtrack carries session cookies and credentials in the clear.
+
+**Sharing a domain with other apps.** If idtrack needs to live at a sub-path on a domain shared with other services — e.g. `https://example.com/idtrack/` alongside some other app at `https://example.com/other/` — set `--base-path`, either as a one-off flag on `idtrack serve` or saved with `idtrack default --base-path`. This mounts the page, every static asset, and every API route under that one prefix, so a single nginx `location` block that forwards the request path through unmodified is all you need:
+
+```nginx
+location /idtrack {
+    proxy_pass http://127.0.0.1:8088;   # no trailing slash — forwards the URI unmodified
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+```sh
+idtrack default --base-path /idtrack --insecure
+idtrack serve
+```
+
+Without `--base-path`, mounting idtrack under a proxy sub-path causes an infinite redirect loop: a proxy `location` block that strips the matched prefix forwards the request to idtrack as `GET /`, idtrack's root handler redirects to its own hardcoded `/idtrack`, the browser re-requests that same URL through the proxy, and the cycle repeats ("too many redirects" in the browser). `--base-path` fixes this by making `/idtrack` (or whatever prefix you choose) idtrack's own notion of where it lives, matching what the proxy is already forwarding.
 
 ---
 

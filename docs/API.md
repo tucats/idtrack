@@ -22,6 +22,15 @@ deployments sitting behind a reverse proxy that itself terminates TLS for
 browser/client-facing traffic — clients should keep talking HTTPS to the
 proxy; only the proxy-to-idtrack hop becomes plaintext HTTP.
 
+An operator can also configure `--base-path` (e.g. `/idtrack`) to mount the
+entire app — including every endpoint below — under a URL prefix, for
+deployments that share a domain with other services behind a reverse proxy.
+When set, every path in this document gains that prefix: `GET /api/version`
+becomes `GET /idtrack/api/version`, `POST /api/login` becomes
+`POST /idtrack/api/login`, and so on. A client should treat the base path as
+part of the origin it was configured to talk to, not something it computes
+itself.
+
 All request and response bodies are JSON (`Content-Type: application/json`),
 with the following exceptions: `GET` requests and `DELETE` requests never
 send a body, and `POST /api/logout` accepts no body. Every JSON-body endpoint

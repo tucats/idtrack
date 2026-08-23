@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"io/fs"
 	"net/http"
+	"strings"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
@@ -26,7 +27,7 @@ import (
 // browser when a sub-path is requested.
 func (s *srv) serveRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "" {
-		http.Redirect(w, r, "/idtrack", http.StatusFound)
+		http.Redirect(w, r, s.appPath(), http.StatusFound)
 
 		return
 	}
@@ -37,12 +38,28 @@ func (s *srv) serveRoot(w http.ResponseWriter, r *http.Request) {
 // serveHTML reads the single HTML file from the embedded filesystem and writes
 // it to the response. All three static handlers (HTML/CSS/JS) follow the same
 // pattern: read from embedded FS, set the correct Content-Type, write the bytes.
+//
+// The embedded HTML hardcodes its CSS/JS/manual links as absolute root paths
+// (e.g. href="/assets/idtrack/idtrack.css") because that path is baked into
+// the binary at compile time, long before a base path is known. When a base
+// path is configured, those three literal strings are rewritten here with the
+// prefix spliced in before the page is sent. When basePath is "" (the
+// default) this branch is skipped entirely, so the response is byte-for-byte
+// identical to before this feature existed.
 func (s *srv) serveHTML(w http.ResponseWriter, r *http.Request) {
 	data, err := fs.ReadFile(s.static, "resources/idtrack.html")
 	if err != nil {
 		http.Error(w, "not found", http.StatusNotFound)
 
 		return
+	}
+
+	if s.basePath != "" {
+		html := string(data)
+		html = strings.Replace(html, `href="/assets/idtrack/idtrack.css"`, `href="`+s.basePath+`/assets/idtrack/idtrack.css"`, 1)
+		html = strings.Replace(html, `src="/assets/idtrack/idtrack.js"`, `src="`+s.basePath+`/assets/idtrack/idtrack.js"`, 1)
+		html = strings.Replace(html, `href="/manual"`, `href="`+s.basePath+`/manual"`, 1)
+		data = []byte(html)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -73,6 +90,17 @@ func (s *srv) serveJS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 
 		return
+	}
+
+	// The embedded script declares "const BASE_PATH = '';" as a sentinel —
+	// every API call in the frontend is prefixed with this constant, so
+	// substituting its value here is what makes the whole app aware of a
+	// configured base path at runtime, without a build step. Must happen
+	// before Minify, which only guarantees byte-for-byte preservation of
+	// existing string literals, not the literal source text this replace
+	// matches against.
+	if s.basePath != "" {
+		data = bytes.Replace(data, []byte(`const BASE_PATH = '';`), []byte(`const BASE_PATH = '`+s.basePath+`';`), 1)
 	}
 
 	// Let's minify this before sending along so the server browser

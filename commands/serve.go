@@ -86,6 +86,7 @@ func Serve(args []string, static fs.FS) {
 	certFile := defs.ServerCert
 	database := defs.Database
 	insecure := defs.Insecure
+	basePath := defs.BasePath
 	foreground := false
 
 	for i := 0; i < len(args); i++ {
@@ -164,6 +165,20 @@ func Serve(args []string, static fs.FS) {
 				passArgs = append(passArgs, databaseFlag, args[i])
 			}
 
+		case "--base-path":
+			if i+1 < len(args) {
+				i++
+
+				v, err := validateBasePath(args[i])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%v\n", err)
+					os.Exit(1)
+				}
+
+				basePath = v
+				passArgs = append(passArgs, "--base-path", v)
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			Usage()
@@ -184,8 +199,15 @@ func Serve(args []string, static fs.FS) {
 		scheme = "http"
 	}
 
+	// appPath mirrors server.srv.appPath(): the app is mounted at basePath
+	// when one is configured, or the historical "/idtrack" otherwise.
+	appPath := "/idtrack"
+	if basePath != "" {
+		appPath = basePath
+	}
+
 	host, _ := os.Hostname()
-	url := fmt.Sprintf("%s://%s/idtrack", scheme, net.JoinHostPort(host, strconv.Itoa(port)))
+	url := fmt.Sprintf("%s://%s%s", scheme, net.JoinHostPort(host, strconv.Itoa(port)), appPath)
 
 	// If we are not running in foreground mode, spawn a detached child process
 	// and exit. The child will call Serve again with --foreground set.
@@ -224,7 +246,7 @@ func Serve(args []string, static fs.FS) {
 		backupSize, _ = parseBackupSize(defs.BackupSize)
 	}
 
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile, insecure); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile, insecure, basePath); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}

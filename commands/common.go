@@ -58,6 +58,7 @@ type defaults struct {
 	BackupAge      string `json:"backup_age,omitempty"`      // Go duration string; empty = no limit
 	BackupSize     string `json:"backup_size,omitempty"`     // human-readable size string, e.g. "500mb"; empty = disabled
 	Insecure       bool   `json:"insecure,omitempty"`        // true = listen with plain HTTP, no TLS (e.g. behind a TLS-terminating reverse proxy)
+	BasePath       string `json:"base_path,omitempty"`       // URL prefix the whole app (page, assets, API) is mounted under; empty = mounted at the origin root
 }
 
 // loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
@@ -141,6 +142,29 @@ func parseBackupSize(s string) (int64, error) {
 	return int64(f * float64(scale)), nil
 }
 
+// validateBasePath normalizes and validates a --base-path value shared by
+// both commands.Default and commands.Serve. "" and "off" both mean "disabled"
+// (mount at the origin root, today's default behavior) and return "". Any
+// other value must start with "/" and must not end with "/", so it can be
+// spliced directly in front of a route's own leading slash without producing
+// a doubled or missing separator (see server.Start's route/appPath helpers).
+func validateBasePath(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s == offValue {
+		return "", nil
+	}
+
+	if !strings.HasPrefix(s, "/") {
+		return "", fmt.Errorf("invalid base-path %q: must start with \"/\"", s)
+	}
+
+	if s == "/" || strings.HasSuffix(s, "/") {
+		return "", fmt.Errorf("invalid base-path %q: must not be \"/\" or end with \"/\"", s)
+	}
+
+	return s, nil
+}
+
 // Usage prints a summary of available sub-commands to stderr. Called from
 // main.go when no arguments are given or an unknown verb is used, and from
 // within individual command functions when argument validation fails.
@@ -170,6 +194,7 @@ Commands:
 		 --backup-age <duration> | off
 		 --backup-size <size> | off
 		 --insecure | -k [true|false]
+		 --base-path <path> | off
 
 	define [subcommand] [options]
 		Create projects and components.
@@ -194,6 +219,9 @@ Commands:
 		 --insecure | -k
 			 Listen with plain HTTP instead of TLS; no cert/key required. For
 			 use behind a TLS-terminating reverse proxy (e.g. nginx).
+		 --base-path <path>
+			 Mount the whole app (page, assets, API) under this URL prefix
+			 instead of the origin root, e.g. "/idtrack".
 
 	stop
 		Stop the running idtrack server.

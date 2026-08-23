@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -50,6 +51,22 @@ type srv struct {
 	certFile        string        // absolute path to TLS cert file; empty = use embedded cert
 	keyFile         string        // absolute path to TLS key file; empty = use embedded key
 	insecure        bool          // true = listen with plain HTTP, no TLS at all (e.g. behind a TLS-terminating reverse proxy)
+	basePath        string        // URL prefix every route is mounted under; "" = mounted at the origin root (see appPath)
+}
+
+// appPath returns the path at which the single-page app itself is served.
+// When basePath is unset this preserves the original hardcoded "/idtrack"
+// path for backward compatibility. When basePath is set, the app is mounted
+// exactly there (rather than at basePath+"/idtrack") so that, for example,
+// configuring "/idtrack" as the base path makes the whole app — page,
+// assets, and API — reachable under that single prefix, matching one nginx
+// location block, instead of leaving the page at "/idtrack/idtrack".
+func (s *srv) appPath() string {
+	if s.basePath == "" {
+		return "/idtrack"
+	}
+
+	return s.basePath
 }
 
 // Start wires up all routes, loads the TLS certificate, opens a TCP listener,
@@ -69,7 +86,7 @@ type srv struct {
 // time beyond the single executable. Because the parameter is an interface,
 // tests can substitute any other fs.FS (such as os.DirFS) without changing
 // this function.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool) error {
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool, basePath string) error {
 	s := &srv{
 		database:       database,
 		static:         static,
@@ -88,9 +105,24 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		certFile:       certFile,
 		keyFile:        keyFile,
 		insecure:       insecure,
+		basePath:       basePath,
 	}
 
 	mux := http.NewServeMux()
+
+	// route builds a mux pattern ("METHOD /path...") with s.basePath spliced
+	// in between the method and the path, e.g. route("GET /api/version")
+	// with basePath "/tracker" yields "GET /tracker/api/version". When
+	// basePath is "" (the default) every pattern is byte-for-byte identical
+	// to its unprefixed form, so this is a no-op for existing deployments.
+	// It must NOT be used for the app page route itself — see appPath above,
+	// which already resolves to basePath (not basePath+"/idtrack") once a
+	// base path is configured.
+	route := func(pattern string) string {
+		method, path, _ := strings.Cut(pattern, " ")
+
+		return method + " " + s.basePath + path
+	}
 
 	// Every pattern below is a Go 1.22+ "enhanced" ServeMux pattern: an HTTP
 	// method prefix ("GET ", "POST ", ...) plus a path that may contain
@@ -104,58 +136,60 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	// used anywhere in idtrack because of this.
 	//
 	// Static asset routes — no authentication required for the browser to load
-	// the page and its assets.
-	mux.HandleFunc("GET /idtrack", s.serveHTML)
-	mux.HandleFunc("GET /assets/idtrack/idtrack.css", s.serveCSS)
-	mux.HandleFunc("GET /assets/idtrack/idtrack.js", s.serveJS)
+	// the page and its assets. "GET /" is intentionally never prefixed with
+	// basePath: it exists purely so a bare hit on the origin root redirects to
+	// the app (see serveRoot), regardless of where the app itself is mounted.
+	mux.HandleFunc("GET "+s.appPath(), s.serveHTML)
+	mux.HandleFunc(route("GET /assets/idtrack/idtrack.css"), s.serveCSS)
+	mux.HandleFunc(route("GET /assets/idtrack/idtrack.js"), s.serveJS)
 	mux.HandleFunc("GET /", s.serveRoot)
 
 	// Public informational endpoints — no auth required
-	mux.HandleFunc("GET /api/version", s.handleVersion)
-	mux.HandleFunc("GET /api/status", s.handleStatus)
-	mux.HandleFunc("GET /manual", s.handleManual)
+	mux.HandleFunc(route("GET /api/version"), s.handleVersion)
+	mux.HandleFunc(route("GET /api/status"), s.handleStatus)
+	mux.HandleFunc(route("GET /manual"), s.handleManual)
 
 	// Login / logout / onboarding are public endpoints that manage session cookies.
 	// They do not go through the auth middleware — login and onboarding need to
 	// run before a session exists; logout needs to run even when the session is
 	// already expired. Routes that accept a JSON body are wrapped with requireJSON
 	// (S-11); logout has no body so it is excluded.
-	mux.Handle("POST /api/login", requireJSON(http.HandlerFunc(s.handleLogin)))
-	mux.HandleFunc("POST /api/logout", s.handleLogout)
-	mux.Handle("POST /api/onboarding", requireJSON(http.HandlerFunc(s.handleOnboarding)))
+	mux.Handle(route("POST /api/login"), requireJSON(http.HandlerFunc(s.handleLogin)))
+	mux.HandleFunc(route("POST /api/logout"), s.handleLogout)
+	mux.Handle(route("POST /api/onboarding"), requireJSON(http.HandlerFunc(s.handleOnboarding)))
 
 	// Authenticated API endpoints are wrapped with s.auth(), which validates the
 	// session cookie on every request and stores the *db.User in the context.
 	// JSON-body endpoints are additionally wrapped with requireJSON (S-11).
-	mux.Handle("GET /api/users", s.auth(http.HandlerFunc(s.handleListUsers)))
-	mux.Handle("POST /api/users", s.auth(requireJSON(http.HandlerFunc(s.handleCreateUser))))
-	mux.Handle("PUT /api/users/{username}", s.auth(requireJSON(http.HandlerFunc(s.handleUpdateUser))))
-	mux.Handle("DELETE /api/users/{username}", s.auth(http.HandlerFunc(s.handleDeleteUser)))
-	mux.Handle("GET /api/teams", s.auth(http.HandlerFunc(s.handleListTeams)))
-	mux.Handle("POST /api/teams", s.auth(requireJSON(http.HandlerFunc(s.handleCreateTeam))))
-	mux.Handle("DELETE /api/teams/{name}", s.auth(http.HandlerFunc(s.handleDeleteTeam)))
-	mux.Handle("PUT /api/teams/{name}", s.auth(requireJSON(http.HandlerFunc(s.handleUpdateTeam))))
+	mux.Handle(route("GET /api/users"), s.auth(http.HandlerFunc(s.handleListUsers)))
+	mux.Handle(route("POST /api/users"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateUser))))
+	mux.Handle(route("PUT /api/users/{username}"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateUser))))
+	mux.Handle(route("DELETE /api/users/{username}"), s.auth(http.HandlerFunc(s.handleDeleteUser)))
+	mux.Handle(route("GET /api/teams"), s.auth(http.HandlerFunc(s.handleListTeams)))
+	mux.Handle(route("POST /api/teams"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateTeam))))
+	mux.Handle(route("DELETE /api/teams/{name}"), s.auth(http.HandlerFunc(s.handleDeleteTeam)))
+	mux.Handle(route("PUT /api/teams/{name}"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateTeam))))
 
-	mux.Handle("GET /api/projects", s.auth(http.HandlerFunc(s.handleListProjects)))
-	mux.Handle("POST /api/projects", s.auth(requireJSON(http.HandlerFunc(s.handleCreateProject))))
-	mux.Handle("PUT /api/projects/{project}/teams", s.auth(requireJSON(http.HandlerFunc(s.handleUpdateProjectTeams))))
-	mux.Handle("POST /api/projects/{project}/components", s.auth(requireJSON(http.HandlerFunc(s.handleCreateComponent))))
-	mux.Handle("DELETE /api/projects/{project}", s.auth(http.HandlerFunc(s.handleDeleteProject)))
-	mux.Handle("DELETE /api/projects/{project}/components/{component}", s.auth(http.HandlerFunc(s.handleDeleteComponent)))
+	mux.Handle(route("GET /api/projects"), s.auth(http.HandlerFunc(s.handleListProjects)))
+	mux.Handle(route("POST /api/projects"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateProject))))
+	mux.Handle(route("PUT /api/projects/{project}/teams"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateProjectTeams))))
+	mux.Handle(route("POST /api/projects/{project}/components"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateComponent))))
+	mux.Handle(route("DELETE /api/projects/{project}"), s.auth(http.HandlerFunc(s.handleDeleteProject)))
+	mux.Handle(route("DELETE /api/projects/{project}/components/{component}"), s.auth(http.HandlerFunc(s.handleDeleteComponent)))
 
-	mux.Handle("POST /api/render", s.auth(requireJSON(http.HandlerFunc(s.handleRenderPreview))))
+	mux.Handle(route("POST /api/render"), s.auth(requireJSON(http.HandlerFunc(s.handleRenderPreview))))
 
-	mux.Handle("GET /api/issues", s.auth(http.HandlerFunc(s.handleListIssues)))
+	mux.Handle(route("GET /api/issues"), s.auth(http.HandlerFunc(s.handleListIssues)))
 	// /changes must be registered before /{id} so the literal path takes
 	// priority over the wildcard. (Go 1.22+ routing always prefers literals,
 	// but explicit ordering makes the intent clear.)
-	mux.Handle("GET /api/issues/changes", s.auth(http.HandlerFunc(s.handleListChanges)))
-	mux.Handle("POST /api/issues", s.auth(requireJSON(http.HandlerFunc(s.handleCreateIssue))))
-	mux.Handle("GET /api/issues/{id}", s.auth(http.HandlerFunc(s.handleGetIssue)))
-	mux.Handle("PUT /api/issues/{id}", s.auth(requireJSON(http.HandlerFunc(s.handleUpdateIssue))))
-	mux.Handle("DELETE /api/issues/{id}", s.auth(http.HandlerFunc(s.handleDeleteIssue)))
-	mux.Handle("POST /api/issues/{id}/comments", s.auth(requireJSON(http.HandlerFunc(s.handleCreateComment))))
-	mux.Handle("DELETE /api/issues/{id}/comments/{cid}", s.auth(http.HandlerFunc(s.handleDeleteComment)))
+	mux.Handle(route("GET /api/issues/changes"), s.auth(http.HandlerFunc(s.handleListChanges)))
+	mux.Handle(route("POST /api/issues"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateIssue))))
+	mux.Handle(route("GET /api/issues/{id}"), s.auth(http.HandlerFunc(s.handleGetIssue)))
+	mux.Handle(route("PUT /api/issues/{id}"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateIssue))))
+	mux.Handle(route("DELETE /api/issues/{id}"), s.auth(http.HandlerFunc(s.handleDeleteIssue)))
+	mux.Handle(route("POST /api/issues/{id}/comments"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateComment))))
+	mux.Handle(route("DELETE /api/issues/{id}/comments/{cid}"), s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
 	addr := fmt.Sprintf(":%d", port)
 

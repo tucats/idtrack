@@ -27,6 +27,12 @@ const PERSIST_KEY = 'idtrack_persist';
 
 const APP_VERSION = '2.0';
 
+// BASE_PATH is a sentinel the server rewrites at request time (serveJS in
+// server/static.go) when a --base-path is configured, e.g. '/idtrack'. Left
+// as '' here, it is a no-op prefix, which is why every API call below is
+// written as BASE_PATH + '/api/...' rather than a bare '/api/...' literal.
+const BASE_PATH = '';
+
 // =====================================================================
 // STATE
 // =====================================================================
@@ -233,7 +239,7 @@ function applyBranding() {
 // updates the shared datalist so all chip-picker inputs get autocomplete.
 async function loadTeamData() {
     try {
-        const data = await fetch('/api/teams').then(r => r.json());
+        const data = await fetch(BASE_PATH + '/api/teams').then(r => r.json());
         _teamData = data.teams || [];
     } catch {
         _teamData = [];
@@ -464,7 +470,7 @@ function canModifyIssue(issue) {
 // instead of being undefined. This lets callers write apiFetch(url)
 // when they don't need to customize the request (method, headers, body).
 async function apiFetch(url, options = {}) {
-    const res = await fetch(url, options);
+    const res = await fetch(BASE_PATH + url, options);
 
     if (res.status === 401) {
         // Session expired or never started — wipe all client-side auth
@@ -697,7 +703,7 @@ async function submitLogin() {
         //    would be misleading.
         //  - Wrong credentials give 401 but the error message should say
         //    "Invalid password", not "Session expired".
-        const res = await fetch('/api/login', {
+        const res = await fetch(BASE_PATH + '/api/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username, password, keep_logged_in: _keepLoggedIn }),
@@ -773,7 +779,7 @@ async function doLogout() {
     dismissRefreshHint();
     // Fire-and-forget: if the network call fails we still clear local
     // state so the user is at least logged out on this device.
-    try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+    try { await fetch(BASE_PATH + '/api/logout', { method: 'POST' }); } catch {}
     _currentUser = null;
     _issueWindow = [];
     _totalIssues = 0;
@@ -3079,7 +3085,7 @@ async function openAbout() {
     _closeMenuOnOutside();
     document.getElementById('about-overlay').style.display = 'flex';
     try {
-        const data = await fetch('/api/version').then(r => r.json());
+        const data = await fetch(BASE_PATH + '/api/version').then(r => r.json());
         document.getElementById('about-version').textContent = 'version ' + (data.version || '—');
         const bt = data.build_time || '';
         if (bt.length === 14) {
@@ -3222,7 +3228,7 @@ async function idleLogout() {
         localStorage.setItem(PREFS_KEY, JSON.stringify(p));
     } catch {}
     // Tell the server to invalidate the session after the UI is already clean.
-    try { await fetch('/api/logout', { method: 'POST' }); } catch {}
+    try { await fetch(BASE_PATH + '/api/logout', { method: 'POST' }); } catch {}
 }
 
 // _resetIdleTimer cancels the current timer and starts a fresh one.
@@ -3516,7 +3522,7 @@ async function submitOnboarding() {
         // the HTTP Basic Authentication scheme requires.
         const tokenCreds = 'Basic ' + btoa('onboarding:' + _onboardingToken);
 
-        const res = await fetch('/api/onboarding', {
+        const res = await fetch(BASE_PATH + '/api/onboarding', {
             method: 'POST',
             headers: {
                 'Authorization': tokenCreds,
@@ -3581,7 +3587,7 @@ async function init() {
     //   'onboarding' and 'token' are only present when no users exist.
     let statusData = null;
     try {
-        const res = await fetch('/api/status');
+        const res = await fetch(BASE_PATH + '/api/status');
         if (res.ok) statusData = await res.json();
     } catch {}
     if (statusData) {
