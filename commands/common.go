@@ -46,19 +46,22 @@ var (
 // places that turn this struct into/from the JSON file via
 // json.Unmarshal/json.MarshalIndent.
 type defaults struct {
-	Port           int    `json:"port"`                      // listen port; 0 means "use the built-in default" (8443)
-	Database       string `json:"database"`                  // absolute path to the SQLite database file
-	ServerCert     string `json:"server_cert,omitempty"`     // absolute path to TLS cert file; empty = auto-generated self-signed cert
-	ServerKey      string `json:"server_key,omitempty"`      // absolute path to TLS key file; empty = auto-generated self-signed key
-	IdleTimeout    int    `json:"idle_timeout,omitempty"`    // seconds; 0 means disabled
-	AppName        string `json:"app_name,omitempty"`        // custom branding name
-	AppDescription string `json:"app_description,omitempty"` // custom branding tagline
-	BackupInterval string `json:"backup_interval,omitempty"` // Go duration string; empty = disabled
-	BackupCount    int    `json:"backup_count,omitempty"`    // max backups to retain; 0 = no limit
-	BackupAge      string `json:"backup_age,omitempty"`      // Go duration string; empty = no limit
-	BackupSize     string `json:"backup_size,omitempty"`     // human-readable size string, e.g. "500mb"; empty = disabled
-	Insecure       bool   `json:"insecure,omitempty"`        // true = listen with plain HTTP, no TLS (e.g. behind a TLS-terminating reverse proxy)
-	BasePath       string `json:"base_path,omitempty"`       // URL prefix the whole app (page, assets, API) is mounted under; empty = mounted at the origin root
+	Port             int    `json:"port"`                         // listen port; 0 means "use the built-in default" (8443)
+	Database         string `json:"database"`                     // absolute path to the SQLite database file
+	ServerCert       string `json:"server_cert,omitempty"`        // absolute path to TLS cert file; empty = auto-generated self-signed cert
+	ServerKey        string `json:"server_key,omitempty"`         // absolute path to TLS key file; empty = auto-generated self-signed key
+	IdleTimeout      int    `json:"idle_timeout,omitempty"`       // seconds; 0 means disabled
+	AppName          string `json:"app_name,omitempty"`           // custom branding name
+	AppDescription   string `json:"app_description,omitempty"`    // custom branding tagline
+	BackupInterval   string `json:"backup_interval,omitempty"`    // Go duration string; empty = disabled
+	BackupCount      int    `json:"backup_count,omitempty"`       // max backups to retain; 0 = no limit
+	BackupAge        string `json:"backup_age,omitempty"`         // Go duration string; empty = no limit
+	BackupSize       string `json:"backup_size,omitempty"`        // human-readable size string, e.g. "500mb"; empty = disabled
+	Insecure         bool   `json:"insecure,omitempty"`           // true = listen with plain HTTP, no TLS (e.g. behind a TLS-terminating reverse proxy)
+	BasePath         string `json:"base_path,omitempty"`          // URL prefix the whole app (page, assets, API) is mounted under; empty = mounted at the origin root
+	WebAuthn         bool   `json:"webauthn_enabled,omitempty"`   // true = passkey (Touch ID/Face ID/security key) login is turned on; independent of whether RP ID/origin happen to be set below — see CLAUDE.md
+	WebAuthnRPID     string `json:"webauthn_rp_id,omitempty"`     // bare domain the browser sees, e.g. "issues.example.com"; required together with WebAuthnRPOrigin when WebAuthn is true
+	WebAuthnRPOrigin string `json:"webauthn_rp_origin,omitempty"` // full browser-facing origin, e.g. "https://issues.example.com"; required together with WebAuthnRPID when WebAuthn is true
 }
 
 // loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
@@ -195,6 +198,14 @@ Commands:
 		 --backup-size <size> | off
 		 --insecure | -k [true|false]
 		 --base-path <path> | off
+		 --webauthn [true|false]
+			 Turn passkey (Touch ID/Face ID/security key) login on or off for
+			 this instance. Requires --webauthn-rp-id and --webauthn-rp-origin
+			 to already be set (or given in the same command).
+		 --webauthn-rp-id <domain>
+			 Bare domain the browser sees, e.g. "issues.example.com".
+		 --webauthn-rp-origin <origin>
+			 Full browser-facing origin, e.g. "https://issues.example.com".
 
 	define [subcommand] [options]
 		Create projects and components.
@@ -238,6 +249,10 @@ Commands:
 		add    <username:password> [--name "Display Name"] [--admin true|false] [--password <password>]
 		update <username>          [--name "Display Name"] [--admin true|false] [--password <password>]
 		delete <username>
+		passkeys <username> list
+		passkeys <username> revoke <credential-id>
+			Admin escape hatch for a user who has lost their passkey device
+			and cannot reach Settings to remove it themselves.
 
 	ingest <file> [file...] [options]
 		Bulk-create one issue per input file. All files are validated before

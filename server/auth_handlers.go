@@ -85,8 +85,10 @@ func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
 // pieces of information the client needs before it can decide what screen to
 // show:
 //
-//  1. idle_timeout (seconds; 0 = disabled) and, when configured, app_name /
-//     app_description for UI branding.
+//  1. idle_timeout (seconds; 0 = disabled), webauthn_enabled (whether this
+//     instance has passkey login turned on — see the --webauthn flag on
+//     "idtrack default"), and, when configured, app_name / app_description
+//     for UI branding.
 //  2. Whether the database currently has zero users. If so, the server is in
 //     "first run" state: no login is possible yet because there is nobody to
 //     log in as. In that case the response also includes onboarding=true and
@@ -101,11 +103,11 @@ func (s *srv) handleVersion(w http.ResponseWriter, r *http.Request) {
 //
 // Response (200 OK) — no users yet:
 //
-//	{"idle_timeout": 0, "onboarding": true, "token": "<uuid>"}
+//	{"idle_timeout": 0, "webauthn_enabled": false, "onboarding": true, "token": "<uuid>"}
 //
 // Response (200 OK) — users exist:
 //
-//	{"idle_timeout": 1800, "onboarding": false}
+//	{"idle_timeout": 1800, "webauthn_enabled": true, "onboarding": false}
 func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	hasUsers, err := s.hasUsersCached()
 	if err != nil {
@@ -115,7 +117,8 @@ func (s *srv) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{
-		"idle_timeout": s.idleTimeout,
+		"idle_timeout":     s.idleTimeout,
+		"webauthn_enabled": s.webauthnEnabled,
 	}
 	if s.appName != "" {
 		resp["app_name"] = s.appName
@@ -400,17 +403,33 @@ func (s *srv) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.loginLimiter.clear(ip)
+
+	finishLogin(w, s, user, body.KeepLoggedIn, "login")
+}
+
+// finishLogin is the common tail end of every login path that already has a
+// *db.User in hand and needs to turn it into a session: password login
+// (handleLogin above) and a successful WebAuthn passkey assertion
+// (handleWebAuthnLoginFinish in webauthn.go). Both have already established,
+// by whatever means, that user is who they claim to be; from this point on
+// the work is identical: record the login timestamp, mint a session token,
+// set the cookie, and return the standard {username, display_name, is_admin}
+// response body. (handleOnboarding does not use this helper — it creates the
+// user record itself in the same request rather than looking one up, and
+// returns 201 Created with a different body shape.) event is a short label
+// ("login", "passkey login") used only for the log line, so an operator
+// reading idtrack.log can tell which path was used.
+func finishLogin(w http.ResponseWriter, s *srv, user *db.User, keepLoggedIn bool, event string) {
 	db.RecordLogin(s.database, user.Username)
 
-	// Log that someone new logged in.
 	if user.DisplayName != "" {
-		log.Printf("login user %s (%s)", user.Username, user.DisplayName)
+		log.Printf("%s user %s (%s)", event, user.Username, user.DisplayName)
 	} else {
-		log.Printf("login user %s", user.Username)
+		log.Printf("%s user %s", event, user.Username)
 	}
 
-	sessToken := s.sessions.create(user.Username, sessionTTL(body.KeepLoggedIn))
-	http.SetCookie(w, sessionCookie(sessToken, body.KeepLoggedIn))
+	sessToken := s.sessions.create(user.Username, sessionTTL(keepLoggedIn))
+	http.SetCookie(w, sessionCookie(sessToken, keepLoggedIn))
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"username":     user.Username,

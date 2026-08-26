@@ -246,7 +246,7 @@ func Serve(args []string, static fs.FS) {
 		backupSize, _ = parseBackupSize(defs.BackupSize)
 	}
 
-	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile, insecure, basePath); err != nil {
+	if err := server.Start(d, port, static, BuildVersion, BuildTime, defs.IdleTimeout, defs.AppName, defs.AppDescription, absDB, backupInterval, defs.BackupCount, backupAge, backupSize, certFile, keyFile, insecure, basePath, defs.WebAuthn, defs.WebAuthnRPID, defs.WebAuthnRPOrigin); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Exit(1)
 	}

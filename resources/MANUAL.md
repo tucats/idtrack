@@ -87,6 +87,9 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--backup-size SIZE` | Maximum total disk space for backup files, e.g. `500mb`, `2gb`. Accepts suffixes `b`, `kb`, `mb`, `gb`, `tb` (case-insensitive); decimal values like `.5gb` are accepted. When the total size exceeds this limit, older backups are thinned using a Time Machine-style density algorithm — see [Retention policy](#retention-policy) below. Use `0` or `off` for no size limit. |
 | `--insecure`, `-k` | Listen with plain HTTP instead of TLS; no certificate or key is required. Pass `false` or `off` as an explicit following value to turn a stored default back off, e.g. `idtrack default --insecure false`. See [Running Behind a Reverse Proxy](#running-behind-a-reverse-proxy) below. |
 | `--base-path PATH` | Mount the whole app (page, static assets, and every API route) under a URL prefix instead of the origin root, e.g. `/idtrack`. Must start with `/` and must not end with `/`. Use `off` (or an empty value) to revert to origin-root mounting. See [Running Behind a Reverse Proxy](#running-behind-a-reverse-proxy) below. |
+| `--webauthn [true\|false]` | Turn passkey (Touch ID/Face ID/Windows Hello/security key) login on or off for this server. A bare `--webauthn` turns it on. Requires `--webauthn-rp-id` and `--webauthn-rp-origin` to already be set (or given in the same command). See [Passkey (WebAuthn) Login](#passkey-webauthn-login) below. |
+| `--webauthn-rp-id DOMAIN` | The bare domain your browser sees for this server, e.g. `issues.example.com` — no `https://`, no port. |
+| `--webauthn-rp-origin ORIGIN` | The full browser-facing origin, e.g. `https://issues.example.com`. |
 
 The path given to `--server-cert` and `--server-key` must already exist; the command validates the file before saving and stores its absolute path.
 
@@ -97,6 +100,30 @@ idtrack default --app-name "ACME Tracker" --app-description "ACME Engineering Is
 idtrack default --backup-interval 1h --backup-count 24 --backup-age 168h
 idtrack default --backup-interval 1h --backup-size 500mb
 idtrack default --server-cert /etc/ssl/certs/mysite.crt --server-key /etc/ssl/private/mysite.key
+```
+
+#### Passkey (WebAuthn) Login
+
+idtrack can let users sign in with Touch ID, Face ID, Windows Hello, or a security key instead of a password — a **passwordless alternative**, not a required second factor. Passwords keep working for everyone regardless of this setting. It is off by default; turning it on requires telling idtrack what domain and origin your users' browsers will actually see:
+
+```sh
+idtrack default --webauthn-rp-id issues.example.com --webauthn-rp-origin https://issues.example.com
+idtrack default --webauthn true
+idtrack restart
+```
+
+- `--webauthn-rp-id` is just the domain — no scheme, no port.
+- `--webauthn-rp-origin` is the full origin your browser bar shows, including `https://` and any non-default port.
+- If you run idtrack behind a reverse proxy (see [Running Behind a Reverse Proxy](#running-behind-a-reverse-proxy) below, or with `--insecure`), use the *public-facing* origin here — the one the proxy presents to browsers — not idtrack's own internal listener address. Passkeys work fine with `--insecure` mode, since what matters is that the browser sees HTTPS, regardless of whether idtrack's own listener does.
+- Turn it back off with `idtrack default --webauthn false` at any time; existing registered passkeys are left in the database (in case it's turned back on later) but stop working until then, and password login is completely unaffected either way.
+
+> **Important:** `--webauthn-rp-id`/`--webauthn-rp-origin` must match **exactly** what's in the browser's address bar — same host, same scheme, same port. If they don't, the browser silently refuses to even start the passkey ceremony: no error dialog, no Touch ID/Face ID prompt, nothing in the browser console or `idtrack.log`. If "Add a passkey" or "Sign in with a passkey" appears to do nothing at all, this mismatch is the first thing to check — for example, browsing to `https://localhost:8081` while `webauthn_rp_id` is set to a different hostname will fail exactly this way. Either browse to the address that matches your configured RP origin, or reconfigure the RP origin to match how you actually browse to the server.
+
+Once enabled, each user manages their own passkeys from **Settings → Use passkeys** — see [Settings and Preferences](#5-settings-and-preferences) below. If a user loses their device and can't reach Settings themselves, an admin can remove the stranded passkey from the CLI:
+
+```sh
+idtrack user passkeys alice list
+idtrack user passkeys alice revoke <credential-id>
 ```
 
 ---
@@ -211,6 +238,15 @@ idtrack user delete <username>
 ```
 
 Permanently removes the user record. Issues and comments that reference the username retain the username string.
+
+#### Manage a user's passkeys
+
+```sh
+idtrack user passkeys <username> list
+idtrack user passkeys <username> revoke <credential-id>
+```
+
+Admin escape hatch for [passkey login](#passkey-webauthn-login) — use this when a user has lost the device holding their passkey and can't reach Settings to remove it themselves. `list` shows each passkey's ID, name, and last-used time; `revoke` deletes one by ID. This never affects the user's password.
 
 ---
 
@@ -329,11 +365,13 @@ The web app adapts automatically to the size of your browser window or device sc
 - The issue list and the detail panel stack vertically instead of sitting side by side.
 - Opening an issue takes over the full screen. Tap **← Back** to return to the list.
 
-If you prefer to see the full desktop layout regardless of screen size — for example, when using a phone in landscape mode and are comfortable with pinch-to-zoom — see [Always show desktop version](#settings) in the Settings section.
+If you prefer to see the full desktop layout regardless of screen size — for example, when using a phone in landscape mode and are comfortable with pinch-to-zoom — see [Always show desktop version](#always-show-desktop-version) in the Settings section.
 
 ### Logging In
 
 Enter your username and password on the login screen and click **Sign In**. Your session is preserved for the life of the browser tab — if you refresh the page, you are not required to log in again. Closing the browser tab ends your session.
+
+If your administrator has turned on [passkey login](#passkey-webauthn-login), a **Sign in with a passkey** button also appears on the login screen. Click it and confirm with Touch ID, Face ID, Windows Hello, or your security key — no username or password needed. Register a passkey first from **Settings → Use passkeys** (see [Settings and Preferences](#5-settings-and-preferences)) before this button will have anything to sign in with.
 
 ### Issue List
 
@@ -473,7 +511,7 @@ Opens a two-screen interface for managing all projects and their components.
 
 **Project list** — The first screen lists all defined projects, each row showing the project name and component count. Click a row to open its detail screen. Click **+ New Project** to create a project.
 
-**Project detail — existing project**
+#### Project detail — existing project
 
 Click a project row to view and manage its components:
 
@@ -481,7 +519,7 @@ Click a project row to view and manage its components:
 - Type a name in the **Add Component** field and click **Add** (or press Enter) to immediately add a component to the project. Duplicate names are rejected (case-insensitive check).
 - Click **Delete Project** to permanently remove the project and all its components. The deletion is refused if any issues reference the project.
 
-**Project detail — new project**
+#### Project detail — new project
 
 Click **+ New Project** to open the new-project form:
 
@@ -560,9 +598,11 @@ To restore the database to a previous state:
 
 1. Stop the server: `idtrack stop`
 2. Replace the live database file with the desired backup:
+
    ```sh
    cp /path/to/idtrack-backups/idtrack-20260517T120000.db /path/to/idtrack.db
    ```
+
 3. Restart the server: `idtrack serve`
 
 Backup files are complete, self-contained SQLite databases and can be opened with any SQLite-compatible tool for inspection or data recovery.
@@ -592,6 +632,14 @@ Choosing **Sign out** always clears the stored information and invalidates the s
 Choose how many issues are loaded at a time as you scroll through the list: **10**, **25**, **50** (default), **100**, or **200**. Larger values fetch more rows per network request; smaller values are faster to load and useful for testing filters. The page size is saved in your browser and persists across sessions.
 
 > **Note:** The full issue list is still available regardless of this setting — when you scroll to the bottom of the loaded rows, the next page loads automatically. The counter above the list ("Showing X of Y issues") tells you how many have been loaded versus the total matching the current filters.
+
+### Use Passkeys
+
+This setting only appears when your administrator has turned on [passkey login](#passkey-webauthn-login) for this server. It is on by default.
+
+While it's on, a **Passkeys** list appears below the toggle showing every passkey you've registered, with an **Add a passkey** button. Adding one prompts you for a short label (e.g. "MacBook Touch ID") and then walks you through your device's own Touch ID/Face ID/Windows Hello/security key prompt — you can register as many as you like, for as many devices as you use. Click **Remove** next to any entry to delete it; there's no confirmation dialog since it's trivially replaced and your password always still works.
+
+Turning **Use Passkeys** off hides the **Sign in with a passkey** button on the login screen and collapses this list — it's a purely personal preference, saved in your browser, that doesn't remove any passkeys you've already registered or change anything for other users. Turn it back on to see your list and the login button again.
 
 ### Always show desktop version
 
@@ -708,6 +756,7 @@ The database defaults to `/var/lib/idtrack/idtrack.db` and is owned by the `idtr
 The database defaults to `~/.idtrack/idtrack.db`.
 
 > **Note:** A user service only runs while your systemd session is active. To keep it running when you are not logged in, enable *lingering* for your account:
+>
 > ```sh
 > loginctl enable-linger $USER
 > ```
@@ -743,6 +792,7 @@ sudo ./tools/install-service-linux.sh --uninstall
 ```
 
 For user services, prefix each `systemctl` command with `--user`:
+
 ```sh
 systemctl --user status  idtrack
 systemctl --user restart idtrack
@@ -806,7 +856,7 @@ idtrack can run inside a Docker container. The container image is built from sou
 
 This compiles the binary inside a Docker builder stage, then packages it into a minimal Alpine-based runtime image. The image is tagged with the current version number (from `tools/buildver.txt`) and also as `latest`:
 
-```
+```text
 idtrack:1.0-34
 idtrack:latest
 ```

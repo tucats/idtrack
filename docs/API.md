@@ -164,19 +164,23 @@ onboarding.
 Response `200 OK` (normal operation):
 
 ```json
-{ "idle_timeout": 1800, "onboarding": false, "app_name": "idtrack", "app_description": "Issue Tracker" }
+{ "idle_timeout": 1800, "webauthn_enabled": false, "onboarding": false, "app_name": "idtrack", "app_description": "Issue Tracker" }
 ```
 
 Response `200 OK` (empty database, needs onboarding):
 
 ```json
-{ "idle_timeout": 0, "onboarding": true, "token": "3fa85f64-5717-4562-b3fc-2c963f66afa6" }
+{ "idle_timeout": 0, "webauthn_enabled": false, "onboarding": true, "token": "3fa85f64-5717-4562-b3fc-2c963f66afa6" }
 ```
 
 `idle_timeout` is in seconds; `0` means "no idle timeout configured — do not
-auto-logout." `app_name` and `app_description` are omitted entirely (not
-present as keys) when the operator hasn't configured custom branding — do
-not assume they are always present.
+auto-logout." `webauthn_enabled` reports whether this instance has passkey
+(Touch ID/Face ID/security key) login turned on at all — see
+[Passkeys (WebAuthn)](#passkeys-webauthn) below; a client should hide any
+passkey UI entirely when this is `false`, regardless of browser support.
+`app_name` and `app_description` are omitted entirely (not present as keys)
+when the operator hasn't configured custom branding — do not assume they are
+always present.
 
 #### `POST /api/login`
 
@@ -237,6 +241,131 @@ invalid or absent — a client can call this unconditionally on sign-out
 without checking login state first.
 
 Response `200 OK`: `{ "ok": true }`. Also clears the session cookie.
+
+---
+
+### Passkeys (WebAuthn)
+
+Passkey login (Touch ID, Face ID, Windows Hello, or a roaming authenticator
+such as a security key or phone) is an **alternative** to password login, not
+a second factor and not a replacement — every account can always still use
+`POST /api/login`. The whole feature is off by default and only exists on an
+instance where the operator has explicitly turned it on (`idtrack default
+--webauthn true`, alongside `--webauthn-rp-id`/`--webauthn-rp-origin`); check
+`webauthn_enabled` on `GET /api/status` before showing any passkey UI, and
+treat a `404`/`405` on any endpoint below as "this instance doesn't have the
+feature on" rather than a bug — the routes are not registered at all when it
+is off.
+
+These endpoints speak the [WebAuthn](https://www.w3.org/TR/webauthn-3/)
+protocol's own JSON serialization directly: byte-valued fields (challenges,
+credential IDs, signatures, public keys) are base64url-encoded strings with
+no padding, matching what `PublicKeyCredential.prototype.toJSON()` produces
+in a browser that supports it. A client is expected to decode the relevant
+fields of a `begin` response into `ArrayBuffer`s before passing them to
+`navigator.credentials.create()`/`.get()`, and encode the relevant fields of
+that call's result back to base64url strings before POSTing them to the
+matching `finish` endpoint — see `resources/idtrack.js`'s
+`bufferDecode`/`bufferEncode`/`preformatCreateOptions`/`preformatGetOptions`/
+`credentialCreateToJSON`/`credentialGetToJSON` for a complete reference
+implementation.
+
+Registration (adding a passkey to an already-logged-in account) and login
+(using one to establish a brand new session) are two independent two-step
+ceremonies; a `SessionData` value returned by each `begin` call must reach
+the matching `finish` call unmodified, but the finish request body must be
+*exactly* the browser's WebAuthn response with nothing else added — so
+anything else a client needs to pass (a chosen passkey label, whether to
+request a 30-day session, which in-flight ceremony this is) travels as a
+query parameter instead. See each endpoint below for the exact parameter.
+
+#### `POST /api/webauthn/login/begin`
+
+Public — no session exists yet, and (this is a discoverable/"passkey" login)
+the server does not know who is logging in until `login/finish`. No request
+body.
+
+Response `200 OK`:
+
+```json
+{
+  "publicKey": { "challenge": "...", "timeout": 300000, "rpId": "issues.example.com" },
+  "ceremony_id": "331bff27-2171-4ce8-8b04-bc72da18a884"
+}
+```
+
+Pass `publicKey` (after decoding its byte fields) directly to
+`navigator.credentials.get({ publicKey })`. Save `ceremony_id` — it must be
+echoed back as a query parameter on `login/finish`.
+
+#### `POST /api/webauthn/login/finish?ceremony=<ceremony_id>&keep=true|false`
+
+Public. Request body: exactly the JSON produced by serializing the
+`navigator.credentials.get()` result (see the encoding note above). `keep`
+mirrors `keep_logged_in` on `POST /api/login` (defaults to `false` if
+omitted).
+
+Response `200 OK` (also sets the `idtrack_session` cookie) is identical in
+shape to `POST /api/login`'s:
+
+```json
+{ "username": "alice", "display_name": "Alice Adams", "is_admin": false }
+```
+
+Errors: `400` missing/expired/unknown `ceremony`; `401` the assertion failed
+verification (wrong or corrupted response, unknown credential, or a detected
+cloned authenticator); `429` too many failed attempts from this client IP —
+same shared limiter as `POST /api/login`.
+
+#### `POST /api/webauthn/register/begin`
+
+Authenticated. Adds a passkey to the **caller's own** account — there is no
+way to register a passkey for another user. No request body.
+
+Response `200 OK`: a `publicKey` object shaped for
+`navigator.credentials.create({ publicKey })` (after decoding its byte
+fields), already excluding any credentials the caller has previously
+registered and requesting a discoverable/resident credential so login never
+needs a username typed first.
+
+#### `POST /api/webauthn/register/finish?name=<label>`
+
+Authenticated. Request body: exactly the JSON produced by serializing the
+`navigator.credentials.create()` result. `name` is a short, user-chosen label
+for this passkey (e.g. `MacBook%20Touch%20ID`); defaults to `"Passkey"` if
+omitted, and is truncated to 80 characters.
+
+Response `201 Created`: `{ "id": "<credential id>", "name": "MacBook Touch ID" }`
+
+Errors: `400` no matching in-flight registration ceremony for this user (it
+expired, or `register/begin` was never called), or the response failed
+verification.
+
+#### `GET /api/webauthn/credentials`
+
+Authenticated. Lists the caller's own registered passkeys — always scoped to
+the caller; there is no way to list another user's passkeys over the API
+(see `idtrack user passkeys` in the CLI for the admin equivalent).
+
+Response `200 OK`:
+
+```json
+[
+  { "id": "AbC123...", "name": "MacBook Touch ID", "created_at": "2026-08-09T14:03:22Z", "last_used_at": "2026-08-20T09:12:01Z" }
+]
+```
+
+`last_used_at` is omitted until the passkey has been used to log in at least
+once.
+
+#### `DELETE /api/webauthn/credentials/{id}` — self-service only
+
+Authenticated. Deletes one of the caller's own passkeys; `{id}` is the
+`id` from the credential list above. Scoped to the caller server-side, so
+this can never delete another user's passkey.
+
+Response `200 OK`: `{ "ok": true }`, whether or not a matching credential
+existed for the caller.
 
 ---
 

@@ -49,26 +49,32 @@ const offValue = "off"
 // boilerplate, so this codebase consistently hand-rolls the loop instead.
 func Default(args []string) {
 	var (
-		port           int
-		database       string
-		idleTimeout    int
-		idleTimeoutSet bool
-		appName        string
-		appDescription string
-		backupInterval string
-		backupCount    int
-		backupCountSet bool
-		backupAge      string
-		backupSize     string
-		backupSizeSet  bool
-		serverCert     string
-		serverCertSet  bool
-		serverKey      string
-		serverKeySet   bool
-		insecure       bool
-		insecureSet    bool
-		basePath       string
-		basePathSet    bool
+		port                int
+		database            string
+		idleTimeout         int
+		idleTimeoutSet      bool
+		appName             string
+		appDescription      string
+		backupInterval      string
+		backupCount         int
+		backupCountSet      bool
+		backupAge           string
+		backupSize          string
+		backupSizeSet       bool
+		serverCert          string
+		serverCertSet       bool
+		serverKey           string
+		serverKeySet        bool
+		insecure            bool
+		insecureSet         bool
+		basePath            string
+		basePathSet         bool
+		webauthnEnabled     bool
+		webauthnEnabledSet  bool
+		webauthnRPID        string
+		webauthnRPIDSet     bool
+		webauthnRPOrigin    string
+		webauthnRPOriginSet bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -285,6 +291,37 @@ func Default(args []string) {
 				basePathSet = true
 			}
 
+		case "--webauthn":
+			webauthnEnabled = true
+			webauthnEnabledSet = true
+
+			// Same "bare flag defaults to true, optional trailing true/false
+			// turns it back off" shape as --insecure above.
+			if i+1 < len(args) {
+				switch strings.ToLower(args[i+1]) {
+				case "false", offValue:
+					webauthnEnabled = false
+					i++
+				case "true", "on":
+					webauthnEnabled = true
+					i++
+				}
+			}
+
+		case "--webauthn-rp-id":
+			if i+1 < len(args) {
+				i++
+				webauthnRPID = strings.TrimSpace(args[i])
+				webauthnRPIDSet = true
+			}
+
+		case "--webauthn-rp-origin":
+			if i+1 < len(args) {
+				i++
+				webauthnRPOrigin = strings.TrimSpace(args[i])
+				webauthnRPOriginSet = true
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			Usage()
@@ -293,7 +330,8 @@ func Default(args []string) {
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
-		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet || insecureSet || basePathSet
+		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet || insecureSet || basePathSet ||
+		webauthnEnabledSet || webauthnRPIDSet || webauthnRPOriginSet
 	if !anySet {
 		showDefaults()
 
@@ -359,6 +397,27 @@ func Default(args []string) {
 
 	if basePathSet {
 		defs.BasePath = basePath
+	}
+
+	if webauthnRPIDSet {
+		defs.WebAuthnRPID = webauthnRPID
+	}
+
+	if webauthnRPOriginSet {
+		defs.WebAuthnRPOrigin = webauthnRPOrigin
+	}
+
+	if webauthnEnabledSet {
+		// Validate-together, same as server-cert/server-key: turning the
+		// feature on requires both RP fields to already be resolved — either
+		// already stored, or supplied in this same command — since
+		// server.Start() will otherwise refuse to start at all.
+		if webauthnEnabled && (defs.WebAuthnRPID == "" || defs.WebAuthnRPOrigin == "") {
+			fmt.Fprintln(os.Stderr, "--webauthn true requires --webauthn-rp-id and --webauthn-rp-origin to be set (now or already)")
+			os.Exit(1)
+		}
+
+		defs.WebAuthn = webauthnEnabled
 	}
 
 	home, err := os.UserHomeDir()
@@ -436,6 +495,18 @@ func Default(args []string) {
 		} else {
 			fmt.Printf("  base-path:       disabled\n")
 		}
+	}
+
+	if webauthnEnabledSet {
+		fmt.Printf("  webauthn:        %t\n", defs.WebAuthn)
+	}
+
+	if webauthnRPIDSet {
+		fmt.Printf("  webauthn-rp-id:     %s\n", defs.WebAuthnRPID)
+	}
+
+	if webauthnRPOriginSet {
+		fmt.Printf("  webauthn-rp-origin: %s\n", defs.WebAuthnRPOrigin)
 	}
 }
 
@@ -528,5 +599,23 @@ func showDefaults() {
 		row("base-path", defs.BasePath)
 	} else {
 		row("base-path", "(not set — mounted at origin root)")
+	}
+
+	if defs.WebAuthn {
+		row("webauthn", "true (passkey login enabled)")
+	} else {
+		row("webauthn", "false")
+	}
+
+	if defs.WebAuthnRPID != "" {
+		row("webauthn-rp-id", defs.WebAuthnRPID)
+	} else {
+		row("webauthn-rp-id", "(not set)")
+	}
+
+	if defs.WebAuthnRPOrigin != "" {
+		row("webauthn-rp-origin", defs.WebAuthnRPOrigin)
+	} else {
+		row("webauthn-rp-origin", "(not set)")
 	}
 }

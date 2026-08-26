@@ -29,6 +29,9 @@
     <div class="button-row">
       <button id="login-submit-btn" class="btn btn-primary" onclick="submitLogin()">Sign In</button>
     </div>
+    <div class="button-row" id="login-passkey-row" style="display:none">
+      <button id="login-passkey-btn" class="btn btn-secondary" onclick="loginWithPasskey()">Sign in with a passkey</button>
+    </div>
   </div>
 </div>
 
@@ -167,6 +170,20 @@
         <option value="100">100</option>
         <option value="200">200</option>
       </select>
+    </div>
+    <div class="settings-row" id="use-passkeys-row" style="display:none">
+      <span class="settings-label">Use passkeys</span>
+      <label class="toggle">
+        <input type="checkbox" id="use-passkeys-toggle" onchange="toggleUsePasskeys(this.checked)">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div id="passkeys-section" style="display:none">
+      <div id="passkeys-list"></div>
+      <div class="button-row">
+        <button class="btn btn-secondary btn-sm" onclick="addPasskey()">Add a passkey</button>
+      </div>
+      <div id="passkeys-error" class="error-text"></div>
     </div>
     <div class="button-row">
       <button class="btn btn-primary" onclick="hideSettings()">Done</button>

@@ -95,6 +95,25 @@ func initSchema(database *sql.DB) error {
 			name        TEXT PRIMARY KEY,
 			description TEXT NOT NULL DEFAULT ''
 		);
+		-- Registered passkeys (Touch ID / Face ID / security keys). The table
+		-- itself is brand new rather than a migrated addition to an existing
+		-- table, so an old database file gets it for free the first time it
+		-- is opened with a binary that knows about it, with nothing to
+		-- backfill since it starts (and stays) empty until a user registers
+		-- their first passkey. One column (flags, below) was added after the
+		-- table's initial shape and does need the usual addColumnIfMissing
+		-- treatment, same as every column on every other table here.
+		CREATE TABLE IF NOT EXISTS webauthn_credentials (
+			id            TEXT PRIMARY KEY,
+			username      TEXT NOT NULL,
+			public_key    BLOB NOT NULL,
+			sign_count    INTEGER NOT NULL DEFAULT 0,
+			transports    TEXT NOT NULL DEFAULT '',
+			flags         INTEGER NOT NULL DEFAULT 0,
+			name          TEXT NOT NULL DEFAULT '',
+			created_at    TEXT NOT NULL,
+			last_used_at  TEXT NOT NULL DEFAULT ''
+		);
 	`)
 	if err != nil {
 		return err
@@ -155,6 +174,17 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	// flags stores the single-byte packed form of the go-webauthn library's
+	// CredentialFlags (UserPresent/UserVerified/BackupEligible/BackupState) —
+	// see webauthnUser.WebAuthnCredentials() in server/webauthn.go. This was
+	// missed when webauthn_credentials was first added (its CREATE TABLE
+	// above already includes the column for a brand-new database), so unlike
+	// that table itself, an already-created webauthn_credentials table still
+	// needs this one addColumnIfMissing to catch up.
+	if err := addColumnIfMissing(database, "webauthn_credentials", "flags", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
 	// Seed the two reserved team names.  INSERT OR IGNORE is idempotent.
 	if _, err := database.Exec(`
 		INSERT OR IGNORE INTO teams (name, description) VALUES ('admin', '');
@@ -207,6 +237,8 @@ func initSchema(database *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_issues_reporter   ON issues (reporter)`,
 		// Used by the comment_count correlated subquery in ListIssues / GetIssue.
 		`CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments (issue_id)`,
+		// Used by ListCredentials/DeleteCredential to fetch/scope a user's passkeys.
+		`CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_username ON webauthn_credentials (username)`,
 	} {
 		if _, err := database.Exec(ddl); err != nil {
 			return err

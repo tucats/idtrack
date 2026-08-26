@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-webauthn/webauthn/webauthn"
 )
 
 // srv holds the shared dependencies that all handler methods need: the
@@ -29,29 +31,33 @@ import (
 // its own *srv with a temporary database and in-memory session store instead
 // of relying on global mutable state that would leak between test cases.
 type srv struct {
-	database        *sql.DB
-	static          fs.FS // embedded (or, in tests, on-disk) filesystem holding resources/*
-	version         string
-	buildTime       string
-	idleTimeout     int
-	appName         string
-	appDescription  string
-	loginLimiter    *rateLimiter
-	sessions        *sessionStore
-	mu              sync.Mutex   // guards onboardingToken, statusHasUsers, and statusCachedAt below
-	backupMu        sync.RWMutex // request-quiescing lock; see quiesce() and doBackup() in backup.go
-	onboardingToken string
-	statusHasUsers  bool          // cached result of db.HasUsers (S-09)
-	statusCachedAt  time.Time     // zero value forces refresh on first call
-	dbPath          string        // absolute path to the SQLite database file
-	backupInterval  time.Duration // 0 = backups disabled
-	backupCount     int           // 0 = no count limit
-	backupAge       time.Duration // 0 = no age limit
-	backupSize      int64         // 0 = no size limit
-	certFile        string        // absolute path to TLS cert file; empty = use embedded cert
-	keyFile         string        // absolute path to TLS key file; empty = use embedded key
-	insecure        bool          // true = listen with plain HTTP, no TLS at all (e.g. behind a TLS-terminating reverse proxy)
-	basePath        string        // URL prefix every route is mounted under; "" = mounted at the origin root (see appPath)
+	database           *sql.DB
+	static             fs.FS // embedded (or, in tests, on-disk) filesystem holding resources/*
+	version            string
+	buildTime          string
+	idleTimeout        int
+	appName            string
+	appDescription     string
+	loginLimiter       *rateLimiter
+	sessions           *sessionStore
+	mu                 sync.Mutex   // guards onboardingToken, statusHasUsers, and statusCachedAt below
+	backupMu           sync.RWMutex // request-quiescing lock; see quiesce() and doBackup() in backup.go
+	onboardingToken    string
+	statusHasUsers     bool                   // cached result of db.HasUsers (S-09)
+	statusCachedAt     time.Time              // zero value forces refresh on first call
+	dbPath             string                 // absolute path to the SQLite database file
+	backupInterval     time.Duration          // 0 = backups disabled
+	backupCount        int                    // 0 = no count limit
+	backupAge          time.Duration          // 0 = no age limit
+	backupSize         int64                  // 0 = no size limit
+	certFile           string                 // absolute path to TLS cert file; empty = use embedded cert
+	keyFile            string                 // absolute path to TLS key file; empty = use embedded key
+	insecure           bool                   // true = listen with plain HTTP, no TLS at all (e.g. behind a TLS-terminating reverse proxy)
+	basePath           string                 // URL prefix every route is mounted under; "" = mounted at the origin root (see appPath)
+	webauthnEnabled    bool                   // true = passkey login is turned on for this instance (see webauthn.go); gates both route registration below and the status response's webauthn_enabled field
+	webauthn           *webauthn.WebAuthn     // nil unless webauthnEnabled; the go-webauthn library instance configured with the operator's RP ID/origin
+	registerCeremonies *webauthnCeremonyStore // in-flight passkey-registration ceremonies, keyed by username; nil unless webauthnEnabled
+	loginCeremonies    *webauthnCeremonyStore // in-flight passkey-login ceremonies, keyed by a random ceremony ID; nil unless webauthnEnabled
 }
 
 // appPath returns the path at which the single-page app itself is served.
@@ -86,26 +92,56 @@ func (s *srv) appPath() string {
 // time beyond the single executable. Because the parameter is an interface,
 // tests can substitute any other fs.FS (such as os.DirFS) without changing
 // this function.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool, basePath string) error {
+func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool, basePath string, webauthnEnabled bool, webauthnRPID, webauthnRPOrigin string) error {
 	s := &srv{
-		database:       database,
-		static:         static,
-		version:        version,
-		buildTime:      buildTime,
-		idleTimeout:    idleTimeout,
-		appName:        appName,
-		appDescription: appDescription,
-		loginLimiter:   newRateLimiter(),
-		sessions:       newSessionStore(),
-		dbPath:         dbPath,
-		backupInterval: backupInterval,
-		backupCount:    backupCount,
-		backupAge:      backupAge,
-		backupSize:     backupSize,
-		certFile:       certFile,
-		keyFile:        keyFile,
-		insecure:       insecure,
-		basePath:       basePath,
+		database:        database,
+		static:          static,
+		version:         version,
+		buildTime:       buildTime,
+		idleTimeout:     idleTimeout,
+		appName:         appName,
+		appDescription:  appDescription,
+		loginLimiter:    newRateLimiter(),
+		sessions:        newSessionStore(),
+		dbPath:          dbPath,
+		backupInterval:  backupInterval,
+		backupCount:     backupCount,
+		backupAge:       backupAge,
+		backupSize:      backupSize,
+		certFile:        certFile,
+		keyFile:         keyFile,
+		insecure:        insecure,
+		basePath:        basePath,
+		webauthnEnabled: webauthnEnabled,
+	}
+
+	// s.webauthn (and the two ceremony stores) are only constructed when the
+	// feature is turned on. This means every /api/webauthn/* handler in
+	// webauthn.go can assume s.webauthn is non-nil without a nil check —
+	// they are simply never reachable otherwise, since the routes below are
+	// only registered inside this same "if webauthnEnabled" branch.
+	if webauthnEnabled {
+		if webauthnRPID == "" || webauthnRPOrigin == "" {
+			return fmt.Errorf("webauthn is enabled but rp-id/rp-origin are not both configured — see 'idtrack default --webauthn-rp-id' and '--webauthn-rp-origin'")
+		}
+
+		rpDisplayName := appName
+		if rpDisplayName == "" {
+			rpDisplayName = "idtrack"
+		}
+
+		wa, err := webauthn.New(&webauthn.Config{
+			RPID:          webauthnRPID,
+			RPDisplayName: rpDisplayName,
+			RPOrigins:     []string{webauthnRPOrigin},
+		})
+		if err != nil {
+			return fmt.Errorf("configuring webauthn: %w", err)
+		}
+
+		s.webauthn = wa
+		s.registerCeremonies = newWebAuthnCeremonyStore()
+		s.loginCeremonies = newWebAuthnCeremonyStore()
 	}
 
 	mux := http.NewServeMux()
@@ -157,6 +193,30 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle(route("POST /api/login"), requireJSON(http.HandlerFunc(s.handleLogin)))
 	mux.HandleFunc(route("POST /api/logout"), s.handleLogout)
 	mux.Handle(route("POST /api/onboarding"), requireJSON(http.HandlerFunc(s.handleOnboarding)))
+
+	// Passkey (WebAuthn) routes exist on the mux at all only when the
+	// operator has turned the feature on (see webauthnEnabled above) — a
+	// request to any of these on a build/config where it is off gets
+	// whatever the mux already returns for any other undefined path (404,
+	// or 405 if a same-path-different-method catch-all like "GET /" exists
+	// — see serveRoot below), identical to an idtrack version that predates
+	// this feature entirely, rather than some bespoke "feature disabled"
+	// response.
+	// login/begin and /finish are public for the same reason /api/login is:
+	// establishing a session is exactly what they are for, so no session can
+	// be expected to exist yet. register/begin, /finish, the credential
+	// list, and the delete route all require an existing session, because
+	// registering or managing a passkey is something only an already-known
+	// user can do to their own account (see webauthn.go for the full
+	// request/response shapes).
+	if webauthnEnabled {
+		mux.HandleFunc(route("POST /api/webauthn/login/begin"), s.handleWebAuthnLoginBegin)
+		mux.Handle(route("POST /api/webauthn/login/finish"), requireJSON(http.HandlerFunc(s.handleWebAuthnLoginFinish)))
+		mux.Handle(route("POST /api/webauthn/register/begin"), s.auth(http.HandlerFunc(s.handleWebAuthnRegisterBegin)))
+		mux.Handle(route("POST /api/webauthn/register/finish"), s.auth(requireJSON(http.HandlerFunc(s.handleWebAuthnRegisterFinish))))
+		mux.Handle(route("GET /api/webauthn/credentials"), s.auth(http.HandlerFunc(s.handleWebAuthnListCredentials)))
+		mux.Handle(route("DELETE /api/webauthn/credentials/{id}"), s.auth(http.HandlerFunc(s.handleWebAuthnDeleteCredential)))
+	}
 
 	// Authenticated API endpoints are wrapped with s.auth(), which validates the
 	// session cookie on every request and stores the *db.User in the context.

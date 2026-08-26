@@ -46,12 +46,42 @@ func User(args []string) {
 	var (
 		add, del, update, name, password, database, adminStr, teamsStr string
 		list                                                           bool
+		passkeysUser, passkeysAction, passkeysID                       string
 	)
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "list":
 			list = true
+
+		case "passkeys":
+			// idtrack user passkeys <username> list
+			// idtrack user passkeys <username> revoke <credential-id>
+			// Unlike list/add/update/delete above, this subcommand itself
+			// takes further positional arguments rather than being a flag
+			// that stands alone, since it names a target user and an action
+			// on that user's passkeys in one breath.
+			if i+2 >= len(args) {
+				fmt.Fprintln(os.Stderr, "passkeys requires <username> list|revoke [<credential-id>]")
+				os.Exit(1)
+			}
+
+			passkeysUser = args[i+1]
+			passkeysAction = args[i+2]
+			i += 2
+
+			if passkeysAction == "revoke" {
+				if i+1 >= len(args) {
+					fmt.Fprintln(os.Stderr, "passkeys revoke requires a credential id")
+					os.Exit(1)
+				}
+
+				i++
+				passkeysID = args[i]
+			} else if passkeysAction != listCommand {
+				fmt.Fprintf(os.Stderr, "unknown passkeys action %q: expected list or revoke\n", passkeysAction)
+				os.Exit(1)
+			}
 
 		case "add":
 			if i+1 < len(args) {
@@ -115,8 +145,8 @@ func User(args []string) {
 		}
 	}
 
-	if !list && add == "" && del == "" && update == "" {
-		fmt.Fprintln(os.Stderr, "must specify list, add, update, or delete")
+	if !list && add == "" && del == "" && update == "" && passkeysUser == "" {
+		fmt.Fprintln(os.Stderr, "must specify list, add, update, delete, or passkeys")
 		Usage()
 		os.Exit(1)
 	}
@@ -235,6 +265,43 @@ func User(args []string) {
 		}
 
 		fmt.Printf("user %q deleted\n", del)
+	}
+
+	if passkeysUser != "" {
+		switch passkeysAction {
+		case listCommand:
+			creds, err := db.ListCredentials(d, passkeysUser)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error listing passkeys for %q: %v\n", passkeysUser, err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("%-44s  %-24s  %s\n", "ID", "NAME", "LAST USED")
+			fmt.Printf("%-44s  %-24s  %s\n", strings.Repeat("-", 44), strings.Repeat("-", 24), strings.Repeat("-", 25))
+
+			for _, c := range creds {
+				lastUsed := c.LastUsedAt
+				if lastUsed == "" {
+					lastUsed = "(never)"
+				}
+
+				fmt.Printf("%-44s  %-24s  %s\n", c.ID, c.Name, lastUsed)
+			}
+
+		case "revoke":
+			// db.DeleteCredential is scoped by (owner, id), which — since the
+			// CLI is trusted, unauthenticated operator tooling rather than a
+			// self-service API call — is exactly what makes this the admin
+			// escape hatch: it removes the row from passkeysUser's own set
+			// the same way the Settings UI does for the user themselves, no
+			// separate "admin delete" query needed.
+			if err := db.DeleteCredential(d, passkeysUser, passkeysID); err != nil {
+				fmt.Fprintf(os.Stderr, "error revoking passkey %q for %q: %v\n", passkeysID, passkeysUser, err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("passkey %q revoked for user %q\n", passkeysID, passkeysUser)
+		}
 	}
 }
 

@@ -149,6 +149,17 @@ CREATE TABLE teams (
     name        TEXT PRIMARY KEY,      -- lower-case; "admin" and "any" are reserved (db.TeamAdmin/db.TeamAny)
     description TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE webauthn_credentials (
+    id            TEXT PRIMARY KEY,     -- base64url WebAuthn credential ID
+    username      TEXT NOT NULL,        -- owning user
+    public_key    BLOB NOT NULL,        -- COSE public key
+    sign_count    INTEGER NOT NULL DEFAULT 0,  -- clone-detection counter; updated on every login
+    transports    TEXT NOT NULL DEFAULT '',    -- comma-separated
+    name          TEXT NOT NULL DEFAULT '',    -- user-supplied label, e.g. "MacBook Touch ID"
+    created_at    TEXT NOT NULL,
+    last_used_at  TEXT NOT NULL DEFAULT ''
+);
 ```
 
 ### Schema Migrations
@@ -159,13 +170,15 @@ The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added aft
 
 **Teams backfill migration.** `initSchema` seeds the two reserved teams (`admin`, `any`) with `INSERT OR IGNORE`, then backfills the new `teams` columns: existing admin users get `'admin'`, everyone else gets `'any'`; existing projects and issues all get `'any'` (visible to everyone, preserving pre-teams behavior). Each backfill is guarded by `WHERE teams = ''`, so it is a no-op on subsequent startups and never overwrites an operator's explicit team assignment.
 
+**`webauthn_credentials` needed no migration step at all.** Unlike every column listed above, it is a brand-new table, not a column added to an existing one — `CREATE TABLE IF NOT EXISTS` in the same block as every other table already creates it for free the first time an old database is opened with a binary that knows about it, with nothing to backfill since it starts (and stays) empty until a user registers a passkey.
+
 ## Runtime Files (`~/.idtrack/`)
 
 All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb", "insecure": true, "base_path": "/idtrack"}` — persisted defaults; all fields are omitempty |
+| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb", "insecure": true, "base_path": "/idtrack", "webauthn_enabled": true, "webauthn_rp_id": "issues.example.com", "webauthn_rp_origin": "https://issues.example.com"}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -175,7 +188,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size] [--insecure | -k [true|false]] [--base-path path | off]`
+### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size] [--insecure | -k [true|false]] [--base-path path | off] [--webauthn [true|false]] [--webauthn-rp-id domain] [--webauthn-rp-origin origin]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag. Running with no flags prints a two-column table of the current defaults.
 
@@ -191,6 +204,9 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--backup-size` accepts a number with optional unit suffix (`b`, `kb`, `mb`, `gb`, `tb`, case-insensitive); decimal values like `.5gb` are accepted. Use `0` or `off` to disable size-based thinning. Stored as a raw string in `defaults.json` (e.g. `"500mb"`) and parsed to `int64` bytes by `parseBackupSize()` in `commands/common.go` before being passed to `server.Start()`.
 - `--insecure` / `-k` sets the server to listen with plain HTTP instead of TLS, requiring no cert/key at all — see "Insecure mode" below. A bare `--insecure` sets it to `true`; an explicit following value of `true`/`on` or `false`/`off` sets it accordingly, which is how a stored `true` default is turned back off (e.g. `idtrack default --insecure false`).
 - `--base-path` mounts the whole app — page, static assets, and every `/api/*` route — under a URL prefix instead of the origin root, e.g. `/idtrack`. Validated by `validateBasePath()` in `commands/common.go`: must start with `/` and must not end with `/` or be exactly `/`. Use `""` or `off` to clear it and revert to origin-root mounting. See "Configurable base path for reverse-proxy mounting" below.
+- `--webauthn` turns passkey (Touch ID/Face ID/security key) login on or off for the whole instance — same `[true|false]` bare-flag-defaults-to-true parsing shape as `--insecure`. Turning it on requires `--webauthn-rp-id` and `--webauthn-rp-origin` to already be set or supplied in the same command; `Default` exits with an error otherwise (mirrors the cert/key pairing check). See "Passkey (WebAuthn) login" below.
+- `--webauthn-rp-id` sets the WebAuthn Relying Party ID: the bare domain the browser sees, e.g. `issues.example.com` (no scheme, no port).
+- `--webauthn-rp-origin` sets the WebAuthn Relying Party Origin: the full browser-facing origin, e.g. `https://issues.example.com`. Both RP values are stored as plain strings in `defaults.json` with no `off` synonym (there is nothing to validate beyond "non-empty" — the operator supplies whatever their reverse proxy/DNS actually presents to browsers).
 
 ### `idtrack serve [--port n] [--database path] [--server-cert path] [--server-key path] [--insecure | -k [true|false]] [--base-path path]`
 
@@ -203,6 +219,7 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--insecure` / `-k` overrides the stored `insecure` default for this run only. When set, `server.Start()` skips reading/parsing any TLS cert or key (embedded, defaults-configured, or flag-overridden) entirely and binds a plain `net.Listener` instead of wrapping it with `tls.NewListener`. Forwarded into `passArgs` (as `--insecure` or `--insecure false`) so `Restart` relaunches with the same setting.
 - `--base-path` overrides the stored `base_path` default for this run only, validated the same way as in `idtrack default`. Forwarded into `passArgs` (always as its normalized value, so `off`/`""` become an explicit empty-string arg) so `Restart` relaunches with the same setting. Also changes the printed startup URL's path to match.
 - The `--foreground` flag is **internal** for direct host usage — it tells the re-exec'd child to run the server directly. It is exposed and documented in the Docker section of MANUAL.md because containers require foreground operation (Docker manages the process lifecycle; the main process must not exit).
+- Passkey (WebAuthn) settings have **no per-invocation `serve` flags** — like `--app-name`/`--app-description`/the backup params, they are read straight from `defaults.json` (`defs.WebAuthn`, `defs.WebAuthnRPID`, `defs.WebAuthnRPOrigin`) and passed through to `server.Start()`; use `idtrack default --webauthn ...` to change them.
 
 ### `idtrack stop`
 
@@ -216,6 +233,8 @@ All `user` subcommands accept an optional `--database path` flag. Actions are po
 - `idtrack user add username:password [--name text] [--admin true|false]` — display name defaults to username; admin defaults to false; upserts on existing username.
 - `idtrack user update username [--name text] [--password text] [--admin true|false]` — only updates fields explicitly provided; user must already exist; `--admin` validated as `"true"` or `"false"`.
 - `idtrack user delete username` — hard-deletes the row; does not cascade to issues/comments.
+- `idtrack user passkeys username list` — tabular output: ID, NAME, LAST USED for that user's registered passkeys.
+- `idtrack user passkeys username revoke credential-id` — deletes one passkey. This is the admin escape hatch for a user who has lost their device and can't reach Settings themselves; it calls the same `db.DeleteCredential(owner, id)` the self-service API uses, just with an admin-supplied username instead of the caller's own.
 - `--admin` is a convenience alias for team membership: `--admin true` adds the reserved `admin` team, `--admin false` removes it. See `idtrack teams` and "Team-based access control" below.
 
 ### `idtrack teams <subcommand> [--database path]`
@@ -287,14 +306,24 @@ For full user-facing documentation of every endpoint — request/response JSON s
 | DELETE | `/api/issues/{id}` | yes | reporter/assignee/admin |
 | POST | `/api/issues/{id}/comments` | yes | no |
 | DELETE | `/api/issues/{id}/comments/{cid}` | yes | **yes** |
+| POST | `/api/webauthn/login/begin` † | no | no |
+| POST | `/api/webauthn/login/finish` † | no | no |
+| POST | `/api/webauthn/register/begin` † | yes | no |
+| POST | `/api/webauthn/register/finish` † | yes | no |
+| GET | `/api/webauthn/credentials` † | yes | no |
+| DELETE | `/api/webauthn/credentials/{id}` † | yes | no (self-service only) |
+
+† Only registered on the mux at all when `webauthn_enabled` is true (see
+`idtrack default --webauthn` below) — on an instance where the feature is
+off, these routes don't exist rather than returning some "disabled" error.
 
 ### Status response (`GET /api/status`)
 
-Always returns `idle_timeout` (seconds, 0 = disabled). When no users exist in the database, also returns `onboarding: true` and a one-time UUID `token`:
+Always returns `idle_timeout` (seconds, 0 = disabled) and `webauthn_enabled` (whether this instance has passkey login turned on — see "Passkey (WebAuthn) login" below). When no users exist in the database, also returns `onboarding: true` and a one-time UUID `token`:
 
 ```json
-{ "onboarding": false, "idle_timeout": 1800 }
-{ "onboarding": true,  "idle_timeout": 0, "token": "<uuid>" }
+{ "onboarding": false, "idle_timeout": 1800, "webauthn_enabled": false }
+{ "onboarding": true,  "idle_timeout": 0, "webauthn_enabled": false, "token": "<uuid>" }
 ```
 
 The UUID is generated lazily on first status call when onboarding is needed and held in memory on the `srv` struct (protected by `sync.Mutex`). It is cleared after `POST /api/onboarding` succeeds or after any user is found in the DB.
@@ -332,6 +361,8 @@ _currentId        // currently selected issue id
 _keepLoggedIn     // bool — mirrors localStorage pref; controls PERSIST_KEY writes
 _idleTimeoutSecs  // int from /api/status; 0 = no timeout
 _idleTimer        // setTimeout handle; reset on any user activity
+_webauthnEnabled  // bool from /api/status — whether THIS server instance has passkey login on at all
+_usePasskeys      // bool — client-side "Use passkeys" preference; mirrors idtrack_prefs, default true
 ```
 
 ### Session persistence (three layers)
@@ -503,3 +534,15 @@ Two CSS breakpoints in `idtrack.css` handle phone and tablet layouts:
 **`idtrack ingest` atomicity is built on a `db.Querier` interface, not ad hoc transaction handling.** `db.CreateIssue`, `GetIssue`, `UpdateIssue` (`db/issues.go`), and `CreateComment` (`db/comments.go`) take a `Querier` (`Exec`/`QueryRow`/`Query`) instead of `*sql.DB`, satisfied by both `*sql.DB` and `*sql.Tx`. Every existing HTTP handler call site is unaffected since it already passes `*sql.DB`. `commands.runIngestTx` begins one `*sql.Tx` for the whole file batch, calls these functions with it, and rolls back on the first error, so a failure on file N leaves zero issues from files 1..N-1 committed either. **Reuse this pattern** — widen the relevant `db.*` function signatures to `Querier` — for any future feature that needs multiple DB writes to succeed or fail together, rather than duplicating INSERT/UPDATE SQL inline.
 
 **Login attempts are rate-limited per client IP.** `server/ratelimit.go`'s `rateLimiter` (in-memory, sliding one-minute window, 10 failed attempts before lockout) is checked in `handleLogin` before password verification; a locked-out IP gets `429 Too Many Requests` with `Retry-After: 60`. `recordFailure`/`clear` are only called after the credential check, so a lockout counts failed attempts, not successful or as-yet-unattempted logins.
+
+**Passkey (WebAuthn) login is a passwordless *alternative*, not a second factor, gated by an explicit server-side switch independent of its own configuration.** Implemented with `github.com/go-webauthn/webauthn` — the first genuine departure from idtrack's otherwise minimal-dependency posture (goldmark, modernc.org/sqlite, golang.org/x/crypto, google/uuid). Three `defaults.json` fields control it: `webauthn_enabled` (the on/off switch an operator flips — when false, `server.Start()` never registers a single `/api/webauthn/*` route, so a client hits the mux's ordinary not-found/method-not-allowed response, not a bespoke "feature disabled" error) and `webauthn_rp_id`/`webauthn_rp_origin` (the Relying Party identity, required together whenever `webauthn_enabled` is true — `server.Start()` fails fast at startup otherwise). RP ID/origin are deliberately **explicit operator configuration**, never derived from the request `Host` header — same reasoning as `--server-cert`/`--base-path` being explicit rather than auto-detected: it avoids trusting a spoofable header for a security-sensitive value and needs no per-request dynamic-RPID library support. `GET /api/status`'s `webauthn_enabled` field is the single source of truth the frontend gates every bit of passkey UI on (the login button, the Settings "Passkeys" section) — a client never shows the option unless the instance has actually opted in, regardless of what the browser supports.
+
+Credentials live in their own `webauthn_credentials` table (`db/webauthn.go`), not columns on `users`, since a user has zero-to-many passkeys. Only the fields needed to verify a future assertion and let a user manage their own list are persisted (public key, clone-detection sign counter, a label, timestamps) — the library's own richer `Credential` struct carries per-tenant attestation/trust metadata (AAGUID, attestation type/format) that doesn't matter for a single-RP self-hosted tool and is deliberately not stored; see `db.WebAuthnCredential`'s doc comment. The WebAuthn "user handle" (`webauthnUser.WebAuthnID()` in `server/webauthn.go`) is simply the username's raw bytes rather than a separately-generated random opaque ID, because idtrack usernames are already the stable, unique, un-renameable per-user key everywhere else in this codebase — this also means the discoverable-login user-resolution callback (`webauthnDiscoverableUserHandler`) needs no separate handle-to-user mapping table, just `db.FindUser(string(userHandle))`.
+
+Login uses go-webauthn's **discoverable/passkey flow** (`BeginDiscoverableLogin`/`FinishPasskeyLogin`), and registration requests a resident key (`WithResidentKeyRequirement(ResidentKeyRequirementRequired)`), so the browser's "Sign in with a passkey" prompt never needs a username typed first. A successful assertion produces a normal session exactly like password login does — `finishLogin(w, s, user, keepLoggedIn, event)` in `server/auth_handlers.go` is the shared tail (session create, cookie, `RecordLogin`, standard response body) both `handleLogin` and `handleWebAuthnLoginFinish` call, so there is exactly one place that mints a session from a verified identity.
+
+Because go-webauthn's `Finish*` calls read the raw WebAuthn response JSON directly from the request body, nothing else can ride along in that body on a `finish` call — a chosen passkey label (`register/finish?name=...`), whether to request a 30-day session (`login/finish?...&keep=true`), and which in-flight ceremony this is (`login/finish?ceremony=<id>`, since the caller isn't authenticated yet and can't be looked up by username the way `register/finish` is) all travel as query parameters instead. In-flight ceremony state (a `*webauthn.SessionData` from `Begin*`) lives in `webauthnCeremonyStore` (`server/webauthn.go`), an in-memory, single-use, TTL'd map mirroring `sessionStore`'s shape — registration ceremonies keyed by username (one in flight per user at a time), login ceremonies keyed by a random ceremony ID handed to the client.
+
+A user manages their own passkeys self-service from Settings (list/add/remove); there is no "last factor" guard because password login always remains available. `idtrack user passkeys <username> list|revoke <id>` is the admin escape hatch for a user who has lost their device and can't reach Settings — it calls the same `db.DeleteCredential(owner, id)` the self-service API uses, just with an admin-supplied username.
+
+Finally, a **client-side `usePasskeys` preference** (`resources/idtrack.js`, stored in `idtrack_prefs`, default `true`) lets an individual user opt out of passkey prompts even on an instance where the server has the feature on; a Settings toggle controls it, and turning it off hides the login button and collapses the passkey-management section down to just that toggle. This preference can only ever narrow what the server already allows, never widen it — every passkey UI element checks both `_webauthnEnabled` (server) and `_usePasskeys` (client), with the server flag always taking precedence.

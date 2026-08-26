@@ -180,6 +180,13 @@ let _darkModePref   = 'off'; // 'off' | 'on' | 'auto' — the saved setting
 let _darkMode       = false;  // body.dark CSS class active (resolved from _darkModePref)
 let _keepLoggedIn   = false;  // request 30-day session cookie on next login
 let _desktopMode    = false;  // html.desktop-mode class active (disables RWD CSS)
+let _usePasskeys    = true;   // client-side "Use passkeys" preference (default on); see toggleUsePasskeys()
+
+// Whether THIS server instance has passkey login turned on at all — from
+// GET /api/status's webauthn_enabled field (set in init()). Server-off
+// always wins over the _usePasskeys preference above: every passkey UI
+// element checks both.
+let _webauthnEnabled = false;
 
 // Idle-logout state. The timeout value comes from GET /api/status.
 // 0 means the feature is disabled.
@@ -671,6 +678,7 @@ function showLogin(msg) {
     document.getElementById('login-pass').value = '';
     document.getElementById('login-overlay').style.display = 'flex';
     document.getElementById('login-user').focus();
+    updatePasskeyLoginVisibility();
 }
 
 // submitLogin is called when the user clicks "Sign In" or presses Enter
@@ -735,6 +743,192 @@ async function submitLogin() {
         // so the button is always re-enabled even if login failed.
         btn.disabled = false;
         btn.textContent = 'Sign In';
+    }
+}
+
+// =====================================================================
+// UI — PASSKEYS (WebAuthn: Touch ID / Face ID / Windows Hello / security keys)
+// =====================================================================
+// Two ceremonies mirror the two on the server (see server/webauthn.go):
+// login (this section) establishes a brand new session the same way
+// submitLogin() does; registration (further down, alongside the Settings
+// toggles) adds a passkey to an already-logged-in account. Both ceremonies
+// follow the same two-step shape: POST .../begin returns a challenge object
+// the browser's WebAuthn API needs, the browser prompts the user for their
+// fingerprint/face/PIN/security key and produces a signed response, and that
+// response is POSTed to .../finish.
+//
+// Every field the WebAuthn API deals in — challenges, credential IDs, public
+// keys, signatures — is a raw ArrayBuffer in the browser but base64url text
+// over the wire (JSON has no binary type). bufferDecode/bufferEncode convert
+// between the two; preformatGetOptions/preformatCreateOptions apply
+// bufferDecode to the specific fields of a server response that need to
+// become ArrayBuffers before being handed to navigator.credentials;
+// credentialGetToJSON/credentialCreateToJSON apply bufferEncode to the
+// specific fields of a navigator.credentials result that need to become
+// strings before being JSON.stringify'd back to the server. This hand-rolled
+// conversion (rather than relying on the newer PublicKeyCredential.toJSON()
+// browser method, which not every browser idtrack might run in supports yet)
+// only encodes/decodes the fields the go-webauthn library's parser actually
+// reads — see server/webauthn.go's SessionData-handoff comment for exactly
+// which fields those are and why a couple of Level-3-only convenience fields
+// (authenticatorData/publicKey/publicKeyAlgorithm on the registration
+// response) are intentionally omitted rather than reconstructed here.
+
+// browserSupportsWebAuthn reports whether the current browser exposes the
+// WebAuthn APIs at all. Passkey UI (the login button, the Settings toggle
+// and management list) is only ever shown when this AND _webauthnEnabled
+// (the server-side switch) are both true.
+function browserSupportsWebAuthn() {
+    return typeof window.PublicKeyCredential !== 'undefined' && !!navigator.credentials;
+}
+
+// bufferDecode converts a base64url string (no padding, '-'/'_' instead of
+// '+'/'/') into an ArrayBuffer, as required by every byte-valued field the
+// WebAuthn API expects (challenge, credential IDs, ...).
+function bufferDecode(value) {
+    let b64 = value.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    const raw = atob(b64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    return bytes.buffer;
+}
+
+// bufferEncode is bufferDecode's inverse: an ArrayBuffer (or a typed-array
+// view of one, as navigator.credentials results provide) to a base64url
+// string with no padding.
+function bufferEncode(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let str = '';
+    for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// preformatCreateOptions mutates the PublicKeyCredentialCreationOptions JSON
+// returned by POST .../register/begin in place, decoding every base64url
+// byte field into the ArrayBuffer navigator.credentials.create() requires.
+function preformatCreateOptions(pubKey) {
+    pubKey.challenge = bufferDecode(pubKey.challenge);
+    pubKey.user.id = bufferDecode(pubKey.user.id);
+    if (pubKey.excludeCredentials) {
+        pubKey.excludeCredentials = pubKey.excludeCredentials.map(c => ({ ...c, id: bufferDecode(c.id) }));
+    }
+    return pubKey;
+}
+
+// preformatGetOptions is preformatCreateOptions's counterpart for a login
+// ceremony's PublicKeyCredentialRequestOptions JSON, used before
+// navigator.credentials.get().
+function preformatGetOptions(pubKey) {
+    pubKey.challenge = bufferDecode(pubKey.challenge);
+    if (pubKey.allowCredentials) {
+        pubKey.allowCredentials = pubKey.allowCredentials.map(c => ({ ...c, id: bufferDecode(c.id) }));
+    }
+    return pubKey;
+}
+
+// credentialCreateToJSON serializes a navigator.credentials.create() result
+// into the JSON shape POST .../register/finish expects (see
+// server/webauthn.go — only clientDataJSON and attestationObject are
+// actually read server-side; the rest is present because the standard
+// WebAuthn response shape includes it).
+function credentialCreateToJSON(cred) {
+    return {
+        id: cred.id,
+        rawId: bufferEncode(cred.rawId),
+        type: cred.type,
+        clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+        response: {
+            clientDataJSON: bufferEncode(cred.response.clientDataJSON),
+            attestationObject: bufferEncode(cred.response.attestationObject),
+        },
+    };
+}
+
+// credentialGetToJSON is credentialCreateToJSON's counterpart for a
+// navigator.credentials.get() (login) result.
+function credentialGetToJSON(cred) {
+    return {
+        id: cred.id,
+        rawId: bufferEncode(cred.rawId),
+        type: cred.type,
+        clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+        response: {
+            clientDataJSON: bufferEncode(cred.response.clientDataJSON),
+            authenticatorData: bufferEncode(cred.response.authenticatorData),
+            signature: bufferEncode(cred.response.signature),
+            userHandle: cred.response.userHandle ? bufferEncode(cred.response.userHandle) : undefined,
+        },
+    };
+}
+
+// updatePasskeyLoginVisibility shows or hides the "Sign in with a passkey"
+// button on the login screen. Called from showLogin() (so it is re-checked
+// every time the login screen is shown, e.g. after a logout) and from
+// init() once the server status probe has set _webauthnEnabled.
+function updatePasskeyLoginVisibility() {
+    const row = document.getElementById('login-passkey-row');
+    if (!row) return;
+    row.style.display = (_webauthnEnabled && _usePasskeys && browserSupportsWebAuthn()) ? 'flex' : 'none';
+}
+
+// loginWithPasskey is the click handler for the login screen's "Sign in
+// with a passkey" button. It runs a full discoverable-credential ceremony
+// (see server/webauthn.go's handleWebAuthnLoginBegin/Finish) — the user
+// picks which passkey to use from their platform's own prompt, with no
+// username typed first — and, on success, follows the same success path
+// submitLogin() uses (populate _currentUser, sessionStorage/localStorage,
+// launchApp()).
+async function loginWithPasskey() {
+    const err = document.getElementById('login-error');
+    err.textContent = '';
+
+    try {
+        // Public endpoint: raw fetch(), not apiPost(), for the same reason
+        // submitLogin() above uses fetch() directly — there is no session
+        // yet, so apiFetch's 401 handling would be misleading here.
+        const beginRes = await fetch(BASE_PATH + '/api/webauthn/login/begin', { method: 'POST' });
+        if (!beginRes.ok) { err.textContent = 'Passkey login is unavailable right now.'; return; }
+
+        const data = await beginRes.json();
+        const publicKey = preformatGetOptions(data.publicKey);
+
+        const assertion = await navigator.credentials.get({ publicKey });
+        if (!assertion) { err.textContent = 'Passkey login was cancelled.'; return; }
+
+        const qs = new URLSearchParams({ ceremony: data.ceremony_id, keep: _keepLoggedIn ? 'true' : 'false' });
+        const finishRes = await fetch(BASE_PATH + '/api/webauthn/login/finish?' + qs.toString(), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(credentialGetToJSON(assertion)),
+        });
+
+        if (!finishRes.ok) { err.textContent = 'Passkey login failed.'; return; }
+
+        const user = await finishRes.json();
+        _currentUser = { username: user.username, display_name: user.display_name, is_admin: !!user.is_admin };
+        sessionStorage.setItem(SESSION_KEY, JSON.stringify({ user: _currentUser }));
+        if (_keepLoggedIn) localStorage.setItem(PERSIST_KEY, JSON.stringify({ user: _currentUser }));
+
+        document.getElementById('login-overlay').style.display = 'none';
+        await launchApp();
+
+    } catch (e) {
+        // NotAllowedError covers both the user dismissing the platform
+        // prompt and the ceremony timing out. It's not really an "error" in
+        // the sense the other branch's message implies, but staying
+        // completely silent here was a mistake — from the user's side it
+        // looked exactly like a hang, with nothing in the console or the
+        // server log to explain it (the request to login/finish was never
+        // even sent, since the ceremony failed client-side before that).
+        // A gentler, distinct message at least confirms something happened
+        // and there's nothing to debug.
+        if (e && e.name === 'NotAllowedError') {
+            err.textContent = 'Passkey sign-in was cancelled or timed out.';
+        } else {
+            err.textContent = 'Passkey login failed.';
+        }
     }
 }
 
@@ -3116,7 +3310,30 @@ function openSettings() {
     document.getElementById('desktop-mode-toggle').checked = _desktopMode;
     const psSel = document.getElementById('page-size-select');
     if (psSel) psSel.value = String(_pageSize);
+    document.getElementById('use-passkeys-toggle').checked = _usePasskeys;
+    updateSettingsPasskeysVisibility();
     document.getElementById('settings-overlay').style.display = 'flex';
+}
+
+// updateSettingsPasskeysVisibility shows/hides the two passkey-related
+// pieces of Settings independently: the "Use passkeys" toggle row itself is
+// shown whenever this server instance has the feature on at all
+// (_webauthnEnabled), regardless of the user's own preference — the toggle
+// is how they change that preference, so it can't be hidden by the very
+// thing it controls. The credential list + "Add a passkey" section below it
+// only appears once the toggle is also on, per the plan: turning the
+// preference off "collapses" management down to just the toggle so nothing
+// else prompts or expects passkey use until it's turned back on.
+function updateSettingsPasskeysVisibility() {
+    const toggleRow = document.getElementById('use-passkeys-row');
+    const section = document.getElementById('passkeys-section');
+    if (!toggleRow || !section) return;
+
+    toggleRow.style.display = _webauthnEnabled ? 'flex' : 'none';
+
+    const showSection = _webauthnEnabled && _usePasskeys;
+    section.style.display = showSection ? '' : 'none';
+    if (showSection) loadPasskeys();
 }
 
 function hideSettings() {
@@ -3195,6 +3412,114 @@ function toggleKeepLoggedIn(on) {
         localStorage.setItem(PERSIST_KEY, JSON.stringify({ user: _currentUser }));
     } else if (!on) {
         localStorage.removeItem(PERSIST_KEY);
+    }
+}
+
+// toggleUsePasskeys controls the per-browser "Use passkeys" preference (see
+// _usePasskeys's declaration near the top of this file). It is independent
+// of the server-side _webauthnEnabled switch — this only ever lets a user
+// opt out of a feature the server has already turned on for everyone, never
+// opt into one the server has turned off. Turning it off immediately hides
+// the login screen's passkey button (updatePasskeyLoginVisibility runs on
+// every showLogin(), so the next time the login screen appears it reflects
+// the new preference) and collapses the Settings passkey list back down to
+// just this toggle; turning it on restores both.
+function toggleUsePasskeys(on) {
+    _usePasskeys = on;
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.usePasskeys = on;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
+    updateSettingsPasskeysVisibility();
+}
+
+// loadPasskeys fetches the current user's registered passkeys and renders
+// them into the Settings "Passkeys" list, each with a "Remove" button.
+// Called by updateSettingsPasskeysVisibility() whenever that section becomes
+// visible (opening Settings, or turning "Use passkeys" back on) and again
+// after addPasskey()/removePasskey() change the list.
+async function loadPasskeys() {
+    const list = document.getElementById('passkeys-list');
+    const err  = document.getElementById('passkeys-error');
+    if (!list) return;
+    err.textContent = '';
+    list.textContent = 'Loading…';
+    try {
+        const creds = await apiGet('/api/webauthn/credentials');
+        if (!creds.length) {
+            list.innerHTML = '<div class="settings-row"><span class="settings-label">No passkeys registered yet</span></div>';
+            return;
+        }
+        list.innerHTML = creds.map(c => `
+            <div class="settings-row">
+              <span class="settings-label">${esc(c.name)} <span style="opacity:.65">— added ${esc(fmtDate(c.created_at))}</span></span>
+              <button class="btn btn-secondary btn-sm" onclick="removePasskey('${esc(c.id)}')">Remove</button>
+            </div>`).join('');
+    } catch (e) {
+        list.textContent = '';
+        err.textContent = e.message || 'Could not load passkeys.';
+    }
+}
+
+// addPasskey is the click handler for the Settings "Add a passkey" button.
+// It prompts for a short label (so the user can tell their passkeys apart
+// later — e.g. "MacBook Touch ID" vs. "YubiKey"), then runs a full
+// registration ceremony against POST .../register/begin and .../finish (see
+// server/webauthn.go). requireResidentKey is requested server-side, so most
+// platform authenticators will prompt for Touch ID/Face ID/Windows Hello
+// directly.
+async function addPasskey() {
+    const err = document.getElementById('passkeys-error');
+    err.textContent = '';
+
+    if (!browserSupportsWebAuthn()) {
+        err.textContent = 'This browser does not support passkeys.';
+        return;
+    }
+
+    const name = (window.prompt('Name this passkey (e.g. "MacBook Touch ID"):', '') || '').trim();
+    if (!name) return; // cancelled
+
+    try {
+        const beginRes = await apiFetch('/api/webauthn/register/begin', { method: 'POST' });
+        if (!beginRes.ok) throw new Error('Could not start passkey registration.');
+        const data = await beginRes.json();
+        const publicKey = preformatCreateOptions(data.publicKey);
+
+        const cred = await navigator.credentials.create({ publicKey });
+        if (!cred) { err.textContent = 'Passkey registration was cancelled.'; return; }
+
+        await apiPost('/api/webauthn/register/finish?name=' + encodeURIComponent(name), credentialCreateToJSON(cred));
+
+        await loadPasskeys();
+
+    } catch (e) {
+        // See the matching comment in loginWithPasskey() — NotAllowedError
+        // (dismissed prompt, timeout) used to be swallowed with no feedback
+        // at all, which was indistinguishable from a hang. Now it at least
+        // says something, distinct from a real failure.
+        if (e && e.name === 'NotAllowedError') {
+            err.textContent = 'Passkey registration was cancelled or timed out.';
+        } else {
+            err.textContent = (e && e.message) || 'Passkey registration failed.';
+        }
+    }
+}
+
+// removePasskey deletes one of the current user's own passkeys. There is no
+// confirmation dialog (unlike the admin-only issue/comment deletes
+// elsewhere in this file) because a removed passkey is trivially replaced
+// by registering a new one, and the account's password always remains a
+// working fallback.
+async function removePasskey(id) {
+    const err = document.getElementById('passkeys-error');
+    err.textContent = '';
+    try {
+        await apiDelete('/api/webauthn/credentials/' + encodeURIComponent(id));
+        await loadPasskeys();
+    } catch (e) {
+        err.textContent = e.message || 'Could not remove passkey.';
     }
 }
 
@@ -3420,6 +3745,13 @@ function loadPrefs() {
             if (p.keepLoggedIn) {
                 _keepLoggedIn = true;
             }
+            // usePasskeys defaults to true (opt-out, not opt-in) — only an
+            // explicit "false" previously saved by toggleUsePasskeys turns it
+            // off; an absent key (never saved, or an older idtrack version's
+            // prefs blob) leaves the true default in place.
+            if (p.usePasskeys === false) {
+                _usePasskeys = false;
+            }
             if (p.desktopMode) {
                 _desktopMode = true;
                 // Class already set by the <head> inline script; no-op if already present.
@@ -3594,6 +3926,7 @@ async function init() {
         if (statusData.idle_timeout)    _idleTimeoutSecs = statusData.idle_timeout;
         if (statusData.app_name)        _appName = statusData.app_name;
         if (statusData.app_description) _appDesc = statusData.app_description;
+        _webauthnEnabled = !!statusData.webauthn_enabled;
     }
     applyBranding();
 
