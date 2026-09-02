@@ -147,6 +147,17 @@ let _currentId         = null;
 // Blocked status it holds one or more. Empty for all other statuses.
 let _dependentIssues = [];
 
+// Image attachments on the currently-open issue's description (comment_id
+// absent). Refetched from the server on every selectIssue() and after every
+// upload/delete rather than mutated in place, so it never drifts from the
+// database.
+let _detailAttachments = [];
+
+// The id of the attachment currently shown in the full-size viewer overlay,
+// or null when the overlay is closed. Needed by confirmDeleteAttachment()
+// since the overlay only has a bare "Delete" button, not the id itself.
+let _avAttachmentId = null;
+
 // Staging list of blocking issue IDs assembled inside the Blocked dialog
 // before the user confirms. Separate from _dependentIssues so cancelling
 // the dialog leaves the form in its original state.
@@ -543,6 +554,20 @@ async function apiPut(url, body) {
 // identified by the URL path alone.
 async function apiDelete(url) {
     const res = await apiFetch(url, { method: 'DELETE' });
+    if (!res.ok) {
+        let msg = `Error ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
+        throw new Error(msg);
+    }
+    return res.json();
+}
+
+// apiUpload sends a POST request with a FormData (multipart) body — used
+// for attachment uploads. Unlike apiPost, no Content-Type header is set
+// here: the browser fills it in itself (including the multipart boundary
+// string), which fetch can't replicate by hand.
+async function apiUpload(url, formData) {
+    const res = await apiFetch(url, { method: 'POST', body: formData });
     if (!res.ok) {
         let msg = `Error ${res.status}`;
         try { const d = await res.json(); msg = d.error || msg; } catch {}
@@ -1483,6 +1508,15 @@ async function selectIssue(id) {
         renderComments(comments);
         document.getElementById('comment-input').value = '';
         initCommentToggle(issue.format);
+
+        // The Add Image control follows the same open-to-any-authenticated-
+        // user rule as commenting (not canEdit) — see handleCreateIssueAttachment's
+        // doc comment in server/attachments.go.
+        document.getElementById('detail-addimg-btn').style.display = _currentUser ? '' : 'none';
+        document.getElementById('detail-image-dropzone').style.display = 'none';
+        document.getElementById('detail-image-error').textContent = '';
+        loadDetailAttachments(id);
+
         document.getElementById('detail-panel').style.display = '';
         // Signal the responsive CSS that the detail panel is now open.
         const layout = document.getElementById('main-layout');
@@ -1503,6 +1537,7 @@ function closeDetail() {
     }
     _currentId   = null;
     _detailDirty = false;
+    _detailAttachments = [];
     document.getElementById('detail-panel').style.display = 'none';
     const layout = document.getElementById('main-layout');
     if (layout) layout.classList.remove('has-detail');
@@ -2274,6 +2309,202 @@ async function confirmDeleteComment(commentId, event) {
         renderComments(comments);
     } catch (e) {
         if (e.message !== 'Unauthorized') alert('Failed to delete comment: ' + (e.message || 'unknown error'));
+    }
+}
+
+// =====================================================================
+// UI — ATTACHMENTS
+// =====================================================================
+// Image attachments on the currently-open issue's description. The upload
+// flow is: click "Add Image…" to reveal a drop-zone (also click-to-browse
+// via a hidden <input type=file>), pick/drop one or more PNG/JPEG files,
+// each is POSTed individually to POST /api/issues/{id}/attachments as
+// multipart/form-data, then the whole list is refetched from the server
+// and re-rendered as a row of thumbnails under the description. Clicking a
+// thumbnail opens the full-size image in an overlay, which carries a
+// Delete button when the current user is the uploader or an admin — see
+// server/attachments.go's handleDeleteAttachment for the matching
+// server-side check this mirrors (client-side hiding is a convenience;
+// the server enforces the real rule).
+
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // headroom under the server's 12 MiB multipart cap
+const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg'];
+
+// loadDetailAttachments fetches every attachment on issueId and keeps only
+// the ones on the description itself (comment_id absent) — attachments on
+// individual comments aren't surfaced in the UI yet. Called from
+// selectIssue() and again after every successful upload/delete so
+// _detailAttachments never drifts from the database.
+async function loadDetailAttachments(issueId) {
+    try {
+        const { attachments } = await apiGet(`/api/issues/${issueId}/attachments`);
+        // Bail if the user has since navigated to a different issue (or
+        // closed the panel) while this request was in flight.
+        if (issueId !== _currentId) return;
+        _detailAttachments = (attachments || []).filter(a => !a.comment_id);
+        renderAttachmentThumbs();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') console.error('loadDetailAttachments:', e);
+    }
+}
+
+// renderAttachmentThumbs rebuilds the thumbnail row from _detailAttachments.
+// Thumbnails are plain <img> tags pointed at the per-attachment thumbnail
+// route rather than embedded data — the browser caches/lazy-loads each one
+// independently (see GET /api/attachments/{id}/thumbnail's doc comment).
+// A flex-wrap row lets as many thumbnails fit per line as the panel width
+// allows, with no JS layout math needed.
+function renderAttachmentThumbs() {
+    const el = document.getElementById('detail-attachments');
+    if (!el) return;
+    if (!_detailAttachments.length) {
+        el.innerHTML = '';
+        el.style.display = 'none';
+        return;
+    }
+    el.style.display = '';
+    el.innerHTML = _detailAttachments.map(a => `
+        <button type="button" class="attachment-thumb" onclick="openAttachmentViewer('${a.id}')" title="${esc(a.filename || 'image.png')}">
+            <img src="${BASE_PATH}/api/attachments/${a.id}/thumbnail" alt="${esc(a.filename || '')}" loading="lazy">
+        </button>
+    `).join('');
+}
+
+// toggleImageDropzone shows/hides the drag-and-drop + click-to-browse panel
+// under the "Add Image…" button. Any authenticated user can open it — see
+// selectIssue()'s comment on why this isn't gated by canEdit the way the
+// title/status/etc. fields are.
+function toggleImageDropzone() {
+    const dz = document.getElementById('detail-image-dropzone');
+    if (!dz) return;
+    dz.style.display = dz.style.display === 'none' ? '' : 'none';
+    document.getElementById('detail-image-error').textContent = '';
+}
+
+// triggerImageFilePicker opens the native OS file picker by forwarding the
+// click to the hidden <input type=file> — this is what makes the drop-zone
+// clickable as well as drag-droppable. accept="image/png,image/jpeg" on
+// that input filters the picker's file listing in every major browser,
+// Safari included.
+function triggerImageFilePicker() {
+    document.getElementById('detail-image-input').click();
+}
+
+function onDropzoneDragOver(e) {
+    e.preventDefault(); // required for the drop event to fire at all
+    e.currentTarget.classList.add('drag-over');
+}
+function onDropzoneDragLeave(e) {
+    e.currentTarget.classList.remove('drag-over');
+}
+function onDropzoneDrop(e) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    handleImageFiles(e.dataTransfer.files);
+}
+function onAttachmentFilesSelected(e) {
+    handleImageFiles(e.target.files);
+    e.target.value = ''; // reset so selecting the exact same file again still fires 'change'
+}
+
+// handleImageFiles validates a FileList client-side (format + size — purely
+// a fast-fail UX nicety; the server re-validates both regardless, see
+// processUploadedImage in server/images.go) and uploads each accepted file
+// in turn. Uploads run sequentially rather than in parallel: idtrack's
+// SQLite connection is already serialized to a single writer
+// (db.SetMaxOpenConns(1)), so parallel requests would just queue up behind
+// each other server-side anyway, and sequential keeps the error-per-file
+// bookkeeping simple.
+async function handleImageFiles(fileList) {
+    if (!_currentId || !fileList || !fileList.length) return;
+
+    const errEl = document.getElementById('detail-image-error');
+    errEl.textContent = '';
+
+    const files = Array.from(fileList);
+    const rejected = [];
+    const accepted = files.filter(f => {
+        if (!ATTACHMENT_MIME_TYPES.includes(f.type)) { rejected.push(`${f.name} (unsupported format)`); return false; }
+        if (f.size > ATTACHMENT_MAX_BYTES) { rejected.push(`${f.name} (too large)`); return false; }
+        return true;
+    });
+
+    if (rejected.length) {
+        errEl.textContent = `Skipped ${rejected.join(', ')} — only PNG/JPEG images up to 10 MB are supported.`;
+    }
+    if (!accepted.length) return;
+
+    const dz = document.getElementById('detail-image-dropzone');
+    if (dz) dz.classList.add('uploading');
+
+    const issueId = _currentId;
+    let failed = 0;
+
+    try {
+        for (const file of accepted) {
+            const fd = new FormData();
+            fd.append('image', file);
+            try {
+                await apiUpload(`/api/issues/${issueId}/attachments`, fd);
+            } catch (e) {
+                if (e.message === 'Unauthorized') throw e;
+                failed++;
+                errEl.textContent = `Failed to upload ${file.name}: ${e.message || 'unknown error'}`;
+            }
+        }
+        await loadDetailAttachments(issueId);
+        if (!failed) toggleImageDropzone(); // collapse the drop-zone once every file succeeded
+    } finally {
+        if (dz) dz.classList.remove('uploading');
+    }
+}
+
+// openAttachmentViewer shows one attachment's full-size image in the
+// #attachment-viewer-overlay sheet. The Delete button is shown only when
+// the current user is the uploader or an admin, mirroring
+// handleDeleteAttachment's server-side check — see this section's header
+// comment.
+function openAttachmentViewer(id) {
+    const a = _detailAttachments.find(x => x.id === id);
+    if (!a) return;
+
+    _avAttachmentId = id;
+    document.getElementById('av-filename').textContent = a.filename || 'image.png';
+
+    const img = document.getElementById('av-image');
+    img.src = `${BASE_PATH}/api/attachments/${id}`;
+    img.alt = a.filename || '';
+
+    document.getElementById('av-meta').textContent =
+        `${a.width}×${a.height} · uploaded by ${displayName(a.uploader)} · ${fmtDateTime(a.created_at)}`;
+
+    const canDelete = _currentUser && (_currentUser.is_admin || _currentUser.username === a.uploader);
+    document.getElementById('av-delete-btn').style.display = canDelete ? '' : 'none';
+
+    document.getElementById('attachment-viewer-overlay').style.display = '';
+}
+
+function closeAttachmentViewer() {
+    document.getElementById('attachment-viewer-overlay').style.display = 'none';
+    document.getElementById('av-image').src = '';
+    _avAttachmentId = null;
+}
+
+// confirmDeleteAttachment deletes the attachment currently shown in the
+// viewer. DELETE /api/attachments/{id}
+async function confirmDeleteAttachment() {
+    if (!_avAttachmentId) return;
+    if (!confirm('Delete this image? This cannot be undone.')) return;
+
+    const id = _avAttachmentId;
+
+    try {
+        await apiDelete(`/api/attachments/${id}`);
+        _detailAttachments = _detailAttachments.filter(a => a.id !== id);
+        renderAttachmentThumbs();
+        closeAttachmentViewer();
+    } catch (e) {
+        if (e.message !== 'Unauthorized') alert('Failed to delete image: ' + (e.message || 'unknown error'));
     }
 }
 
