@@ -147,10 +147,12 @@ let _currentId         = null;
 // Blocked status it holds one or more. Empty for all other statuses.
 let _dependentIssues = [];
 
-// Image attachments on the currently-open issue's description (comment_id
-// absent). Refetched from the server on every selectIssue() and after every
-// upload/delete rather than mutated in place, so it never drifts from the
-// database.
+// Every image attachment on the currently-open issue — both on its
+// description (comment_id absent) and on any of its comments (comment_id
+// present). Refetched from the server on every selectIssue() and after
+// every upload/delete rather than mutated in place, so it never drifts from
+// the database. renderAllAttachments() splits this one list out into the
+// description's thumbnail row and each comment's own thumbnail row.
 let _detailAttachments = [];
 
 // The id of the attachment currently shown in the full-size viewer overlay,
@@ -2230,16 +2232,36 @@ function renderComments(comments) {
     // body_html is server-rendered per the issue's format (markdown/html);
     // it's absent (undefined) for plain "text" issues, where the escaped
     // raw body plus CSS white-space:pre-wrap is the correct presentation.
+    //
+    // Add Image is open to any authenticated user (mirrors commenting
+    // itself, and the description-level Add Image button), so — unlike
+    // trashBtn — it's unconditional here. The drop-zone/error/thumbnail row
+    // sit between the header and the body, the same position the
+    // description's occupy relative to its textarea, so opening the
+    // drop-zone pushes the comment text down rather than the thumbnails.
     el.innerHTML = comments.map(c => `
         <div class="comment-item">
             <div class="comment-header">
                 <span class="comment-author">${esc(displayName(c.author))}</span>
                 <span class="comment-date">${fmtDateTime(c.created_at)}</span>
-                ${trashBtn(c.id)}
+                <div class="comment-actions">
+                    <button class="btn-comment-img" onclick="toggleCommentImageDropzone(${c.id})" title="Add image">&#x1F5BC;</button>
+                    ${trashBtn(c.id)}
+                </div>
             </div>
+            <div id="comment-dropzone-${c.id}" class="image-dropzone" style="display:none"
+                 onclick="triggerCommentImagePicker(${c.id})"
+                 ondragover="onDropzoneDragOver(event)" ondragleave="onDropzoneDragLeave(event)" ondrop="onCommentDropzoneDrop(event, ${c.id})">
+                <span class="dropzone-hint">Drop images here, or click to browse — PNG or JPEG, up to 10&nbsp;MB each</span>
+                <input type="file" id="comment-image-input-${c.id}" accept="image/png,image/jpeg" multiple
+                       style="display:none" onchange="onCommentImageFilesSelected(event, ${c.id})">
+            </div>
+            <div id="comment-image-error-${c.id}" class="error-text"></div>
             <div class="comment-body${c.body_html ? ' rendered-html' : ''}">${c.body_html || esc(c.body)}</div>
+            <div id="comment-attachments-${c.id}" class="attachment-thumbs" style="display:none"></div>
         </div>
     `).join('');
+    renderCommentAttachmentThumbs();
 }
 
 // submitComment reads the comment textarea, posts it, and re-renders
@@ -2330,9 +2352,8 @@ async function confirmDeleteComment(commentId, event) {
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // headroom under the server's 12 MiB multipart cap
 const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg'];
 
-// loadDetailAttachments fetches every attachment on issueId and keeps only
-// the ones on the description itself (comment_id absent) — attachments on
-// individual comments aren't surfaced in the UI yet. Called from
+// loadDetailAttachments fetches every attachment on issueId — both on its
+// description and on any of its comments — and re-renders both. Called from
 // selectIssue() and again after every successful upload/delete so
 // _detailAttachments never drifts from the database.
 async function loadDetailAttachments(issueId) {
@@ -2341,39 +2362,86 @@ async function loadDetailAttachments(issueId) {
         // Bail if the user has since navigated to a different issue (or
         // closed the panel) while this request was in flight.
         if (issueId !== _currentId) return;
-        _detailAttachments = (attachments || []).filter(a => !a.comment_id);
-        renderAttachmentThumbs();
+        _detailAttachments = attachments || [];
+        renderAllAttachments();
     } catch (e) {
         if (e.message !== 'Unauthorized') console.error('loadDetailAttachments:', e);
     }
 }
 
-// renderAttachmentThumbs rebuilds the thumbnail row from _detailAttachments.
-// Thumbnails are plain <img> tags pointed at the per-attachment thumbnail
-// route rather than embedded data — the browser caches/lazy-loads each one
-// independently (see GET /api/attachments/{id}/thumbnail's doc comment).
-// A flex-wrap row lets as many thumbnails fit per line as the panel width
-// allows, with no JS layout math needed.
-function renderAttachmentThumbs() {
-    const el = document.getElementById('detail-attachments');
-    if (!el) return;
-    if (!_detailAttachments.length) {
-        el.innerHTML = '';
-        el.style.display = 'none';
-        return;
-    }
-    el.style.display = '';
-    el.innerHTML = _detailAttachments.map(a => `
+// renderAllAttachments splits _detailAttachments into the description's
+// thumbnail row and each comment's own thumbnail row. Called after every
+// fetch/upload/delete, and also from the tail of renderComments() — the
+// comment thumbnail containers only exist once the comment list itself has
+// been (re)rendered, so any code path that redraws #comments-list (posting
+// a new comment, deleting one, an auto-posted status-change comment) needs
+// its thumbnails redrawn too, and folding that into renderComments() itself
+// means every call site gets it for free instead of needing to remember.
+function renderAllAttachments() {
+    renderAttachmentThumbs();
+    renderCommentAttachmentThumbs();
+}
+
+// attachmentThumbsHTML is the shared markup for one thumbnail row, used by
+// both renderAttachmentThumbs (description) and renderCommentAttachmentThumbs
+// (per comment). Thumbnails are plain <img> tags pointed at the
+// per-attachment thumbnail route rather than embedded data — the browser
+// caches/lazy-loads each one independently (see GET
+// /api/attachments/{id}/thumbnail's doc comment). A flex-wrap row lets as
+// many thumbnails fit per line as the available width allows, with no JS
+// layout math needed.
+function attachmentThumbsHTML(list) {
+    return list.map(a => `
         <button type="button" class="attachment-thumb" onclick="openAttachmentViewer('${a.id}')" title="${esc(a.filename || 'image.png')}">
             <img src="${BASE_PATH}/api/attachments/${a.id}/thumbnail" alt="${esc(a.filename || '')}" loading="lazy">
         </button>
     `).join('');
 }
 
+// renderAttachmentThumbs rebuilds the description's thumbnail row —
+// attachments with no comment_id.
+function renderAttachmentThumbs() {
+    const el = document.getElementById('detail-attachments');
+    if (!el) return;
+    const list = _detailAttachments.filter(a => !a.comment_id);
+    if (!list.length) {
+        el.innerHTML = '';
+        el.style.display = 'none';
+        return;
+    }
+    el.style.display = '';
+    el.innerHTML = attachmentThumbsHTML(list);
+}
+
+// renderCommentAttachmentThumbs rebuilds every comment's own thumbnail row.
+// It looks up each row's target comment id from the container's own id
+// (comment-attachments-{id}, written by renderComments()) rather than
+// iterating _detailAttachments and hoping a container exists for every
+// comment_id — that way a container that legitimately has zero attachments
+// still gets cleared/hidden instead of silently keeping stale content.
+function renderCommentAttachmentThumbs() {
+    const byComment = {};
+    for (const a of _detailAttachments) {
+        if (!a.comment_id) continue;
+        (byComment[a.comment_id] = byComment[a.comment_id] || []).push(a);
+    }
+    document.querySelectorAll('[id^="comment-attachments-"]').forEach(el => {
+        const cid = el.id.slice('comment-attachments-'.length);
+        const list = byComment[cid] || [];
+        if (!list.length) {
+            el.innerHTML = '';
+            el.style.display = 'none';
+            return;
+        }
+        el.style.display = '';
+        el.innerHTML = attachmentThumbsHTML(list);
+    });
+}
+
 // toggleImageDropzone shows/hides the drag-and-drop + click-to-browse panel
-// under the "Add Image…" button. Any authenticated user can open it — see
-// selectIssue()'s comment on why this isn't gated by canEdit the way the
-// title/status/etc. fields are.
+// under the description's "Add Image…" button. Any authenticated user can
+// open it — see selectIssue()'s comment on why this isn't gated by canEdit
+// the way the title/status/etc. fields are.
 function toggleImageDropzone() {
     const dz = document.getElementById('detail-image-dropzone');
     if (!dz) return;
@@ -2390,6 +2458,10 @@ function triggerImageFilePicker() {
     document.getElementById('detail-image-input').click();
 }
 
+// onDropzoneDragOver/DragLeave are shared by every drop-zone on the page
+// (the description's and every comment's) since they only ever touch
+// e.currentTarget — the specific element the listener is bound to — never a
+// hardcoded id.
 function onDropzoneDragOver(e) {
     e.preventDefault(); // required for the drop event to fire at all
     e.currentTarget.classList.add('drag-over');
@@ -2407,19 +2479,20 @@ function onAttachmentFilesSelected(e) {
     e.target.value = ''; // reset so selecting the exact same file again still fires 'change'
 }
 
-// handleImageFiles validates a FileList client-side (format + size — purely
-// a fast-fail UX nicety; the server re-validates both regardless, see
-// processUploadedImage in server/images.go) and uploads each accepted file
-// in turn. Uploads run sequentially rather than in parallel: idtrack's
-// SQLite connection is already serialized to a single writer
-// (db.SetMaxOpenConns(1)), so parallel requests would just queue up behind
-// each other server-side anyway, and sequential keeps the error-per-file
-// bookkeeping simple.
-async function handleImageFiles(fileList) {
-    if (!_currentId || !fileList || !fileList.length) return;
-
-    const errEl = document.getElementById('detail-image-error');
+// uploadAttachmentFiles validates a FileList client-side (format + size —
+// purely a fast-fail UX nicety; the server re-validates both regardless,
+// see processUploadedImage in server/images.go) and uploads each accepted
+// file in turn to uploadUrl. Uploads run sequentially rather than in
+// parallel: idtrack's SQLite connection is already serialized to a single
+// writer (db.SetMaxOpenConns(1)), so parallel requests would just queue up
+// behind each other server-side anyway, and sequential keeps the
+// error-per-file bookkeeping simple. Shared by the description-level and
+// per-comment "Add Image" flows — errEl/dropzoneEl are whichever pair of
+// elements belongs to the caller's own drop-zone. Returns {uploaded,
+// failed} counts so the caller can decide whether to refresh/collapse.
+async function uploadAttachmentFiles(fileList, uploadUrl, errEl, dropzoneEl) {
     errEl.textContent = '';
+    if (!fileList || !fileList.length) return { uploaded: 0, failed: 0 };
 
     const files = Array.from(fileList);
     const rejected = [];
@@ -2432,38 +2505,85 @@ async function handleImageFiles(fileList) {
     if (rejected.length) {
         errEl.textContent = `Skipped ${rejected.join(', ')} — only PNG/JPEG images up to 10 MB are supported.`;
     }
-    if (!accepted.length) return;
+    if (!accepted.length) return { uploaded: 0, failed: 0 };
 
-    const dz = document.getElementById('detail-image-dropzone');
-    if (dz) dz.classList.add('uploading');
+    if (dropzoneEl) dropzoneEl.classList.add('uploading');
 
-    const issueId = _currentId;
-    let failed = 0;
-
+    let uploaded = 0, failed = 0;
     try {
         for (const file of accepted) {
             const fd = new FormData();
             fd.append('image', file);
             try {
-                await apiUpload(`/api/issues/${issueId}/attachments`, fd);
+                await apiUpload(uploadUrl, fd);
+                uploaded++;
             } catch (e) {
                 if (e.message === 'Unauthorized') throw e;
                 failed++;
                 errEl.textContent = `Failed to upload ${file.name}: ${e.message || 'unknown error'}`;
             }
         }
-        await loadDetailAttachments(issueId);
-        if (!failed) toggleImageDropzone(); // collapse the drop-zone once every file succeeded
     } finally {
-        if (dz) dz.classList.remove('uploading');
+        if (dropzoneEl) dropzoneEl.classList.remove('uploading');
     }
+    return { uploaded, failed };
+}
+
+// handleImageFiles is the description-level entry point wired to the
+// dropzone's click-to-browse input and drag/drop handlers.
+async function handleImageFiles(fileList) {
+    if (!_currentId) return;
+    const errEl = document.getElementById('detail-image-error');
+    const dz = document.getElementById('detail-image-dropzone');
+    const { uploaded, failed } = await uploadAttachmentFiles(fileList, `/api/issues/${_currentId}/attachments`, errEl, dz);
+    if (uploaded) await loadDetailAttachments(_currentId);
+    if (uploaded && !failed) toggleImageDropzone(); // collapse the drop-zone once every file succeeded
+}
+
+// ---- Per-comment attachments ----
+// Each rendered comment (renderComments(), below) gets its own "Add
+// Image…" icon button, drop-zone, error line, and thumbnail row — mirroring
+// the description's, just scoped to that one comment id instead of the
+// issue itself. POST target is /api/issues/{id}/comments/{cid}/attachments
+// rather than /api/issues/{id}/attachments; everything else is identical.
+
+function toggleCommentImageDropzone(commentId) {
+    const dz = document.getElementById(`comment-dropzone-${commentId}`);
+    if (!dz) return;
+    dz.style.display = dz.style.display === 'none' ? '' : 'none';
+    document.getElementById(`comment-image-error-${commentId}`).textContent = '';
+}
+
+function triggerCommentImagePicker(commentId) {
+    document.getElementById(`comment-image-input-${commentId}`).click();
+}
+
+function onCommentDropzoneDrop(e, commentId) {
+    e.preventDefault();
+    e.currentTarget.classList.remove('drag-over');
+    handleCommentImageFiles(e.dataTransfer.files, commentId);
+}
+function onCommentImageFilesSelected(e, commentId) {
+    handleCommentImageFiles(e.target.files, commentId);
+    e.target.value = '';
+}
+
+async function handleCommentImageFiles(fileList, commentId) {
+    if (!_currentId) return;
+    const errEl = document.getElementById(`comment-image-error-${commentId}`);
+    const dz = document.getElementById(`comment-dropzone-${commentId}`);
+    const { uploaded, failed } = await uploadAttachmentFiles(
+        fileList, `/api/issues/${_currentId}/comments/${commentId}/attachments`, errEl, dz);
+    if (uploaded) await loadDetailAttachments(_currentId);
+    if (uploaded && !failed) toggleCommentImageDropzone(commentId);
 }
 
 // openAttachmentViewer shows one attachment's full-size image in the
-// #attachment-viewer-overlay sheet. The Delete button is shown only when
-// the current user is the uploader or an admin, mirroring
-// handleDeleteAttachment's server-side check — see this section's header
-// comment.
+// #attachment-viewer-overlay sheet — used for both description- and
+// comment-level attachments, since _detailAttachments holds both. The
+// Delete button is shown only when the current user is the uploader or an
+// admin, mirroring handleDeleteAttachment's server-side check — see this
+// section's header comment.
 function openAttachmentViewer(id) {
     const a = _detailAttachments.find(x => x.id === id);
     if (!a) return;
@@ -2501,7 +2621,7 @@ async function confirmDeleteAttachment() {
     try {
         await apiDelete(`/api/attachments/${id}`);
         _detailAttachments = _detailAttachments.filter(a => a.id !== id);
-        renderAttachmentThumbs();
+        renderAllAttachments();
         closeAttachmentViewer();
     } catch (e) {
         if (e.message !== 'Unauthorized') alert('Failed to delete image: ' + (e.message || 'unknown error'));
