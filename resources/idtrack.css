@@ -816,10 +816,12 @@ html.hide-col-comments  .col-comments  { display: none; }
    role for the description's label row. */
 .comment-actions { margin-left: auto; display: flex; align-items: center; gap: .25rem; }
 .btn-comment-img {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  font-size: .9rem;
   color: var(--text-light);
   padding: 0 .15rem;
   line-height: 1;
@@ -828,6 +830,7 @@ html.hide-col-comments  .col-comments  { display: none; }
   flex-shrink: 0;
 }
 .btn-comment-img:hover { opacity: 1; color: var(--primary); }
+.btn-comment-img svg { display: block; }
 
 .comments-empty {
   font-size: .875rem;

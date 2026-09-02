@@ -2245,7 +2245,7 @@ function renderComments(comments) {
                 <span class="comment-author">${esc(displayName(c.author))}</span>
                 <span class="comment-date">${fmtDateTime(c.created_at)}</span>
                 <div class="comment-actions">
-                    <button class="btn-comment-img" onclick="toggleCommentImageDropzone(${c.id})" title="Add image">&#x1F5BC;</button>
+                    <button class="btn-comment-img" onclick="toggleCommentImageDropzone(${c.id})" title="Add image" aria-label="Add image">${CAMERA_ICON_SVG}</button>
                     ${trashBtn(c.id)}
                 </div>
             </div>
@@ -2351,6 +2351,18 @@ async function confirmDeleteComment(commentId, event) {
 
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // headroom under the server's 12 MiB multipart cap
 const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg'];
+
+// CAMERA_ICON_SVG is the per-comment "Add Image" button's glyph — an inline
+// stroke-based SVG (Feather Icons' "camera", MIT licensed) rather than a
+// Unicode emoji. This matters specifically because of what it fixes: a
+// color emoji (the previous 🖼 glyph) renders with its own fixed palette
+// that ignores the button's `color`/`opacity` CSS entirely, so it can't
+// pick up .btn-comment-img's --text-light/--primary hover colors the way
+// the SVG below does via fill="currentColor" — that mismatch is what made
+// it look muddy/low-contrast in Safari's dark mode. A plain stroke camera
+// outline is also the closest web-safe equivalent to the SF Symbols
+// "camera" glyph the button is meant to evoke.
+const CAMERA_ICON_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`;
 
 // loadDetailAttachments fetches every attachment on issueId — both on its
 // description and on any of its comments — and re-renders both. Called from
