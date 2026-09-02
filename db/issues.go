@@ -504,15 +504,20 @@ func UpdateIssue(database Querier, id int64, title, description, priority, statu
 	return GetIssue(database, id)
 }
 
-// DeleteIssue removes an issue and all of its comments. The comment rows must
-// be deleted explicitly, in a separate statement, before the issue row: by
-// default SQLite does not enforce foreign-key constraints (that requires
-// opting in with `PRAGMA foreign_keys = ON`, which this project does not do),
-// so there is no automatic ON DELETE CASCADE to rely on — deleting the issue
-// first would silently leave its comments behind as orphaned rows pointing at
-// a nonexistent issue_id.
+// DeleteIssue removes an issue and all of its comments and attachments. The
+// comment and attachment rows must be deleted explicitly, in separate
+// statements, before the issue row: by default SQLite does not enforce
+// foreign-key constraints (that requires opting in with
+// `PRAGMA foreign_keys = ON`, which this project does not do), so there is no
+// automatic ON DELETE CASCADE to rely on — deleting the issue first would
+// silently leave its comments and attachments behind as orphaned rows
+// pointing at a nonexistent issue_id.
 func DeleteIssue(database *sql.DB, id int64) error {
 	if _, err := database.Exec(`DELETE FROM comments WHERE issue_id = ?`, id); err != nil {
+		return err
+	}
+
+	if err := DeleteAttachmentsByIssue(database, id); err != nil {
 		return err
 	}
 

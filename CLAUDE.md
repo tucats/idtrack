@@ -34,11 +34,12 @@ idtrack/
 │   ├── users.go          # User CRUD + RecordLogin + UpdateUser + ListUsers
 │   ├── teams.go          # Team CRUD + ParseTeams/FormatTeams + Issue/ProjectMatchesUserTeams
 │   ├── issues.go         # Issue CRUD (list/get/create/update/delete); Querier interface
-│   ├── comments.go       # Comment CRUD + DeleteComment
+│   ├── comments.go       # Comment CRUD + DeleteComment + GetComment
+│   ├── attachments.go    # Attachment CRUD (metadata + blob fetch) + cascade-delete helpers
 │   └── projects.go       # Project/Component CRUD
 ├── server/
 │   ├── server.go         # srv struct + Start() — route wiring and TLS setup
-│   ├── middleware.go     # contextKey, auth(), requireJSON(), currentUser()
+│   ├── middleware.go     # contextKey, auth(), requireJSON(), requireMultipart(), currentUser()
 │   ├── ratelimit.go      # per-IP login rate limiting (rateLimiter)
 │   ├── helpers.go        # issueID(), jsonResponse(), jsonError()
 │   ├── static.go         # static file handlers + handleManual()
@@ -52,7 +53,9 @@ idtrack/
 │   ├── teams.go          # team CRUD handlers
 │   ├── projects.go       # project/component CRUD handlers
 │   ├── issues.go         # issue CRUD handlers
-│   └── comments.go       # handleCreateComment, handleDeleteComment
+│   ├── comments.go       # handleCreateComment, handleDeleteComment
+│   ├── attachments.go    # attachment upload/list/fetch/delete handlers
+│   └── images.go         # processUploadedImage() — decode/validate/convert-to-PNG/thumbnail
 └── resources/            # Embedded at build time via //go:embed
     ├── idtrack.html
     ├── idtrack.css
@@ -160,6 +163,20 @@ CREATE TABLE webauthn_credentials (
     created_at    TEXT NOT NULL,
     last_used_at  TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE attachments (
+    id          TEXT PRIMARY KEY,          -- UUID
+    issue_id    INTEGER NOT NULL,
+    comment_id  INTEGER NOT NULL DEFAULT 0, -- 0 = attached to the issue description; >0 = attached to that comment
+    uploader    TEXT NOT NULL,             -- username
+    filename    TEXT NOT NULL DEFAULT '',  -- original filename, display only
+    width       INTEGER NOT NULL DEFAULT 0, -- of the stored (converted) PNG
+    height      INTEGER NOT NULL DEFAULT 0,
+    size        INTEGER NOT NULL DEFAULT 0, -- byte length of the stored PNG
+    image       BLOB NOT NULL,             -- full-size PNG
+    thumbnail   BLOB NOT NULL,             -- thumbnail PNG
+    created_at  TEXT NOT NULL
+);
 ```
 
 ### Schema Migrations
@@ -171,6 +188,8 @@ The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added aft
 **Teams backfill migration.** `initSchema` seeds the two reserved teams (`admin`, `any`) with `INSERT OR IGNORE`, then backfills the new `teams` columns: existing admin users get `'admin'`, everyone else gets `'any'`; existing projects and issues all get `'any'` (visible to everyone, preserving pre-teams behavior). Each backfill is guarded by `WHERE teams = ''`, so it is a no-op on subsequent startups and never overwrites an operator's explicit team assignment.
 
 **`webauthn_credentials` needed no migration step at all.** Unlike every column listed above, it is a brand-new table, not a column added to an existing one — `CREATE TABLE IF NOT EXISTS` in the same block as every other table already creates it for free the first time an old database is opened with a binary that knows about it, with nothing to backfill since it starts (and stays) empty until a user registers a passkey.
+
+**`attachments` likewise needed no migration step.** Same reasoning as `webauthn_credentials` above: it's a brand-new table, so `CREATE TABLE IF NOT EXISTS` alone upgrades an old database for free, with nothing to backfill since it starts (and stays) empty until someone uploads an image.
 
 ## Runtime Files (`~/.idtrack/`)
 
@@ -306,6 +325,12 @@ For full user-facing documentation of every endpoint — request/response JSON s
 | DELETE | `/api/issues/{id}` | yes | reporter/assignee/admin |
 | POST | `/api/issues/{id}/comments` | yes | no |
 | DELETE | `/api/issues/{id}/comments/{cid}` | yes | **yes** |
+| POST | `/api/issues/{id}/attachments` | yes | no |
+| POST | `/api/issues/{id}/comments/{cid}/attachments` | yes | no |
+| GET | `/api/issues/{id}/attachments` | yes | no |
+| GET | `/api/attachments/{aid}` | yes | no |
+| GET | `/api/attachments/{aid}/thumbnail` | yes | no |
+| DELETE | `/api/attachments/{aid}` | yes | uploader/admin |
 | POST | `/api/webauthn/login/begin` † | no | no |
 | POST | `/api/webauthn/login/finish` † | no | no |
 | POST | `/api/webauthn/register/begin` † | yes | no |
@@ -546,3 +571,15 @@ Because go-webauthn's `Finish*` calls read the raw WebAuthn response JSON direct
 A user manages their own passkeys self-service from Settings (list/add/remove); there is no "last factor" guard because password login always remains available. `idtrack user passkeys <username> list|revoke <id>` is the admin escape hatch for a user who has lost their device and can't reach Settings — it calls the same `db.DeleteCredential(owner, id)` the self-service API uses, just with an admin-supplied username.
 
 Finally, a **client-side `usePasskeys` preference** (`resources/idtrack.js`, stored in `idtrack_prefs`, default `true`) lets an individual user opt out of passkey prompts even on an instance where the server has the feature on; a Settings toggle controls it, and turning it off hides the login button and collapses the passkey-management section down to just that toggle. This preference can only ever narrow what the server already allows, never widen it — every passkey UI element checks both `_webauthnEnabled` (server) and `_usePasskeys` (client), with the server flag always taking precedence.
+
+**Image attachments are stored as blobs inside the SQLite file, always converted to PNG, and HEIC is deliberately not supported yet.** Every uploaded image — regardless of source format — is decoded (`image.Decode`, stdlib), re-encoded to PNG, and stored alongside a generated thumbnail (`server/images.go`'s `processUploadedImage`, using `golang.org/x/image/draw` for high-quality scaling) so every stored/served image is byte-identical in format, and the frontend never needs per-format rendering logic. Only PNG and JPEG are accepted as input: HEIC (what modern iPhones capture by default) was evaluated during design and rejected for now because the only Go HEIC decoders (`jdeng/goheif`, `adrium/goheif`) bundle `libde265` via cgo, which would break idtrack's `CGO_ENABLED=0` static Docker build and complicate `./build --all` cross-compilation — the same build-portability reasoning applied elsewhere in this doc (e.g. why `modernc.org/sqlite` was chosen over a cgo SQLite driver). A HEIC upload gets a clear `415 Unsupported Media Type` rather than a silent failure; client-side conversion before upload, or a deliberate cgo/external-`libheif` decision later, remain open options. Acceptance is determined solely by whether the bytes actually decode as a registered `image.Decode` format — a client's declared `Content-Type` header is never trusted. Decoded images whose pixel count exceeds a fixed cap (40 megapixels) are rejected before any resize work, guarding against a decompression-bomb-style upload.
+
+**`attachments` has no database-level foreign key, so both `db.DeleteIssue` and `db.DeleteComment` manually cascade — same reasoning as the existing comment cleanup.** `comment_id` uses `0` (not `NULL`) as the "attached to the description, not a comment" sentinel, since no comment row ever has id `0` (SQLite `AUTOINCREMENT` starts at 1) — this keeps the column a plain `NOT NULL INTEGER` consistent with the rest of the schema rather than introducing a nullable column. `db.DeleteAttachmentsByIssue`/`DeleteAttachmentsByComment` (`db/attachments.go`) are called from `DeleteIssue`/`DeleteComment` respectively before the parent row is removed, exactly mirroring `DeleteIssue`'s existing manual `DELETE FROM comments` cleanup.
+
+**Attachment deletion is admin-or-uploader, not admin-only like comment deletion.** `handleDeleteAttachment` checks `user.IsAdmin || user.Username == attachment.Uploader` — closer to `issueModifier`'s reporter/assignee/admin pattern than to `handleDeleteComment`'s strict admin gate — so a user can remove their own mistaken upload without needing an admin.
+
+**The "list images" endpoint returns metadata only; image bytes are always fetched by UUID from a dedicated route.** `GET /api/issues/{id}/attachments` never embeds thumbnail or full-image bytes in its JSON response — the frontend renders each entry via `<img src=".../api/attachments/{id}/thumbnail">`, letting the browser cache and lazy-load every image independently rather than paying for every thumbnail up front on issues with many attachments. Both `GET /api/attachments/{aid}` (full image) and its `/thumbnail` sibling set `Cache-Control: private, max-age=31536000, immutable`, since an attachment's bytes never change after upload — only a `DELETE` removes the row, which naturally invalidates any cached copy the next time it's requested.
+
+**Attachment body-size and content-type middleware are carved out by path/route, not applied globally.** `limitBody` (`server/middleware.go`) caps every other POST/PUT body at 64 KiB (plenty for JSON) but grants `maxAttachmentBodyBytes` (12 MiB) to any POST whose path ends in `/attachments`, covering both upload routes regardless of `basePath` prefixing. A new `requireMultipart` middleware (mirroring `requireJSON`) wraps just those two routes instead of `requireJSON`, since they carry a multipart file upload, not a JSON body. Follow this pattern — a dedicated middleware/limit pair scoped by path, rather than changing the global default — for any future route whose body shape genuinely differs from the rest of the JSON API.
+
+**Attachment GET/list endpoints require authentication but do not re-check team visibility, matching `handleGetIssue`'s existing behavior.** Team-based filtering (`db.IssueMatchesUserTeams`) is applied at the list-query level (`buildWhereClause`, used by `GET /api/issues`), not on a single-issue `GET /api/issues/{id}` — attachments follow that same precedent rather than introducing a new, inconsistent check.

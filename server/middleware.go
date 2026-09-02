@@ -36,6 +36,15 @@ const ctxUser contextKey = "user"
 // memory exhaustion from oversized payloads.
 const maxRequestBodyBytes = 64 * 1024 // 64 KiB — plenty for any API call
 
+// maxAttachmentBodyBytes caps the size of a POST body on an attachment
+// upload route (see limitBody below) — these carry a multipart-encoded
+// image rather than a small JSON payload, so they need a much larger limit
+// than every other POST/PUT endpoint. 12 MiB comfortably covers a phone
+// photo (including multipart framing overhead) while still bounding
+// worst-case memory use; processUploadedImage (server/images.go) applies
+// its own decoded-pixel-count cap on top of this raw byte cap.
+const maxAttachmentBodyBytes = 12 * 1024 * 1024 // 12 MiB
+
 // sessionToken extracts the session token from the request. It prefers the
 // HttpOnly session cookie (set by handleLogin/handleOnboarding) over the
 // Authorization: Bearer header (provided for non-browser API clients).
@@ -100,12 +109,23 @@ func currentUser(r *http.Request) *db.User {
 }
 
 // limitBody is a middleware that caps the size of POST and PUT request bodies.
-// Requests exceeding maxRequestBodyBytes are rejected with 413 Request Entity
-// Too Large before json.Decoder ever reads the body.
+// Requests exceeding the limit are rejected with 413 Request Entity Too Large
+// before json.Decoder (or, for attachment uploads, multipart.Reader) ever
+// reads the body. Every route uses maxRequestBodyBytes except attachment
+// uploads (POST .../attachments), identified by their literal path suffix —
+// both "POST /api/issues/{id}/attachments" and
+// "POST /api/issues/{id}/comments/{cid}/attachments" end in "/attachments"
+// regardless of basePath prefixing — which get the much larger
+// maxAttachmentBodyBytes instead.
 func limitBody(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost || r.Method == http.MethodPut {
-			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+			limit := int64(maxRequestBodyBytes)
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attachments") {
+				limit = maxAttachmentBodyBytes
+			}
+
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 
 		next.ServeHTTP(w, r)
@@ -122,6 +142,22 @@ func requireJSON(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 			jsonError(w, "content-type must be application/json", http.StatusUnsupportedMediaType)
+
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// requireMultipart rejects any request whose Content-Type header does not
+// begin with "multipart/form-data" with 415 Unsupported Media Type. Apply
+// this middleware to the attachment-upload routes instead of requireJSON —
+// they carry a file upload, not a JSON body.
+func requireMultipart(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			jsonError(w, "content-type must be multipart/form-data", http.StatusUnsupportedMediaType)
 
 			return
 		}

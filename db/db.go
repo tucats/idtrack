@@ -114,6 +114,26 @@ func initSchema(database *sql.DB) error {
 			created_at    TEXT NOT NULL,
 			last_used_at  TEXT NOT NULL DEFAULT ''
 		);
+		-- Image attachments on an issue's description or one of its comments.
+		-- Like webauthn_credentials above, this is a brand-new table rather than
+		-- a migrated addition to an existing one, so an old database gets it for
+		-- free via CREATE TABLE IF NOT EXISTS with nothing to backfill. comment_id
+		-- uses 0 (not NULL) as the "attached to the description, not a comment"
+		-- sentinel — no comment row ever has id 0 (AUTOINCREMENT starts at 1) — to
+		-- keep the column a plain NOT NULL INTEGER like the rest of the schema.
+		CREATE TABLE IF NOT EXISTS attachments (
+			id          TEXT PRIMARY KEY,
+			issue_id    INTEGER NOT NULL,
+			comment_id  INTEGER NOT NULL DEFAULT 0,
+			uploader    TEXT NOT NULL,
+			filename    TEXT NOT NULL DEFAULT '',
+			width       INTEGER NOT NULL DEFAULT 0,
+			height      INTEGER NOT NULL DEFAULT 0,
+			size        INTEGER NOT NULL DEFAULT 0,
+			image       BLOB NOT NULL,
+			thumbnail   BLOB NOT NULL,
+			created_at  TEXT NOT NULL
+		);
 	`)
 	if err != nil {
 		return err
@@ -239,6 +259,8 @@ func initSchema(database *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_comments_issue_id ON comments (issue_id)`,
 		// Used by ListCredentials/DeleteCredential to fetch/scope a user's passkeys.
 		`CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_username ON webauthn_credentials (username)`,
+		// Used by ListAttachments/DeleteAttachmentsByIssue to fetch/scope an issue's attachments.
+		`CREATE INDEX IF NOT EXISTS idx_attachments_issue_id ON attachments (issue_id)`,
 	} {
 		if _, err := database.Exec(ddl); err != nil {
 			return err

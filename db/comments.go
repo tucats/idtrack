@@ -52,9 +52,37 @@ func ListComments(database *sql.DB, issueID int64) ([]Comment, error) {
 	return comments, rows.Err()
 }
 
-// DeleteComment removes a single comment by its primary-key ID. It is only
+// GetComment returns a single comment by its primary-key ID, or nil if it
+// does not exist. Used by handleCreateCommentAttachment to confirm a {cid}
+// path parameter both exists and belongs to the {id} issue in the same URL
+// before attaching an image to it.
+func GetComment(database *sql.DB, commentID int64) (*Comment, error) {
+	var c Comment
+
+	err := database.QueryRow(
+		`SELECT id, issue_id, author, body, created_at FROM comments WHERE id = ?`, commentID,
+	).Scan(&c.ID, &c.IssueID, &c.Author, &c.Body, &c.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &c, nil
+}
+
+// DeleteComment removes a single comment by its primary-key ID, along with
+// any attachments on that comment (same no-FK reasoning as DeleteIssue — see
+// its doc comment — applied one level down so deleting a comment doesn't
+// orphan attachment rows pointing at a nonexistent comment_id). It is only
 // exposed to admin users via the HTTP API.
 func DeleteComment(database *sql.DB, commentID int64) error {
+	if err := DeleteAttachmentsByComment(database, commentID); err != nil {
+		return err
+	}
+
 	_, err := database.Exec(`DELETE FROM comments WHERE id = ?`, commentID)
 
 	return err

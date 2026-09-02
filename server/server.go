@@ -251,6 +251,18 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle(route("POST /api/issues/{id}/comments"), s.auth(requireJSON(http.HandlerFunc(s.handleCreateComment))))
 	mux.Handle(route("DELETE /api/issues/{id}/comments/{cid}"), s.auth(http.HandlerFunc(s.handleDeleteComment)))
 
+	// Image attachments (server/attachments.go). The two upload routes carry
+	// a multipart file, not JSON, so they are wrapped with requireMultipart
+	// instead of requireJSON; limitBody (server/middleware.go) also grants
+	// them a much larger body-size ceiling than every other POST/PUT route,
+	// keyed off the shared "/attachments" path suffix.
+	mux.Handle(route("POST /api/issues/{id}/attachments"), s.auth(requireMultipart(http.HandlerFunc(s.handleCreateIssueAttachment))))
+	mux.Handle(route("POST /api/issues/{id}/comments/{cid}/attachments"), s.auth(requireMultipart(http.HandlerFunc(s.handleCreateCommentAttachment))))
+	mux.Handle(route("GET /api/issues/{id}/attachments"), s.auth(http.HandlerFunc(s.handleListAttachments)))
+	mux.Handle(route("GET /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleGetAttachmentImage)))
+	mux.Handle(route("GET /api/attachments/{aid}/thumbnail"), s.auth(http.HandlerFunc(s.handleGetAttachmentThumbnail)))
+	mux.Handle(route("DELETE /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleDeleteAttachment)))
+
 	addr := fmt.Sprintf(":%d", port)
 
 	// Open a plain TCP listener first, then (unless running insecure) wrap it
