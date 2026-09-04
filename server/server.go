@@ -58,6 +58,46 @@ type srv struct {
 	webauthn           *webauthn.WebAuthn     // nil unless webauthnEnabled; the go-webauthn library instance configured with the operator's RP ID/origin
 	registerCeremonies *webauthnCeremonyStore // in-flight passkey-registration ceremonies, keyed by username; nil unless webauthnEnabled
 	loginCeremonies    *webauthnCeremonyStore // in-flight passkey-login ceremonies, keyed by a random ceremony ID; nil unless webauthnEnabled
+	apnsKeyPath        string                 // absolute path to the APNs .p8 auth key; "" = push notifications are off (see notify.go, added in a later phase)
+	apnsKeyID          string                 // APNs auth key ID, from the Apple Developer portal
+	apnsTeamID         string                 // Apple Developer Team ID
+	apnsTopic          string                 // APNs topic, i.e. the app's bundle id (e.g. "com.tucats.idtrack")
+	apnsSandbox        bool                   // true = talk to APNs' sandbox environment instead of production
+}
+
+// Config bundles every setting Start needs. Introduced when the parameter
+// list this replaces reached 19 positional arguments (already unwieldy) and
+// push notifications were about to add five more — a config struct scales to
+// new settings without every future feature adding another position to a
+// long, error-prone (all-same-type, order-dependent) call site. Field names
+// mirror the srv struct fields they populate one-to-one; see the doc comments
+// on those fields for what each one means.
+type Config struct {
+	Database         *sql.DB
+	Port             int
+	Static           fs.FS
+	Version          string
+	BuildTime        string
+	IdleTimeout      int
+	AppName          string
+	AppDescription   string
+	DBPath           string
+	BackupInterval   time.Duration
+	BackupCount      int
+	BackupAge        time.Duration
+	BackupSize       int64
+	CertFile         string
+	KeyFile          string
+	Insecure         bool
+	BasePath         string
+	WebAuthnEnabled  bool
+	WebAuthnRPID     string
+	WebAuthnRPOrigin string
+	ApnsKeyPath      string
+	ApnsKeyID        string
+	ApnsTeamID       string
+	ApnsTopic        string
+	ApnsSandbox      bool
 }
 
 // appPath returns the path at which the single-page app itself is served.
@@ -92,27 +132,32 @@ func (s *srv) appPath() string {
 // time beyond the single executable. Because the parameter is an interface,
 // tests can substitute any other fs.FS (such as os.DirFS) without changing
 // this function.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool, basePath string, webauthnEnabled bool, webauthnRPID, webauthnRPOrigin string) error {
+func Start(cfg Config) error {
 	s := &srv{
-		database:        database,
-		static:          static,
-		version:         version,
-		buildTime:       buildTime,
-		idleTimeout:     idleTimeout,
-		appName:         appName,
-		appDescription:  appDescription,
+		database:        cfg.Database,
+		static:          cfg.Static,
+		version:         cfg.Version,
+		buildTime:       cfg.BuildTime,
+		idleTimeout:     cfg.IdleTimeout,
+		appName:         cfg.AppName,
+		appDescription:  cfg.AppDescription,
 		loginLimiter:    newRateLimiter(),
 		sessions:        newSessionStore(),
-		dbPath:          dbPath,
-		backupInterval:  backupInterval,
-		backupCount:     backupCount,
-		backupAge:       backupAge,
-		backupSize:      backupSize,
-		certFile:        certFile,
-		keyFile:         keyFile,
-		insecure:        insecure,
-		basePath:        basePath,
-		webauthnEnabled: webauthnEnabled,
+		dbPath:          cfg.DBPath,
+		backupInterval:  cfg.BackupInterval,
+		backupCount:     cfg.BackupCount,
+		backupAge:       cfg.BackupAge,
+		backupSize:      cfg.BackupSize,
+		certFile:        cfg.CertFile,
+		keyFile:         cfg.KeyFile,
+		insecure:        cfg.Insecure,
+		basePath:        cfg.BasePath,
+		webauthnEnabled: cfg.WebAuthnEnabled,
+		apnsKeyPath:     cfg.ApnsKeyPath,
+		apnsKeyID:       cfg.ApnsKeyID,
+		apnsTeamID:      cfg.ApnsTeamID,
+		apnsTopic:       cfg.ApnsTopic,
+		apnsSandbox:     cfg.ApnsSandbox,
 	}
 
 	// s.webauthn (and the two ceremony stores) are only constructed when the
@@ -120,20 +165,20 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	// webauthn.go can assume s.webauthn is non-nil without a nil check —
 	// they are simply never reachable otherwise, since the routes below are
 	// only registered inside this same "if webauthnEnabled" branch.
-	if webauthnEnabled {
-		if webauthnRPID == "" || webauthnRPOrigin == "" {
+	if cfg.WebAuthnEnabled {
+		if cfg.WebAuthnRPID == "" || cfg.WebAuthnRPOrigin == "" {
 			return fmt.Errorf("webauthn is enabled but rp-id/rp-origin are not both configured — see 'idtrack default --webauthn-rp-id' and '--webauthn-rp-origin'")
 		}
 
-		rpDisplayName := appName
+		rpDisplayName := cfg.AppName
 		if rpDisplayName == "" {
 			rpDisplayName = "idtrack"
 		}
 
 		wa, err := webauthn.New(&webauthn.Config{
-			RPID:          webauthnRPID,
+			RPID:          cfg.WebAuthnRPID,
 			RPDisplayName: rpDisplayName,
-			RPOrigins:     []string{webauthnRPOrigin},
+			RPOrigins:     []string{cfg.WebAuthnRPOrigin},
 		})
 		if err != nil {
 			return fmt.Errorf("configuring webauthn: %w", err)
@@ -209,7 +254,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	// registering or managing a passkey is something only an already-known
 	// user can do to their own account (see webauthn.go for the full
 	// request/response shapes).
-	if webauthnEnabled {
+	if cfg.WebAuthnEnabled {
 		mux.HandleFunc(route("POST /api/webauthn/login/begin"), s.handleWebAuthnLoginBegin)
 		mux.Handle(route("POST /api/webauthn/login/finish"), requireJSON(http.HandlerFunc(s.handleWebAuthnLoginFinish)))
 		mux.Handle(route("POST /api/webauthn/register/begin"), s.auth(http.HandlerFunc(s.handleWebAuthnRegisterBegin)))
@@ -263,7 +308,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle(route("GET /api/attachments/{aid}/thumbnail"), s.auth(http.HandlerFunc(s.handleGetAttachmentThumbnail)))
 	mux.Handle(route("DELETE /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleDeleteAttachment)))
 
-	addr := fmt.Sprintf(":%d", port)
+	addr := fmt.Sprintf(":%d", cfg.Port)
 
 	// Open a plain TCP listener first, then (unless running insecure) wrap it
 	// with TLS. This two-step approach (rather than http.ListenAndServeTLS)
@@ -276,7 +321,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	var ln net.Listener
 
-	if insecure {
+	if cfg.Insecure {
 		// Plain HTTP: no cert/key needed at all. This mode is intended for
 		// deployments where a reverse proxy (e.g. nginx) terminates TLS and
 		// forwards plaintext HTTP to idtrack on a private network/loopback.
@@ -289,29 +334,29 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		// from the embedded filesystem.
 		var certData, keyData []byte
 
-		if certFile != "" {
-			certData, err = os.ReadFile(certFile)
+		if cfg.CertFile != "" {
+			certData, err = os.ReadFile(cfg.CertFile)
 			if err != nil {
 				return fmt.Errorf("reading TLS cert: %w", err)
 			}
 
-			log.Printf("idtrack using cert file: %s", certFile)
+			log.Printf("idtrack using cert file: %s", cfg.CertFile)
 		} else {
-			certData, err = fs.ReadFile(static, "resources/https-server.crt")
+			certData, err = fs.ReadFile(cfg.Static, "resources/https-server.crt")
 			if err != nil {
 				return fmt.Errorf("reading TLS cert: %w", err)
 			}
 		}
 
-		if keyFile != "" {
-			keyData, err = os.ReadFile(keyFile)
+		if cfg.KeyFile != "" {
+			keyData, err = os.ReadFile(cfg.KeyFile)
 			if err != nil {
 				return fmt.Errorf("reading TLS key: %w", err)
 			}
 
-			log.Printf("idtrack using key file: %s", keyFile)
+			log.Printf("idtrack using key file: %s", cfg.KeyFile)
 		} else {
-			keyData, err = fs.ReadFile(static, "resources/https-server.key")
+			keyData, err = fs.ReadFile(cfg.Static, "resources/https-server.key")
 			if err != nil {
 				return fmt.Errorf("reading TLS key: %w", err)
 			}

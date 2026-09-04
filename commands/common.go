@@ -62,6 +62,11 @@ type defaults struct {
 	WebAuthn         bool   `json:"webauthn_enabled,omitempty"`   // true = passkey (Touch ID/Face ID/security key) login is turned on; independent of whether RP ID/origin happen to be set below — see CLAUDE.md
 	WebAuthnRPID     string `json:"webauthn_rp_id,omitempty"`     // bare domain the browser sees, e.g. "issues.example.com"; required together with WebAuthnRPOrigin when WebAuthn is true
 	WebAuthnRPOrigin string `json:"webauthn_rp_origin,omitempty"` // full browser-facing origin, e.g. "https://issues.example.com"; required together with WebAuthnRPID when WebAuthn is true
+	ApnsKeyPath      string `json:"apns_key_path,omitempty"`      // absolute path to the APNs .p8 auth key; required together with ApnsKeyID/ApnsTeamID/ApnsTopic for push notifications to be sent — see docs/NOTIFICATIONS.md
+	ApnsKeyID        string `json:"apns_key_id,omitempty"`        // APNs auth key ID, from the Apple Developer portal
+	ApnsTeamID       string `json:"apns_team_id,omitempty"`       // Apple Developer Team ID
+	ApnsTopic        string `json:"apns_topic,omitempty"`         // APNs topic, i.e. the app's bundle id, e.g. "com.tucats.idtrack"
+	ApnsSandbox      bool   `json:"apns_sandbox,omitempty"`       // true = talk to APNs' sandbox environment instead of production (see docs/NOTIFICATIONS.md's accepted limitation on mixed dev/TestFlight deployments)
 }
 
 // loadDefaults reads ~/.idtrack/defaults.json and returns its contents. If the
@@ -206,6 +211,18 @@ Commands:
 			 Bare domain the browser sees, e.g. "issues.example.com".
 		 --webauthn-rp-origin <origin>
 			 Full browser-facing origin, e.g. "https://issues.example.com".
+		 --apns-key-path <path> | off
+			 Absolute path to the APNs .p8 auth key. Required together with
+			 --apns-key-id, --apns-team-id, and --apns-topic for the server
+			 to send push notifications to the iOS/Catalyst app.
+		 --apns-key-id <id>
+			 APNs auth key ID, from the Apple Developer portal.
+		 --apns-team-id <id>
+			 Apple Developer Team ID.
+		 --apns-topic <bundle-id>
+			 APNs topic, i.e. the app's bundle id, e.g. "com.tucats.idtrack".
+		 --apns-sandbox [true|false]
+			 Use APNs' sandbox environment instead of production.
 
 	define [subcommand] [options]
 		Create projects and components.
