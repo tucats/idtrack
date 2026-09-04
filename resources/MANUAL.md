@@ -90,6 +90,11 @@ Save default settings to `~/.idtrack/defaults.json`. At least one flag is requir
 | `--webauthn [true\|false]` | Turn passkey (Touch ID/Face ID/Windows Hello/security key) login on or off for this server. A bare `--webauthn` turns it on. Requires `--webauthn-rp-id` and `--webauthn-rp-origin` to already be set (or given in the same command). See [Passkey (WebAuthn) Login](#passkey-webauthn-login) below. |
 | `--webauthn-rp-id DOMAIN` | The bare domain your browser sees for this server, e.g. `issues.example.com` — no `https://`, no port. |
 | `--webauthn-rp-origin ORIGIN` | The full browser-facing origin, e.g. `https://issues.example.com`. |
+| `--apns-key-path PATH` | Path to an APNs `.p8` auth key file, for sending push notifications to the iOS/Catalyst app. Required together with `--apns-key-id`, `--apns-team-id`, and `--apns-topic`. Use `off` to disable push notifications. See [Push Notifications (iOS/Catalyst App)](#push-notifications-ioscatalyst-app) below. |
+| `--apns-key-id ID` | APNs auth key ID, from the Apple Developer portal. |
+| `--apns-team-id ID` | Apple Developer Team ID. |
+| `--apns-topic BUNDLE-ID` | The app's bundle id, e.g. `com.tucats.idtrack`. |
+| `--apns-sandbox [true\|false]` | Use APNs' sandbox environment (Xcode debug builds) instead of production (TestFlight/App Store builds). A bare `--apns-sandbox` turns it on. |
 
 The path given to `--server-cert` and `--server-key` must already exist; the command validates the file before saving and stores its absolute path.
 
@@ -125,6 +130,35 @@ Once enabled, each user manages their own passkeys from **Settings → Use passk
 idtrack user passkeys alice list
 idtrack user passkeys alice revoke <credential-id>
 ```
+
+---
+
+#### Push Notifications (iOS/Catalyst App)
+
+The iOS/iPadOS/Mac Catalyst app can receive push notifications for three events: a new issue assigned to you, a new comment on an issue you reported or are assigned (when you're not the one who commented), and a status change on an issue you reported or are assigned (when you're not the one who changed it). This is a feature of the iOS app only — the web application does not receive push notifications.
+
+Setting it up requires an Apple Developer account:
+
+1. In the Apple Developer portal, under **Certificates, Identifiers & Profiles → Keys**, create an APNs Auth Key and download the `.p8` file. Note its **Key ID**.
+2. Note your **Team ID** (shown on the Membership page of the developer portal).
+3. Confirm the app's bundle identifier has the **Push Notifications** capability enabled.
+
+Then configure the server:
+
+```sh
+idtrack default \
+  --apns-key-path /path/to/AuthKey_XXXXXXXXXX.p8 \
+  --apns-key-id XXXXXXXXXX \
+  --apns-team-id YYYYYYYYYY \
+  --apns-topic com.tucats.idtrack
+idtrack restart
+```
+
+All four of `--apns-key-path`, `--apns-key-id`, `--apns-team-id`, and `--apns-topic` must be set together — the command refuses to save a partial set. Add `--apns-sandbox true` only if this server exclusively serves Xcode debug builds of the app rather than TestFlight/App Store builds.
+
+Each user controls which of the three notification categories they receive from **Settings → Notifications** in the app itself — this is a per-user, per-device preference, not something the server operator configures. The app also asks for notification permission once, during onboarding or first launch; declining turns all three categories off for that installation until the user re-enables it from Settings.
+
+If none of the four required settings are configured, the server simply never sends push notifications — nothing else about the app's behavior changes, and no error is shown to users.
 
 ---
 

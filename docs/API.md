@@ -1037,6 +1037,104 @@ strikethrough, autolinking, task lists) in addition to standard CommonMark.
 No errors beyond `400` for a malformed JSON body — an unrecognized `format`
 value simply renders as empty string, same as `"text"`.
 
+#### Push Notifications
+
+Apple Push Notification service (APNs) integration for the iOS/Catalyst
+client — see [NOTIFICATIONS.md](NOTIFICATIONS.md) for the full design. All
+five endpoints are self-service: every one operates only on the calling
+user's own account (`currentUser`), never a username supplied in the path or
+body, mirroring the Passkey credential endpoints above. Push notifications
+are sent by the server itself (see "Server-initiated notifications" below),
+never triggered directly by a client call.
+
+Whether the server is even configured to send pushes at all
+(`idtrack default --apns-key-path`/`--apns-key-id`/`--apns-team-id`/
+`--apns-topic`) has no bearing on whether these bookkeeping endpoints work —
+they always accept token registrations and preference changes, so a client
+never needs to special-case "notifications aren't configured on this server."
+
+##### `POST /api/notifications/token`
+
+Registers (or reassigns) an APNs device token to the caller. Call this on
+every login, onboarding completion, and app relaunch — not just once — since
+a device token can change at any time and re-sending an unchanged token is a
+cheap no-op server-side.
+
+Request body: `{ "token": "<hex-encoded APNs device token>" }`
+
+Response `200 OK`: `{ "ok": true }`
+
+Errors: `400` missing/blank token.
+
+##### `DELETE /api/notifications/token/{token}`
+
+Unregisters one device token — call this on sign-out so a stale token
+doesn't linger against an account the client has since signed out of on that
+device. Scoped to the caller's own tokens: attempting to delete a token
+belonging to a different account is silently a no-op (not an error), the
+same "always succeeds" shape as `DELETE /api/webauthn/credentials/{id}`.
+
+Response `200 OK`: `{ "ok": true }`, whether or not a matching row existed.
+
+##### `GET /api/notifications/prefs`
+
+Returns the caller's own three-category preference state.
+
+Response `200 OK`:
+
+```json
+{ "new_issue": true, "new_comment": true, "resolved": true }
+```
+
+A user who has never explicitly set preferences (e.g. an account that
+predates this feature) reads back all-`true` — see NOTIFICATIONS.md for why
+that default rarely matters in practice.
+
+##### `PUT /api/notifications/prefs`
+
+Replaces all three preference fields at once — there is no partial-update
+form; send the complete state every time (this is what the Settings screen's
+three toggles do on every change).
+
+Request body: `{ "new_issue": bool, "new_comment": bool, "resolved": bool }`
+
+Response `200 OK`: `{ "ok": true }`
+
+Errors: `400` malformed body.
+
+##### `POST /api/notifications/badge/reset`
+
+Zeroes the server-tracked badge count for one device token. Call this when
+the app becomes active/foregrounded on that device, so the next push to it
+starts counting from zero again — APNs has no concept of "the current badge
+count," so the server tracks it per-token and must be told when the user has
+seen the app's badge and it should reset.
+
+Request body: `{ "token": "<hex-encoded APNs device token>" }`
+
+Response `200 OK`: `{ "ok": true }`, whether or not the token still exists.
+
+Errors: `400` missing/blank token.
+
+##### Server-initiated notifications
+
+The server sends a push (subject to the recipient's preferences from
+`GET /api/notifications/prefs` and them having at least one registered
+token) in three situations — see NOTIFICATIONS.md for the full rationale:
+
+- **New issue created** (`POST /api/issues`) — notifies the assignee, unless
+  the assignee is also the reporter.
+- **New comment added** (`POST /api/issues/{id}/comments`) — notifies the
+  reporter and/or assignee, but only when they are different people from
+  each other, and never the comment's own author.
+- **Any status transition** (`PUT /api/issues/{id}` with a changed
+  `status`) — notifies whichever of the reporter/assignee did **not** make
+  the change. Fires for every transition (Open↔Blocked↔Resolved↔Duplicate),
+  gated by the single `resolved` preference.
+
+A client has no way to opt out of receiving these pushes selectively per
+issue or project — the three category toggles are the only granularity.
+
 ## Quick-start client flow
 
 A minimal client implementing login → browse → create → comment:

@@ -105,7 +105,10 @@ CREATE TABLE users (
     -- added via migration:
     last_login_at TEXT NOT NULL DEFAULT '',
     is_admin      INTEGER NOT NULL DEFAULT 0,  -- 0=false, 1=true; kept in sync with teams below for compatibility
-    teams         TEXT NOT NULL DEFAULT ''     -- comma-separated, lower-case team names (see teams table)
+    teams         TEXT NOT NULL DEFAULT '',    -- comma-separated, lower-case team names (see teams table)
+    notify_new_issue   INTEGER NOT NULL DEFAULT 1,  -- push-notification opt-in/out per category; see notification_tokens below
+    notify_new_comment INTEGER NOT NULL DEFAULT 1,
+    notify_resolved    INTEGER NOT NULL DEFAULT 1   -- governs every status transition, not just ->Resolved (see docs/NOTIFICATIONS.md)
 );
 
 CREATE TABLE issues (
@@ -177,6 +180,14 @@ CREATE TABLE attachments (
     thumbnail   BLOB NOT NULL,             -- thumbnail PNG
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE notification_tokens (
+    token             TEXT PRIMARY KEY,     -- APNs device token, hex-encoded; one row per registered device
+    username          TEXT NOT NULL,        -- owning user
+    created_at        TEXT NOT NULL,        -- set once, never updated
+    last_notified_at  TEXT NOT NULL DEFAULT '',
+    badge_count       INTEGER NOT NULL DEFAULT 0  -- server-tracked absolute badge number; APNs itself is stateless about this
+);
 ```
 
 ### Schema Migrations
@@ -191,13 +202,15 @@ The schema is created fresh with `CREATE TABLE IF NOT EXISTS`. Columns added aft
 
 **`attachments` likewise needed no migration step.** Same reasoning as `webauthn_credentials` above: it's a brand-new table, so `CREATE TABLE IF NOT EXISTS` alone upgrades an old database for free, with nothing to backfill since it starts (and stays) empty until someone uploads an image.
 
+**`notification_tokens` likewise needed no migration step**, for the same reason as `webauthn_credentials`/`attachments` — brand new table, starts empty. The three `notify_*` columns on `users` **did** need the usual `addColumnIfMissing` treatment (they're columns on a pre-existing table), with `DEFAULT 1` (on) rather than the more common `DEFAULT 0`/`''` seen elsewhere — see "Push notifications" in Important Implementation Decisions below for why the default rarely matters in practice.
+
 ## Runtime Files (`~/.idtrack/`)
 
 All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 | File | Contents |
 | --- | --- |
-| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb", "insecure": true, "base_path": "/idtrack", "webauthn_enabled": true, "webauthn_rp_id": "issues.example.com", "webauthn_rp_origin": "https://issues.example.com"}` — persisted defaults; all fields are omitempty |
+| `defaults.json` | `{"port": N, "database": "path", "server_cert": "path", "server_key": "path", "idle_timeout": N, "app_name": "...", "app_description": "...", "backup_interval": "1h", "backup_count": N, "backup_age": "168h", "backup_size": "500mb", "insecure": true, "base_path": "/idtrack", "webauthn_enabled": true, "webauthn_rp_id": "issues.example.com", "webauthn_rp_origin": "https://issues.example.com", "apns_key_path": "/path/to/AuthKey_XXXXXXXXXX.p8", "apns_key_id": "XXXXXXXXXX", "apns_team_id": "YYYYYYYYYY", "apns_topic": "com.tucats.idtrack", "apns_sandbox": false}` — persisted defaults; all fields are omitempty |
 | `idtrack.pid` | PID of the running server process |
 | `idtrack.log` | Stdout/stderr of the background server |
 
@@ -207,7 +220,7 @@ All runtime state lives in `~/.idtrack/` (created with mode 0700):
 
 Prints the version string and build timestamp (when available). Example: `idtrack version 1.0-8 (built 20260516120000)`.
 
-### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size] [--insecure | -k [true|false]] [--base-path path | off] [--webauthn [true|false]] [--webauthn-rp-id domain] [--webauthn-rp-origin origin]`
+### `idtrack default [--port n] [--database path] [--server-cert path] [--server-key path] [--idle-timeout duration] [--app-name text] [--app-description text] [--backup-interval duration] [--backup-count n] [--backup-age duration] [--backup-size size] [--insecure | -k [true|false]] [--base-path path | off] [--webauthn [true|false]] [--webauthn-rp-id domain] [--webauthn-rp-origin origin] [--apns-key-path path | off] [--apns-key-id id] [--apns-team-id id] [--apns-topic bundle-id] [--apns-sandbox [true|false]]`
 
 Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are preserved. Requires at least one flag. Running with no flags prints a two-column table of the current defaults.
 
@@ -226,6 +239,10 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--webauthn` turns passkey (Touch ID/Face ID/security key) login on or off for the whole instance — same `[true|false]` bare-flag-defaults-to-true parsing shape as `--insecure`. Turning it on requires `--webauthn-rp-id` and `--webauthn-rp-origin` to already be set or supplied in the same command; `Default` exits with an error otherwise (mirrors the cert/key pairing check). See "Passkey (WebAuthn) login" below.
 - `--webauthn-rp-id` sets the WebAuthn Relying Party ID: the bare domain the browser sees, e.g. `issues.example.com` (no scheme, no port).
 - `--webauthn-rp-origin` sets the WebAuthn Relying Party Origin: the full browser-facing origin, e.g. `https://issues.example.com`. Both RP values are stored as plain strings in `defaults.json` with no `off` synonym (there is nothing to validate beyond "non-empty" — the operator supplies whatever their reverse proxy/DNS actually presents to browsers).
+- `--apns-key-path` sets an absolute path to the APNs `.p8` auth key (from the Apple Developer portal). Same file-must-exist-at-save-time and `off`-clears-it semantics as `--server-cert`. Required together with `--apns-key-id`, `--apns-team-id`, and `--apns-topic` — `Default` exits with an error if only some of the four are set (mirrors the `--server-cert`/`--server-key` pairing check and the `--webauthn`/RP-fields check). See "Push notifications" below.
+- `--apns-key-id` sets the APNs auth key ID, and `--apns-team-id` sets the Apple Developer Team ID — both plain strings from the Apple Developer portal, no validation beyond non-empty.
+- `--apns-topic` sets the APNs topic, i.e. the app's bundle id (e.g. `com.tucats.idtrack`).
+- `--apns-sandbox` selects APNs' sandbox environment (Xcode debug builds) instead of production (TestFlight/App Store builds) — same `[true|false]` bare-flag-defaults-to-true parsing shape as `--insecure`/`--webauthn`. Independent of the four required fields above; changing it alone doesn't trigger the all-or-nothing group validation.
 
 ### `idtrack serve [--port n] [--database path] [--server-cert path] [--server-key path] [--insecure | -k [true|false]] [--base-path path]`
 
@@ -239,6 +256,7 @@ Merges the given values into `~/.idtrack/defaults.json`. Unspecified keys are pr
 - `--base-path` overrides the stored `base_path` default for this run only, validated the same way as in `idtrack default`. Forwarded into `passArgs` (always as its normalized value, so `off`/`""` become an explicit empty-string arg) so `Restart` relaunches with the same setting. Also changes the printed startup URL's path to match.
 - The `--foreground` flag is **internal** for direct host usage — it tells the re-exec'd child to run the server directly. It is exposed and documented in the Docker section of MANUAL.md because containers require foreground operation (Docker manages the process lifecycle; the main process must not exit).
 - Passkey (WebAuthn) settings have **no per-invocation `serve` flags** — like `--app-name`/`--app-description`/the backup params, they are read straight from `defaults.json` (`defs.WebAuthn`, `defs.WebAuthnRPID`, `defs.WebAuthnRPOrigin`) and passed through to `server.Start()`; use `idtrack default --webauthn ...` to change them.
+- Push-notification (APNs) settings likewise have **no per-invocation `serve` flags** — read straight from `defaults.json` (`defs.ApnsKeyPath`/`ApnsKeyID`/`ApnsTeamID`/`ApnsTopic`/`ApnsSandbox`) and passed through `server.Config` to `server.Start()`; use `idtrack default --apns-* ...` to change them.
 
 ### `idtrack stop`
 
@@ -337,6 +355,11 @@ For full user-facing documentation of every endpoint — request/response JSON s
 | POST | `/api/webauthn/register/finish` † | yes | no |
 | GET | `/api/webauthn/credentials` † | yes | no |
 | DELETE | `/api/webauthn/credentials/{id}` † | yes | no (self-service only) |
+| POST | `/api/notifications/token` | yes | no (self-service only) |
+| DELETE | `/api/notifications/token/{token}` | yes | no (self-service only) |
+| GET | `/api/notifications/prefs` | yes | no (self-service only) |
+| PUT | `/api/notifications/prefs` | yes | no (self-service only) |
+| POST | `/api/notifications/badge/reset` | yes | no (self-service only) |
 
 † Only registered on the mux at all when `webauthn_enabled` is true (see
 `idtrack default --webauthn` below) — on an instance where the feature is
@@ -583,3 +606,15 @@ Finally, a **client-side `usePasskeys` preference** (`resources/idtrack.js`, sto
 **Attachment body-size and content-type middleware are carved out by path/route, not applied globally.** `limitBody` (`server/middleware.go`) caps every other POST/PUT body at 64 KiB (plenty for JSON) but grants `maxAttachmentBodyBytes` (12 MiB) to any POST whose path ends in `/attachments`, covering both upload routes regardless of `basePath` prefixing. A new `requireMultipart` middleware (mirroring `requireJSON`) wraps just those two routes instead of `requireJSON`, since they carry a multipart file upload, not a JSON body. Follow this pattern — a dedicated middleware/limit pair scoped by path, rather than changing the global default — for any future route whose body shape genuinely differs from the rest of the JSON API.
 
 **Attachment GET/list endpoints require authentication but do not re-check team visibility, matching `handleGetIssue`'s existing behavior.** Team-based filtering (`db.IssueMatchesUserTeams`) is applied at the list-query level (`buildWhereClause`, used by `GET /api/issues`), not on a single-issue `GET /api/issues/{id}` — attachments follow that same precedent rather than introducing a new, inconsistent check.
+
+**Push notifications (iOS/Catalyst only) use APNs' HTTP/2 provider API with token-based authentication, sent from a hand-rolled client rather than a new dependency.** Full design and phased implementation history: [docs/NOTIFICATIONS.md](docs/NOTIFICATIONS.md). `internal/apns` signs its own ES256 JWT auth tokens with stdlib `crypto/ecdsa` and sends over `net/http`, which negotiates HTTP/2 automatically for `https://` URLs — no HTTP/2 or JWT library needed, keeping to the same minimal-dependency posture WebAuthn's addition established as this codebase's precedent for when a genuine new dependency *would* be justified (it wasn't needed here). `server/notify.go`'s `s.notify(...)` is always invoked as `go s.notify(...)` from `handleCreateIssue`/`handleCreateComment`/`handleUpdateIssue` so a slow or unreachable APNs never delays the HTTP response; failures are logged, not surfaced to the caller, the same treatment `handleUpdateIssue`'s auto-comment-on-Duplicate already gets. `s.apns` is typed as a small `pushSender` interface (satisfied by `*apns.Client`), not the concrete type, purely so tests can inject a fake sender and assert exactly who/what was notified without a real or httptest-mocked APNs endpoint.
+
+Every device token lives in its own row in `notification_tokens`, keyed on the token itself (not `(username, token)`) — a device token already uniquely identifies one (app, device) pair, so if a different user later signs into the same physical device, `db.RegisterToken`'s `ON CONFLICT(token) DO UPDATE` simply reassigns the existing row to the new username rather than requiring separate create/cleanup logic. The client is expected to call `POST /api/notifications/token` on every login, onboarding completion, *and* app relaunch (not just once), since Apple's own guidance is that a device token can change at any time — the upsert makes a repeat registration of an unchanged token a cheap no-op. `db.DeleteTokenForUser` (ownership-scoped, mirroring `db.DeleteCredential`) backs the self-service unregister endpoint; a separate unscoped `db.DeleteToken` exists only for the server-internal cleanup path below, which never has an owning username in hand.
+
+**Badge counts are provider-tracked, not delta-based, because APNs itself has no concept of "the current badge number."** `notification_tokens.badge_count` is incremented atomically (`UPDATE ... SET badge_count = badge_count + 1 ... RETURNING badge_count`, confirmed supported by `modernc.org/sqlite`) immediately before each send and the resulting absolute value is what's placed in `aps.badge` — never a delta. `db.ResetBadge` zeroes it back to 0 when the client reports (`POST /api/notifications/badge/reset`) that the app became active on that specific device; badge state is deliberately per-token, not per-user, since opening the app on one device shouldn't affect another device's badge.
+
+**Three independent boolean preferences (`notify_new_issue`/`notify_new_comment`/`notify_resolved` on `users`) gate what gets sent, and they live server-side, not just on the client**, because a push notification is inherently server-initiated — the server, not the client, is the only party that can decide not to send one in the first place. They default to `1` (on) purely as a safe schema value for pre-existing rows from before this feature existed; a client always writes an explicit value once the OS permission prompt is answered (see the iOS app's onboarding flow), so the default is rarely what actually governs a real account's behavior. `notify_resolved` gates **every** issue status transition (Open↔Blocked↔Resolved↔Duplicate), not only the transition to Resolved, despite its name — a fourth preference category for "other" transitions was considered and rejected as unnecessary granularity.
+
+**The three trigger rules are each independently defined in terms of "the reporter" and "the assignee," not a generic watcher list.** New issue: notify the assignee, unless they're also the reporter (nothing to tell them they don't already know). New comment: notify the reporter and/or assignee, but *only* when they are two different people — a single-person issue has no "other party" to notify about — and never the comment's own author, even when that author happens to be the reporter or assignee. Status change: notify whichever of the reporter/assignee did *not* make the change, evaluated against `existing`'s pre-update values (not any assignee change happening in that same `PUT`) so the rule always answers "who didn't do this" rather than "who isn't the new assignee." There is no notion of a third-party watcher — the two-role model matches the original requirement precisely rather than generalizing to something broader.
+
+**A device token reported by APNs as permanently invalid is deleted silently, with no user-facing error anywhere.** `apns.Client.Send` returns the sentinel `apns.ErrInvalidToken` for HTTP 410 `Unregistered` or HTTP 400 `BadDeviceToken`; `server/notify.go`'s `sendToToken` treats that as "remove this token and move on" via `db.DeleteToken`, exactly as specified. Every other `Send` failure (network error, misconfigured topic, APNs briefly unavailable) is logged and the token is left in place, since the token itself may still be perfectly good.
