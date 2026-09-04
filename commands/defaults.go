@@ -26,12 +26,14 @@ const offValue = "off"
 // Accepted flags: --port, --database, --server-cert/--cert/--cert-file,
 // --server-key/--key/--key-file, --idle-timeout, --app-name,
 // --app-description, --backup-interval, --backup-count, --backup-age,
-// --backup-size. Each duration/count/size flag also accepts the literal
-// value "off" as a synonym for its disabled/zero state (see offValue and
-// parseBackupSize). Validation failures (bad port number, malformed
-// duration, a --server-cert file that doesn't exist, etc.) print an error to
-// stderr and exit the process with status 1 — nothing is written to disk in
-// that case.
+// --backup-size, --webauthn/--webauthn-rp-id/--webauthn-rp-origin,
+// --apns-key-path/--apns-key-id/--apns-team-id/--apns-topic/--apns-sandbox
+// (see docs/NOTIFICATIONS.md). Each duration/count/size flag also accepts
+// the literal value "off" as a synonym for its disabled/zero state (see
+// offValue and parseBackupSize). Validation failures (bad port number,
+// malformed duration, a --server-cert file that doesn't exist, etc.) print
+// an error to stderr and exit the process with status 1 — nothing is
+// written to disk in that case.
 //
 // Side effects on success: writes ~/.idtrack/defaults.json (creating
 // ~/.idtrack with mode 0700 if needed) and prints a confirmation summary of
@@ -75,6 +77,16 @@ func Default(args []string) {
 		webauthnRPIDSet     bool
 		webauthnRPOrigin    string
 		webauthnRPOriginSet bool
+		apnsKeyPath         string
+		apnsKeyPathSet      bool
+		apnsKeyID           string
+		apnsKeyIDSet        bool
+		apnsTeamID          string
+		apnsTeamIDSet       bool
+		apnsTopic           string
+		apnsTopicSet        bool
+		apnsSandbox         bool
+		apnsSandboxSet      bool
 	)
 
 	for i := 0; i < len(args); i++ {
@@ -322,6 +334,71 @@ func Default(args []string) {
 				webauthnRPOriginSet = true
 			}
 
+		case "--apns-key-path":
+			if i+1 < len(args) {
+				i++
+				apnsKeyPathSet = true
+
+				if args[i] == offValue {
+					apnsKeyPath = "" // empty = push notifications off
+
+					continue
+				}
+
+				// Ensure this file exists, and make the absolute path to it,
+				// same treatment as --server-cert/--server-key above.
+				if _, err := os.Stat(args[i]); err != nil {
+					fmt.Fprintf(os.Stderr, "cannot access APNs key file %q: %v\n", args[i], err)
+					os.Exit(1)
+				}
+
+				abs, err := filepath.Abs(args[i])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "cannot resolve path to APNs key file %q: %v\n", args[i], err)
+					os.Exit(1)
+				}
+
+				apnsKeyPath = abs
+			}
+
+		case "--apns-key-id":
+			if i+1 < len(args) {
+				i++
+				apnsKeyID = strings.TrimSpace(args[i])
+				apnsKeyIDSet = true
+			}
+
+		case "--apns-team-id":
+			if i+1 < len(args) {
+				i++
+				apnsTeamID = strings.TrimSpace(args[i])
+				apnsTeamIDSet = true
+			}
+
+		case "--apns-topic":
+			if i+1 < len(args) {
+				i++
+				apnsTopic = strings.TrimSpace(args[i])
+				apnsTopicSet = true
+			}
+
+		case "--apns-sandbox":
+			apnsSandbox = true
+			apnsSandboxSet = true
+
+			// Same "bare flag defaults to true, optional trailing true/false
+			// turns it back off" shape as --insecure/--webauthn above.
+			if i+1 < len(args) {
+				switch strings.ToLower(args[i+1]) {
+				case "false", offValue:
+					apnsSandbox = false
+					i++
+				case "true", "on":
+					apnsSandbox = true
+					i++
+				}
+			}
+
 		default:
 			fmt.Fprintf(os.Stderr, "unknown option: %s\n", args[i])
 			Usage()
@@ -331,7 +408,8 @@ func Default(args []string) {
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
 		backupInterval != "" || backupCountSet || backupAge != "" || backupSizeSet || serverCertSet || serverKeySet || insecureSet || basePathSet ||
-		webauthnEnabledSet || webauthnRPIDSet || webauthnRPOriginSet
+		webauthnEnabledSet || webauthnRPIDSet || webauthnRPOriginSet ||
+		apnsKeyPathSet || apnsKeyIDSet || apnsTeamIDSet || apnsTopicSet || apnsSandboxSet
 	if !anySet {
 		showDefaults()
 
@@ -418,6 +496,39 @@ func Default(args []string) {
 		}
 
 		defs.WebAuthn = webauthnEnabled
+	}
+
+	if apnsKeyPathSet {
+		defs.ApnsKeyPath = apnsKeyPath
+	}
+
+	if apnsKeyIDSet {
+		defs.ApnsKeyID = apnsKeyID
+	}
+
+	if apnsTeamIDSet {
+		defs.ApnsTeamID = apnsTeamID
+	}
+
+	if apnsTopicSet {
+		defs.ApnsTopic = apnsTopic
+	}
+
+	if apnsSandboxSet {
+		defs.ApnsSandbox = apnsSandbox
+	}
+
+	// The four core APNs settings are all-or-nothing: server.Start() treats
+	// push notifications as "off" only when every one of them is empty (see
+	// docs/NOTIFICATIONS.md §3.4), so a partially-configured group would
+	// silently do nothing rather than erroring — better to catch it here,
+	// the same "validate the group together" treatment --webauthn gets above.
+	apnsAnySet := defs.ApnsKeyPath != "" || defs.ApnsKeyID != "" || defs.ApnsTeamID != "" || defs.ApnsTopic != ""
+	apnsAllSet := defs.ApnsKeyPath != "" && defs.ApnsKeyID != "" && defs.ApnsTeamID != "" && defs.ApnsTopic != ""
+
+	if apnsAnySet && !apnsAllSet {
+		fmt.Fprintln(os.Stderr, "--apns-key-path, --apns-key-id, --apns-team-id, and --apns-topic must all be set together (now or already) for push notifications to work")
+		os.Exit(1)
 	}
 
 	home, err := os.UserHomeDir()
@@ -507,6 +618,30 @@ func Default(args []string) {
 
 	if webauthnRPOriginSet {
 		fmt.Printf("  webauthn-rp-origin: %s\n", defs.WebAuthnRPOrigin)
+	}
+
+	if apnsKeyPathSet {
+		if defs.ApnsKeyPath != "" {
+			fmt.Printf("  apns-key-path:   %s\n", defs.ApnsKeyPath)
+		} else {
+			fmt.Printf("  apns-key-path:   disabled\n")
+		}
+	}
+
+	if apnsKeyIDSet {
+		fmt.Printf("  apns-key-id:     %s\n", defs.ApnsKeyID)
+	}
+
+	if apnsTeamIDSet {
+		fmt.Printf("  apns-team-id:    %s\n", defs.ApnsTeamID)
+	}
+
+	if apnsTopicSet {
+		fmt.Printf("  apns-topic:      %s\n", defs.ApnsTopic)
+	}
+
+	if apnsSandboxSet {
+		fmt.Printf("  apns-sandbox:    %t\n", defs.ApnsSandbox)
 	}
 }
 
@@ -618,4 +753,30 @@ func showDefaults() {
 	} else {
 		row("webauthn-rp-origin", "(not set)")
 	}
+
+	if defs.ApnsKeyPath != "" {
+		row("apns-key-path", defs.ApnsKeyPath)
+	} else {
+		row("apns-key-path", "(not set — push notifications disabled)")
+	}
+
+	if defs.ApnsKeyID != "" {
+		row("apns-key-id", defs.ApnsKeyID)
+	} else {
+		row("apns-key-id", "(not set)")
+	}
+
+	if defs.ApnsTeamID != "" {
+		row("apns-team-id", defs.ApnsTeamID)
+	} else {
+		row("apns-team-id", "(not set)")
+	}
+
+	if defs.ApnsTopic != "" {
+		row("apns-topic", defs.ApnsTopic)
+	} else {
+		row("apns-topic", "(not set)")
+	}
+
+	row("apns-sandbox", fmt.Sprintf("%t", defs.ApnsSandbox))
 }

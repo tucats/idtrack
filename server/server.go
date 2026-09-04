@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/tucats/idtrack/internal/apns"
 )
 
 // srv holds the shared dependencies that all handler methods need: the
@@ -58,6 +59,57 @@ type srv struct {
 	webauthn           *webauthn.WebAuthn     // nil unless webauthnEnabled; the go-webauthn library instance configured with the operator's RP ID/origin
 	registerCeremonies *webauthnCeremonyStore // in-flight passkey-registration ceremonies, keyed by username; nil unless webauthnEnabled
 	loginCeremonies    *webauthnCeremonyStore // in-flight passkey-login ceremonies, keyed by a random ceremony ID; nil unless webauthnEnabled
+	apnsKeyPath        string                 // absolute path to the APNs .p8 auth key; "" = push notifications are off (see notify.go)
+	apnsKeyID          string                 // APNs auth key ID, from the Apple Developer portal
+	apnsTeamID         string                 // Apple Developer Team ID
+	apnsTopic          string                 // APNs topic, i.e. the app's bundle id (e.g. "com.tucats.idtrack")
+	apnsSandbox        bool                   // true = talk to APNs' sandbox environment instead of production
+	apns               pushSender             // nil unless the four Apns* config fields above are all set (see notify.go); every push send/notify() call checks this for nil first
+}
+
+// pushSender is the subset of *apns.Client's API that notify.go depends on.
+// Declaring it as an interface (rather than using *apns.Client directly)
+// lets tests substitute a fake sender and assert on exactly what would have
+// been sent, without spinning up a real APNs connection or an httptest
+// server standing in for one. *apns.Client satisfies this interface as-is —
+// no wrapping needed at the real construction site below.
+type pushSender interface {
+	Send(deviceToken string, payload apns.Payload) error
+}
+
+// Config bundles every setting Start needs. Introduced when the parameter
+// list this replaces reached 19 positional arguments (already unwieldy) and
+// push notifications were about to add five more — a config struct scales to
+// new settings without every future feature adding another position to a
+// long, error-prone (all-same-type, order-dependent) call site. Field names
+// mirror the srv struct fields they populate one-to-one; see the doc comments
+// on those fields for what each one means.
+type Config struct {
+	Database         *sql.DB
+	Port             int
+	Static           fs.FS
+	Version          string
+	BuildTime        string
+	IdleTimeout      int
+	AppName          string
+	AppDescription   string
+	DBPath           string
+	BackupInterval   time.Duration
+	BackupCount      int
+	BackupAge        time.Duration
+	BackupSize       int64
+	CertFile         string
+	KeyFile          string
+	Insecure         bool
+	BasePath         string
+	WebAuthnEnabled  bool
+	WebAuthnRPID     string
+	WebAuthnRPOrigin string
+	ApnsKeyPath      string
+	ApnsKeyID        string
+	ApnsTeamID       string
+	ApnsTopic        string
+	ApnsSandbox      bool
 }
 
 // appPath returns the path at which the single-page app itself is served.
@@ -92,27 +144,32 @@ func (s *srv) appPath() string {
 // time beyond the single executable. Because the parameter is an interface,
 // tests can substitute any other fs.FS (such as os.DirFS) without changing
 // this function.
-func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, idleTimeout int, appName, appDescription string, dbPath string, backupInterval time.Duration, backupCount int, backupAge time.Duration, backupSize int64, certFile, keyFile string, insecure bool, basePath string, webauthnEnabled bool, webauthnRPID, webauthnRPOrigin string) error {
+func Start(cfg Config) error {
 	s := &srv{
-		database:        database,
-		static:          static,
-		version:         version,
-		buildTime:       buildTime,
-		idleTimeout:     idleTimeout,
-		appName:         appName,
-		appDescription:  appDescription,
+		database:        cfg.Database,
+		static:          cfg.Static,
+		version:         cfg.Version,
+		buildTime:       cfg.BuildTime,
+		idleTimeout:     cfg.IdleTimeout,
+		appName:         cfg.AppName,
+		appDescription:  cfg.AppDescription,
 		loginLimiter:    newRateLimiter(),
 		sessions:        newSessionStore(),
-		dbPath:          dbPath,
-		backupInterval:  backupInterval,
-		backupCount:     backupCount,
-		backupAge:       backupAge,
-		backupSize:      backupSize,
-		certFile:        certFile,
-		keyFile:         keyFile,
-		insecure:        insecure,
-		basePath:        basePath,
-		webauthnEnabled: webauthnEnabled,
+		dbPath:          cfg.DBPath,
+		backupInterval:  cfg.BackupInterval,
+		backupCount:     cfg.BackupCount,
+		backupAge:       cfg.BackupAge,
+		backupSize:      cfg.BackupSize,
+		certFile:        cfg.CertFile,
+		keyFile:         cfg.KeyFile,
+		insecure:        cfg.Insecure,
+		basePath:        cfg.BasePath,
+		webauthnEnabled: cfg.WebAuthnEnabled,
+		apnsKeyPath:     cfg.ApnsKeyPath,
+		apnsKeyID:       cfg.ApnsKeyID,
+		apnsTeamID:      cfg.ApnsTeamID,
+		apnsTopic:       cfg.ApnsTopic,
+		apnsSandbox:     cfg.ApnsSandbox,
 	}
 
 	// s.webauthn (and the two ceremony stores) are only constructed when the
@@ -120,20 +177,20 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	// webauthn.go can assume s.webauthn is non-nil without a nil check —
 	// they are simply never reachable otherwise, since the routes below are
 	// only registered inside this same "if webauthnEnabled" branch.
-	if webauthnEnabled {
-		if webauthnRPID == "" || webauthnRPOrigin == "" {
+	if cfg.WebAuthnEnabled {
+		if cfg.WebAuthnRPID == "" || cfg.WebAuthnRPOrigin == "" {
 			return fmt.Errorf("webauthn is enabled but rp-id/rp-origin are not both configured — see 'idtrack default --webauthn-rp-id' and '--webauthn-rp-origin'")
 		}
 
-		rpDisplayName := appName
+		rpDisplayName := cfg.AppName
 		if rpDisplayName == "" {
 			rpDisplayName = "idtrack"
 		}
 
 		wa, err := webauthn.New(&webauthn.Config{
-			RPID:          webauthnRPID,
+			RPID:          cfg.WebAuthnRPID,
 			RPDisplayName: rpDisplayName,
-			RPOrigins:     []string{webauthnRPOrigin},
+			RPOrigins:     []string{cfg.WebAuthnRPOrigin},
 		})
 		if err != nil {
 			return fmt.Errorf("configuring webauthn: %w", err)
@@ -142,6 +199,31 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		s.webauthn = wa
 		s.registerCeremonies = newWebAuthnCeremonyStore()
 		s.loginCeremonies = newWebAuthnCeremonyStore()
+	}
+
+	// s.apns is only constructed when all four required settings are present
+	// — an operator who hasn't configured push notifications at all (the
+	// common case) gets s.apns == nil, which every send path checks before
+	// doing anything (see notify.go). A *partial* configuration (some but
+	// not all of the four set) is treated as a startup error rather than
+	// silently doing nothing, the same "validate the group together"
+	// treatment WebAuthn's RP fields get above — 'idtrack default' already
+	// enforces this same all-or-nothing rule when writing defaults.json, so
+	// reaching this branch normally means someone hand-edited the file.
+	apnsConfigured := cfg.ApnsKeyPath != "" || cfg.ApnsKeyID != "" || cfg.ApnsTeamID != "" || cfg.ApnsTopic != ""
+	if apnsConfigured {
+		if cfg.ApnsKeyPath == "" || cfg.ApnsKeyID == "" || cfg.ApnsTeamID == "" || cfg.ApnsTopic == "" {
+			return fmt.Errorf("push notifications require apns-key-path, apns-key-id, apns-team-id, and apns-topic to all be set — see 'idtrack default --apns-key-path' etc.")
+		}
+
+		client, err := apns.NewClient(cfg.ApnsKeyPath, cfg.ApnsKeyID, cfg.ApnsTeamID, cfg.ApnsTopic, cfg.ApnsSandbox)
+		if err != nil {
+			return fmt.Errorf("configuring APNs: %w", err)
+		}
+
+		s.apns = client
+
+		log.Printf("idtrack: push notifications enabled (topic=%s sandbox=%t)", cfg.ApnsTopic, cfg.ApnsSandbox)
 	}
 
 	mux := http.NewServeMux()
@@ -209,7 +291,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	// registering or managing a passkey is something only an already-known
 	// user can do to their own account (see webauthn.go for the full
 	// request/response shapes).
-	if webauthnEnabled {
+	if cfg.WebAuthnEnabled {
 		mux.HandleFunc(route("POST /api/webauthn/login/begin"), s.handleWebAuthnLoginBegin)
 		mux.Handle(route("POST /api/webauthn/login/finish"), requireJSON(http.HandlerFunc(s.handleWebAuthnLoginFinish)))
 		mux.Handle(route("POST /api/webauthn/register/begin"), s.auth(http.HandlerFunc(s.handleWebAuthnRegisterBegin)))
@@ -263,7 +345,20 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 	mux.Handle(route("GET /api/attachments/{aid}/thumbnail"), s.auth(http.HandlerFunc(s.handleGetAttachmentThumbnail)))
 	mux.Handle(route("DELETE /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleDeleteAttachment)))
 
-	addr := fmt.Sprintf(":%d", port)
+	// Push notifications (server/notifications.go, notify.go). Self-service,
+	// like the WebAuthn credential routes above: every handler operates only
+	// on currentUser(r), never a username from the path/body. Always
+	// registered regardless of whether APNs is actually configured (see
+	// s.apns in notify.go) — token/prefs bookkeeping is harmless even when
+	// the server has no way to act on it yet, matching how the rest of the
+	// API stays available even when a given feature's config is unset.
+	mux.Handle(route("POST /api/notifications/token"), s.auth(requireJSON(http.HandlerFunc(s.handleRegisterNotificationToken))))
+	mux.Handle(route("DELETE /api/notifications/token/{token}"), s.auth(http.HandlerFunc(s.handleUnregisterNotificationToken)))
+	mux.Handle(route("GET /api/notifications/prefs"), s.auth(http.HandlerFunc(s.handleGetNotificationPrefs)))
+	mux.Handle(route("PUT /api/notifications/prefs"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateNotificationPrefs))))
+	mux.Handle(route("POST /api/notifications/badge/reset"), s.auth(requireJSON(http.HandlerFunc(s.handleResetNotificationBadge))))
+
+	addr := fmt.Sprintf(":%d", cfg.Port)
 
 	// Open a plain TCP listener first, then (unless running insecure) wrap it
 	// with TLS. This two-step approach (rather than http.ListenAndServeTLS)
@@ -276,7 +371,7 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 
 	var ln net.Listener
 
-	if insecure {
+	if cfg.Insecure {
 		// Plain HTTP: no cert/key needed at all. This mode is intended for
 		// deployments where a reverse proxy (e.g. nginx) terminates TLS and
 		// forwards plaintext HTTP to idtrack on a private network/loopback.
@@ -289,29 +384,29 @@ func Start(database *sql.DB, port int, static fs.FS, version, buildTime string, 
 		// from the embedded filesystem.
 		var certData, keyData []byte
 
-		if certFile != "" {
-			certData, err = os.ReadFile(certFile)
+		if cfg.CertFile != "" {
+			certData, err = os.ReadFile(cfg.CertFile)
 			if err != nil {
 				return fmt.Errorf("reading TLS cert: %w", err)
 			}
 
-			log.Printf("idtrack using cert file: %s", certFile)
+			log.Printf("idtrack using cert file: %s", cfg.CertFile)
 		} else {
-			certData, err = fs.ReadFile(static, "resources/https-server.crt")
+			certData, err = fs.ReadFile(cfg.Static, "resources/https-server.crt")
 			if err != nil {
 				return fmt.Errorf("reading TLS cert: %w", err)
 			}
 		}
 
-		if keyFile != "" {
-			keyData, err = os.ReadFile(keyFile)
+		if cfg.KeyFile != "" {
+			keyData, err = os.ReadFile(cfg.KeyFile)
 			if err != nil {
 				return fmt.Errorf("reading TLS key: %w", err)
 			}
 
-			log.Printf("idtrack using key file: %s", keyFile)
+			log.Printf("idtrack using key file: %s", cfg.KeyFile)
 		} else {
-			keyData, err = fs.ReadFile(static, "resources/https-server.key")
+			keyData, err = fs.ReadFile(cfg.Static, "resources/https-server.key")
 			if err != nil {
 				return fmt.Errorf("reading TLS key: %w", err)
 			}

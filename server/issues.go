@@ -273,6 +273,16 @@ func (s *srv) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Notify the assignee, unless they're the one who just filed it. Fires
+	// as its own goroutine (see notify.go) so a slow or failing push never
+	// delays this response.
+	if issue.Assignee != "" && issue.Assignee != issue.Reporter {
+		title := fmt.Sprintf("New Issue #%d", issue.ID)
+		notifyBody := fmt.Sprintf("%s assigned you: %s", u.DisplayName, issue.Title)
+
+		go s.notify([]string{issue.Assignee}, notifyCategoryNewIssue, title, notifyBody, issue.ID)
+	}
+
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"issue": issue})
 }
 
@@ -642,6 +652,31 @@ func (s *srv) handleUpdateIssue(w http.ResponseWriter, r *http.Request) {
 		commentBody := fmt.Sprintf("Duplicate of issue #%d", body.DependentIssues[0])
 		// Ignore the error — a failed auto-comment does not roll back the status change.
 		_, _ = db.CreateComment(s.database, id, author, commentBody)
+	}
+
+	// Notify whichever of the reporter/assignee did NOT make this change,
+	// for every status transition (not just ->Resolved — see
+	// docs/NOTIFICATIONS.md's resolved decisions). Uses existing's
+	// pre-update reporter/assignee, and u.Username as the actor, since those
+	// are the two roles the requirement is defined in terms of regardless of
+	// whether this same PUT also changed the assignee.
+	if oldStatus != newStatus {
+		var recipients []string
+
+		if existing.Reporter != "" && existing.Reporter != author {
+			recipients = append(recipients, existing.Reporter)
+		}
+
+		if existing.Assignee != "" && existing.Assignee != author {
+			recipients = append(recipients, existing.Assignee)
+		}
+
+		if len(recipients) > 0 {
+			title := fmt.Sprintf("Issue #%d: %s", id, newStatus)
+			notifyBody := fmt.Sprintf("%s changed status from %s to %s: %s", u.DisplayName, oldStatus, newStatus, existing.Title)
+
+			go s.notify(recipients, notifyCategoryStatusChanged, title, notifyBody, id)
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"issue": issue})
