@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -75,13 +76,36 @@ func (s *srv) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	author := currentUser(r).Username
+	u := currentUser(r)
+	author := u.Username
 
 	comment, err := db.CreateComment(s.database, id, author, body.Body)
 	if err != nil {
 		internalError(w, err)
 
 		return
+	}
+
+	// Notify the reporter and/or assignee, but only when they're different
+	// people — a single-person issue has no "other involved party" to tell
+	// about a comment — and never the comment's own author.
+	if issue.Reporter != "" && issue.Assignee != "" && issue.Reporter != issue.Assignee {
+		var recipients []string
+
+		if issue.Reporter != author {
+			recipients = append(recipients, issue.Reporter)
+		}
+
+		if issue.Assignee != author {
+			recipients = append(recipients, issue.Assignee)
+		}
+
+		if len(recipients) > 0 {
+			title := fmt.Sprintf("New Comment on #%d", id)
+			notifyBody := fmt.Sprintf("%s commented: %s", u.DisplayName, body.Body)
+
+			go s.notify(recipients, notifyCategoryNewComment, title, notifyBody, id)
+		}
 	}
 
 	jsonResponse(w, http.StatusCreated, map[string]interface{}{"comment": comment})

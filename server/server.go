@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/webauthn"
+	"github.com/tucats/idtrack/internal/apns"
 )
 
 // srv holds the shared dependencies that all handler methods need: the
@@ -58,11 +59,22 @@ type srv struct {
 	webauthn           *webauthn.WebAuthn     // nil unless webauthnEnabled; the go-webauthn library instance configured with the operator's RP ID/origin
 	registerCeremonies *webauthnCeremonyStore // in-flight passkey-registration ceremonies, keyed by username; nil unless webauthnEnabled
 	loginCeremonies    *webauthnCeremonyStore // in-flight passkey-login ceremonies, keyed by a random ceremony ID; nil unless webauthnEnabled
-	apnsKeyPath        string                 // absolute path to the APNs .p8 auth key; "" = push notifications are off (see notify.go, added in a later phase)
+	apnsKeyPath        string                 // absolute path to the APNs .p8 auth key; "" = push notifications are off (see notify.go)
 	apnsKeyID          string                 // APNs auth key ID, from the Apple Developer portal
 	apnsTeamID         string                 // Apple Developer Team ID
 	apnsTopic          string                 // APNs topic, i.e. the app's bundle id (e.g. "com.tucats.idtrack")
 	apnsSandbox        bool                   // true = talk to APNs' sandbox environment instead of production
+	apns               pushSender             // nil unless the four Apns* config fields above are all set (see notify.go); every push send/notify() call checks this for nil first
+}
+
+// pushSender is the subset of *apns.Client's API that notify.go depends on.
+// Declaring it as an interface (rather than using *apns.Client directly)
+// lets tests substitute a fake sender and assert on exactly what would have
+// been sent, without spinning up a real APNs connection or an httptest
+// server standing in for one. *apns.Client satisfies this interface as-is —
+// no wrapping needed at the real construction site below.
+type pushSender interface {
+	Send(deviceToken string, payload apns.Payload) error
 }
 
 // Config bundles every setting Start needs. Introduced when the parameter
@@ -187,6 +199,31 @@ func Start(cfg Config) error {
 		s.webauthn = wa
 		s.registerCeremonies = newWebAuthnCeremonyStore()
 		s.loginCeremonies = newWebAuthnCeremonyStore()
+	}
+
+	// s.apns is only constructed when all four required settings are present
+	// — an operator who hasn't configured push notifications at all (the
+	// common case) gets s.apns == nil, which every send path checks before
+	// doing anything (see notify.go). A *partial* configuration (some but
+	// not all of the four set) is treated as a startup error rather than
+	// silently doing nothing, the same "validate the group together"
+	// treatment WebAuthn's RP fields get above — 'idtrack default' already
+	// enforces this same all-or-nothing rule when writing defaults.json, so
+	// reaching this branch normally means someone hand-edited the file.
+	apnsConfigured := cfg.ApnsKeyPath != "" || cfg.ApnsKeyID != "" || cfg.ApnsTeamID != "" || cfg.ApnsTopic != ""
+	if apnsConfigured {
+		if cfg.ApnsKeyPath == "" || cfg.ApnsKeyID == "" || cfg.ApnsTeamID == "" || cfg.ApnsTopic == "" {
+			return fmt.Errorf("push notifications require apns-key-path, apns-key-id, apns-team-id, and apns-topic to all be set — see 'idtrack default --apns-key-path' etc.")
+		}
+
+		client, err := apns.NewClient(cfg.ApnsKeyPath, cfg.ApnsKeyID, cfg.ApnsTeamID, cfg.ApnsTopic, cfg.ApnsSandbox)
+		if err != nil {
+			return fmt.Errorf("configuring APNs: %w", err)
+		}
+
+		s.apns = client
+
+		log.Printf("idtrack: push notifications enabled (topic=%s sandbox=%t)", cfg.ApnsTopic, cfg.ApnsSandbox)
 	}
 
 	mux := http.NewServeMux()
