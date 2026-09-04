@@ -64,6 +64,34 @@ func TestDeleteToken(t *testing.T) {
 	}
 }
 
+func TestDeleteTokenForUser_ScopedToOwner(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+
+	db.AddUser(d, "alice", "Alice", "pw", []string{"any"})
+	db.AddUser(d, "bob", "Bob", "pw", []string{"any"})
+	db.RegisterToken(d, "alice", "tok1")
+
+	// bob attempting to delete alice's token should be a no-op.
+	if err := db.DeleteTokenForUser(d, "bob", "tok1"); err != nil {
+		t.Fatalf("DeleteTokenForUser (wrong owner): %v", err)
+	}
+
+	toks, _ := db.TokensForUser(d, "alice")
+	if len(toks) != 1 {
+		t.Fatalf("expected alice to still own the token, got %v", toks)
+	}
+
+	if err := db.DeleteTokenForUser(d, "alice", "tok1"); err != nil {
+		t.Fatalf("DeleteTokenForUser (correct owner): %v", err)
+	}
+
+	toks, _ = db.TokensForUser(d, "alice")
+	if len(toks) != 0 {
+		t.Fatalf("expected token deleted, got %v", toks)
+	}
+}
+
 func TestIncrementBadge_And_ResetBadge(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()

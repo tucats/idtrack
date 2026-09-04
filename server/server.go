@@ -308,6 +308,19 @@ func Start(cfg Config) error {
 	mux.Handle(route("GET /api/attachments/{aid}/thumbnail"), s.auth(http.HandlerFunc(s.handleGetAttachmentThumbnail)))
 	mux.Handle(route("DELETE /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleDeleteAttachment)))
 
+	// Push notifications (server/notifications.go, notify.go). Self-service,
+	// like the WebAuthn credential routes above: every handler operates only
+	// on currentUser(r), never a username from the path/body. Always
+	// registered regardless of whether APNs is actually configured (see
+	// s.apns in notify.go) — token/prefs bookkeeping is harmless even when
+	// the server has no way to act on it yet, matching how the rest of the
+	// API stays available even when a given feature's config is unset.
+	mux.Handle(route("POST /api/notifications/token"), s.auth(requireJSON(http.HandlerFunc(s.handleRegisterNotificationToken))))
+	mux.Handle(route("DELETE /api/notifications/token/{token}"), s.auth(http.HandlerFunc(s.handleUnregisterNotificationToken)))
+	mux.Handle(route("GET /api/notifications/prefs"), s.auth(http.HandlerFunc(s.handleGetNotificationPrefs)))
+	mux.Handle(route("PUT /api/notifications/prefs"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateNotificationPrefs))))
+	mux.Handle(route("POST /api/notifications/badge/reset"), s.auth(requireJSON(http.HandlerFunc(s.handleResetNotificationBadge))))
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
 
 	// Open a plain TCP listener first, then (unless running insecure) wrap it

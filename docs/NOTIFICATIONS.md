@@ -126,12 +126,14 @@ New `idtrack default` flags: `--apns-key-path`, `--apns-key-id`, `--apns-team-id
 | Method | Path | Auth | Body |
 | --- | --- | --- | --- |
 | POST | `/api/notifications/token` | yes | `{"token": "<hex>"}` — registers/reassigns this device token to the caller |
-| DELETE | `/api/notifications/token` | yes | `{"token": "<hex>"}` — unregisters (called on sign-out) |
+| DELETE | `/api/notifications/token/{token}` | yes | — unregisters (called on sign-out) |
 | GET | `/api/notifications/prefs` | yes | — returns the caller's own `NotificationPrefs` |
 | PUT | `/api/notifications/prefs` | yes | `{"new_issue","new_comment","resolved"}` — replaces the caller's prefs |
 | POST | `/api/notifications/badge/reset` | yes | `{"token": "<hex>"}` — zeroes that device's server-tracked badge count |
 
 All five follow the existing self-service pattern used by `/api/webauthn/credentials` (auth required, no admin check, operates only on `currentUser(r)` — never takes a username in the path/body). The badge-reset endpoint takes a token rather than acting on every token the user owns, since badge count is inherently per-device (one iPhone's icon shouldn't be zeroed by reading mail on an iPad).
+
+**Deviation from the original draft**: unregister takes the token as a path parameter (`DELETE .../token/{token}`) rather than a JSON body, matching every other DELETE route in this API (none of which carry a body) instead of introducing the first body-bearing DELETE. `db.DeleteTokenForUser(username, token)` scopes the delete to the caller's own username — mirroring `db.DeleteCredential`'s ownership check for WebAuthn passkeys — so this can never remove a token belonging to a different account, even by replaying another user's token value. A separate, unscoped `db.DeleteToken(token)` remains for the server-internal APNs-feedback cleanup path (Phase 5), which only ever has the bare token string in hand.
 
 ### 3.6 Wiring notification triggers
 
@@ -210,7 +212,7 @@ struct NotificationPrefs: Codable {
 }
 
 func registerNotificationToken(_ token: String) async throws
-func unregisterNotificationToken(_ token: String) async throws
+func unregisterNotificationToken(_ token: String) async throws  // DELETE /api/notifications/token/{token}
 func getNotificationPrefs() async throws -> NotificationPrefs
 func updateNotificationPrefs(_ prefs: NotificationPrefs) async throws
 func resetBadge(token: String) async throws
@@ -266,7 +268,7 @@ Each phase is intended to be a small, reviewable, independently-buildable unit o
 - [x] **Phase 1 — Server schema & db package.** `notification_tokens` table, `users` prefs columns, `db/notifications.go`. Implemented as designed; `IncrementBadge` uses `UPDATE ... RETURNING` (confirmed supported by `modernc.org/sqlite` v1.50.1) as a single atomic statement rather than read-then-write. Covered by `db/notifications_test.go`.
 - [x] **Phase 2 — `server.Config` refactor.** `server.Start(cfg Config)` replaces the 19-argument form; `commands/serve.go` builds one `server.Config{}` literal. Added the five `Apns*` fields to `server.Config`, `srv`, and `commands/common.go`'s `defaults` struct, plus `idtrack default --apns-key-path/--apns-key-id/--apns-team-id/--apns-topic/--apns-sandbox` (validated as an all-or-nothing group, same pattern as `--webauthn-rp-id`/`--webauthn-rp-origin`) and `showDefaults` rows. No behavior change to existing flags; full test suite still green.
 - [x] **Phase 3 — `internal/apns` client.** JWT signing/caching, HTTP/2 send, response classification (success / permanently-invalid via `ErrInvalidToken` / transient). No new dependency — `net/http` negotiates HTTP/2 automatically; ES256 JWT signing is hand-rolled with `crypto/ecdsa`. Covered by `internal/apns/apns_test.go`, including a test that independently re-verifies a signed auth token's signature with `ecdsa.Verify` against the same key (catching a raw-r‖s-vs-ASN.1-DER mistake that would otherwise only surface as APNs silently rejecting everything in production).
-- [ ] **Phase 4 — API endpoints.** `POST`/`DELETE /api/notifications/token`, `GET`/`PUT /api/notifications/prefs`, registered in `server.go`.
+- [x] **Phase 4 — API endpoints.** `server/notifications.go`: `POST /api/notifications/token`, `DELETE /api/notifications/token/{token}` (path param, not body — see the deviation note above), `GET`/`PUT /api/notifications/prefs`, `POST /api/notifications/badge/reset`; registered in `server.go` alongside the WebAuthn/attachment routes. Added `db.DeleteTokenForUser` (ownership-scoped, for the self-service unregister endpoint) alongside the existing unscoped `db.DeleteToken` (for Phase 5's internal APNs-feedback cleanup). Covered by `server/notifications_test.go`, including that one user cannot unregister or alter another user's token/prefs.
 - [ ] **Phase 5 — Trigger wiring.** Hook the three notification points into `handleCreateIssue`, `handleCreateComment`, `handleUpdateIssue`; shared `s.notify(...)` helper; invalid-token cleanup on APNs feedback.
 - [ ] **Phase 6 — Server docs.** Update `docs/API.md` (new endpoints), `CLAUDE.md` (new "Important Implementation Decisions" entry + schema + config table entries), `MANUAL.md` if it documents `idtrack default` flags for end users.
 - [ ] **Phase 7 — iOS entitlements & delegate scaffolding.** `aps-environment` entitlement, Xcode capability, `AppDelegate`/`UNUserNotificationCenterDelegate` in new `PushNotifications.swift`, `AppState.shared`.

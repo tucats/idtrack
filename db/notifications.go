@@ -49,11 +49,24 @@ func RegisterToken(database *sql.DB, username, token string) error {
 	return err
 }
 
-// DeleteToken removes a single device token, whether because the client
-// explicitly unregistered it (sign-out) or because APNs reported it as
-// permanently invalid (BadDeviceToken/Unregistered — see internal/apns).
+// DeleteToken removes a single device token unconditionally. Used by the
+// server-internal, trusted cleanup path when APNs reports a token as
+// permanently invalid (BadDeviceToken/Unregistered — see internal/apns) —
+// that caller only ever has the token string in hand, not an owning
+// username, and has no reason to scope the delete.
 func DeleteToken(database *sql.DB, token string) error {
 	_, err := database.Exec(`DELETE FROM notification_tokens WHERE token = ?`, token)
+
+	return err
+}
+
+// DeleteTokenForUser removes token only if it currently belongs to username,
+// mirroring DeleteCredential's ownership-scoped delete for WebAuthn passkeys.
+// Used by the self-service unregister endpoint so an authenticated caller
+// can never remove a device token belonging to a different account, even by
+// guessing or replaying another user's token value.
+func DeleteTokenForUser(database *sql.DB, username, token string) error {
+	_, err := database.Exec(`DELETE FROM notification_tokens WHERE token = ? AND username = ?`, token, username)
 
 	return err
 }
