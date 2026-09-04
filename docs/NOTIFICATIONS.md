@@ -263,7 +263,7 @@ These require access to the Apple Developer account and cannot be automated from
 Each phase is intended to be a small, reviewable, independently-buildable unit of work.
 
 - [ ] **Phase 0 — Prerequisites.** Complete §5 above (Apple Developer key, Xcode capability). Blocks end-to-end testing of every later phase but not the code itself.
-- [ ] **Phase 1 — Server schema & db package.** `notification_tokens` table, `users` prefs columns, `db/notifications.go`.
+- [x] **Phase 1 — Server schema & db package.** `notification_tokens` table, `users` prefs columns, `db/notifications.go`. Implemented as designed; `IncrementBadge` uses `UPDATE ... RETURNING` (confirmed supported by `modernc.org/sqlite` v1.50.1) as a single atomic statement rather than read-then-write. Covered by `db/notifications_test.go`.
 - [ ] **Phase 2 — `server.Config` refactor.** Convert `server.Start()`'s positional-parameter signature into a config struct (mechanical; no behavior change), then add the five APNs fields to it and to `commands/common.go`'s `defaults` struct + new `idtrack default --apns-*` flags.
 - [ ] **Phase 3 — `internal/apns` client.** JWT signing/caching, HTTP/2 send, response classification (success / permanently-invalid / transient).
 - [ ] **Phase 4 — API endpoints.** `POST`/`DELETE /api/notifications/token`, `GET`/`PUT /api/notifications/prefs`, registered in `server.go`.

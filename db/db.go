@@ -134,6 +134,21 @@ func initSchema(database *sql.DB) error {
 			thumbnail   BLOB NOT NULL,
 			created_at  TEXT NOT NULL
 		);
+		-- Registered APNs push-notification device tokens. Like
+		-- webauthn_credentials and attachments above, this is a brand-new table,
+		-- so an old database gets it for free via CREATE TABLE IF NOT EXISTS with
+		-- nothing to backfill — it starts (and stays) empty until a client
+		-- registers its first device token. The token itself is the primary key
+		-- (see db.RegisterToken) because a device token already uniquely
+		-- identifies one (app, device) pair; badge_count is tracked here because
+		-- APNs itself is stateless about badge numbers (see db.IncrementBadge).
+		CREATE TABLE IF NOT EXISTS notification_tokens (
+			token             TEXT PRIMARY KEY,
+			username          TEXT NOT NULL,
+			created_at        TEXT NOT NULL,
+			last_notified_at  TEXT NOT NULL DEFAULT '',
+			badge_count       INTEGER NOT NULL DEFAULT 0
+		);
 	`)
 	if err != nil {
 		return err
@@ -205,6 +220,25 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	// Per-category push-notification opt-in/opt-out. DEFAULT 1 (on) is a safe
+	// schema default for rows that predate this feature — an upgraded server
+	// shouldn't retroactively silence a user who never made a choice — though
+	// in practice the client always writes an explicit value once the OS
+	// permission prompt is answered (see docs/NOTIFICATIONS.md), so the
+	// default is rarely observed once a user has actually launched a build
+	// with notifications support.
+	if err := addColumnIfMissing(database, "users", "notify_new_issue", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+
+	if err := addColumnIfMissing(database, "users", "notify_new_comment", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+
+	if err := addColumnIfMissing(database, "users", "notify_resolved", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+
 	// Seed the two reserved team names.  INSERT OR IGNORE is idempotent.
 	if _, err := database.Exec(`
 		INSERT OR IGNORE INTO teams (name, description) VALUES ('admin', '');
@@ -261,6 +295,8 @@ func initSchema(database *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_webauthn_credentials_username ON webauthn_credentials (username)`,
 		// Used by ListAttachments/DeleteAttachmentsByIssue to fetch/scope an issue's attachments.
 		`CREATE INDEX IF NOT EXISTS idx_attachments_issue_id ON attachments (issue_id)`,
+		// Used by TokensForUser to fetch all of a user's registered devices.
+		`CREATE INDEX IF NOT EXISTS idx_notification_tokens_username ON notification_tokens (username)`,
 	} {
 		if _, err := database.Exec(ddl); err != nil {
 			return err
