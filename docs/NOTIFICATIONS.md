@@ -1,7 +1,5 @@
 # Push Notifications — Implementation Plan
 
-**Status: Code complete (Phases 0–11); awaiting real-device end-to-end testing (Phase 12) before merge.** This document is both the design proposal and the living record of implementation progress. Each phase below carries a status checkbox and, once started, notes on what was actually built and any deviations from the original plan. All work happened on the `notifications` branch (pushed to `origin/notifications`) — **do not merge to `main` until Phase 12 passes and is explicitly approved.**
-
 **Resolved decisions** (from review of the original draft — see §8 for the questions these answer):
 
 1. All issue state transitions get a notification (not narrowed to just →Resolved).
@@ -176,6 +174,7 @@ struct IDTrackApp: App {
 ```
 
 `AppDelegate`:
+
 - `application(_:didRegisterForRemoteNotificationsWithDeviceToken:)` — converts the `Data` token to a lowercase hex string, hands it to `AppState.shared` to POST to the server.
 - `application(_:didFailToRegisterForRemoteNotificationsWithError:)` — logs only (e.g. no network, simulator without push support on older iOS).
 - Sets `UNUserNotificationCenter.current().delegate = self` and implements `UNUserNotificationCenterDelegate`:
