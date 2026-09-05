@@ -8,11 +8,6 @@
 *.so
 *.dylib
 idtrack
-xcuserdata/
-
-# sourcekit-lsp build server config (machine-specific DerivedData path;
-# regenerate per-machine with `xcode-build-server config -project ios-app/IDTrack.xcodeproj -scheme IDTrack`)
-buildServer.json
 
 # Test binary, built with `go test -c`
 *.test

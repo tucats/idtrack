@@ -152,7 +152,7 @@ func (s *srv) notify(usernames []string, category notifyCategory, title, body st
 
 ## 4. Client-Side Architecture
 
-### 4.1 Entitlements (`ios-app/IDTrackApp/IDTrackApp.entitlements`)
+### 4.1 Entitlements (`IDTrackApp/IDTrackApp.entitlements`, now in the separate idtrack-app client repo)
 
 ```xml
 <key>aps-environment</key>
