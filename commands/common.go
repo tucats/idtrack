@@ -223,6 +223,10 @@ Commands:
 			 APNs topic, i.e. the app's bundle id, e.g. "com.tucats.idtrack".
 		 --apns-sandbox [true|false]
 			 Use APNs' sandbox environment instead of production.
+		 --export-shell
+			 Print the current defaults as shell variable assignments
+			 (IDTRACK_DEFAULT_<NAME>=value) for use by scripts, e.g.
+			 tools/install-service-macos.sh --use-defaults.
 
 	define [subcommand] [options]
 		Create projects and components.

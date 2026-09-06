@@ -38,10 +38,24 @@
 #   --backup-interval DURATION   Backup interval, e.g. 1h, 30m. Default: off.
 #   --backup-count N             Maximum number of backups. Default: off.
 #   --backup-age DURATION        Delete backups older than this. Default: off.
+#   --backup-size SIZE           Total backup size limit, e.g. 500mb. Default: off.
 #
 #   --idle-timeout DURATION      Idle logout timer. Default: off.
 #   --app-name TEXT              Custom application name.
 #   --app-description TEXT       Custom tagline.
+#
+#   --insecure true|false        Listen with plain HTTP instead of TLS (for
+#                                 use behind a TLS-terminating reverse proxy).
+#                                 Default: false.
+#   --base-path PATH             Mount the whole app under this URL prefix,
+#                                 e.g. /idtrack, instead of the origin root.
+#
+#   --use-defaults       Fill in any option above that was not given
+#                       explicitly on this command line from the current
+#                       `idtrack default` settings for the user running this
+#                       script (~/.idtrack/defaults.json). An explicit flag
+#                       always wins over an inherited default. See "Settings
+#                       persistence" below for which values this affects.
 #
 #   --log PATH          Path to the log file.
 #                       Default (agent):  $HOME/.idtrack/idtrack.log
@@ -71,9 +85,26 @@
 #     --cert /etc/ssl/certs/idtrack.crt \
 #     --key  /etc/ssl/private/idtrack.key
 #
+#   # Install picking up port/database/backup/etc. from `idtrack default`,
+#   # overriding only the port
+#   ./tools/install-service-macos.sh --use-defaults --port 9443
+#
 #   # Remove the service
 #   ./tools/install-service-macos.sh --uninstall
 #   sudo ./tools/install-service-macos.sh --uninstall --system
+#
+# Settings persistence:
+#   `idtrack serve` only accepts --port, --database, --server-cert/
+#   --server-key, --insecure, and --base-path on its own command line —
+#   everything else (backup-interval/-count/-age/-size, idle-timeout,
+#   app-name, app-description) is read by the server straight out of
+#   ~/.idtrack/defaults.json at startup, with no per-invocation flag. So this
+#   script writes those values into defaults.json with `idtrack default`
+#   before generating the plist, rather than (incorrectly) passing them as
+#   ProgramArguments to `idtrack serve`, where they would make the service
+#   fail immediately with "unknown option". This also means those settings
+#   are shared with any other use of the idtrack CLI for this user, not
+#   scoped to just this service.
 # =============================================================================
 
 set -euo pipefail
@@ -90,13 +121,17 @@ KEY_FILE=""
 BACKUP_INTERVAL=""
 BACKUP_COUNT=""
 BACKUP_AGE=""
+BACKUP_SIZE=""
 IDLE_TIMEOUT=""
 APP_NAME=""
 APP_DESC=""
+INSECURE=""
+BASE_PATH=""
 LOG_PATH=""
 SYSTEM_MODE=0
 RUN_AS="${USER}"
 UNINSTALL=0
+USE_DEFAULTS=0
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -111,9 +146,13 @@ while [[ $# -gt 0 ]]; do
         --backup-interval) BACKUP_INTERVAL="$2"; shift 2 ;;
         --backup-count)    BACKUP_COUNT="$2";    shift 2 ;;
         --backup-age)      BACKUP_AGE="$2";      shift 2 ;;
+        --backup-size)     BACKUP_SIZE="$2";     shift 2 ;;
         --idle-timeout)    IDLE_TIMEOUT="$2";    shift 2 ;;
         --app-name)        APP_NAME="$2";        shift 2 ;;
         --app-description) APP_DESC="$2";        shift 2 ;;
+        --insecure)        INSECURE="$2";        shift 2 ;;
+        --base-path)       BASE_PATH="$2";       shift 2 ;;
+        --use-defaults)    USE_DEFAULTS=1;       shift ;;
         --log)          LOG_PATH="$2";        shift 2 ;;
         --label)        LABEL="$2";           shift 2 ;;
         --system)       SYSTEM_MODE=1;        shift ;;
@@ -193,6 +232,52 @@ if [[ ! -x "${BINARY}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# idtrack_default: run `idtrack default ...` as the user whose
+# ~/.idtrack/defaults.json actually governs the service being installed.
+# ---------------------------------------------------------------------------
+# For a LaunchAgent this is always the current user (no sudo involved). For a
+# LaunchDaemon (--system) this script itself runs as root via sudo, but the
+# daemon is configured to run as --run-as USERNAME and it is USERNAME's
+# defaults.json that server.Start() will read at boot — so both reading (via
+# --export-shell, below) and writing (the "Persist settings" step, further
+# down) settings must happen as RUN_AS, not root, or they would silently land
+# in the wrong home directory and never take effect.
+idtrack_default() {
+    if [[ "${SYSTEM_MODE}" -eq 1 && "${RUN_AS}" != "$(id -un)" ]]; then
+        sudo -u "${RUN_AS}" "${BINARY}" default "$@"
+    else
+        "${BINARY}" default "$@"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# --use-defaults: inherit unset options from the current idtrack defaults
+# ---------------------------------------------------------------------------
+# `idtrack default --export-shell` prints the target user's existing
+# ~/.idtrack/defaults.json as IDTRACK_DEFAULT_<NAME> shell assignments (see
+# commands/defaults.go's exportDefaultsShell). Eval'ing that output and then
+# filling with bash's "${VAR:=fallback}" form only touches a variable this
+# script did not already receive an explicit value for above — an explicit
+# flag on this command line always wins over an inherited default.
+if [[ "${USE_DEFAULTS}" -eq 1 ]]; then
+    eval "$(idtrack_default --export-shell)"
+
+    : "${DATABASE:=${IDTRACK_DEFAULT_DATABASE}}"
+    : "${PORT:=${IDTRACK_DEFAULT_PORT}}"
+    : "${CERT_FILE:=${IDTRACK_DEFAULT_SERVER_CERT}}"
+    : "${KEY_FILE:=${IDTRACK_DEFAULT_SERVER_KEY}}"
+    : "${BACKUP_INTERVAL:=${IDTRACK_DEFAULT_BACKUP_INTERVAL}}"
+    : "${BACKUP_COUNT:=${IDTRACK_DEFAULT_BACKUP_COUNT}}"
+    : "${BACKUP_AGE:=${IDTRACK_DEFAULT_BACKUP_AGE}}"
+    : "${BACKUP_SIZE:=${IDTRACK_DEFAULT_BACKUP_SIZE}}"
+    : "${IDLE_TIMEOUT:=${IDTRACK_DEFAULT_IDLE_TIMEOUT}}"
+    : "${APP_NAME:=${IDTRACK_DEFAULT_APP_NAME}}"
+    : "${APP_DESC:=${IDTRACK_DEFAULT_APP_DESCRIPTION}}"
+    : "${INSECURE:=${IDTRACK_DEFAULT_INSECURE}}"
+    : "${BASE_PATH:=${IDTRACK_DEFAULT_BASE_PATH}}"
+fi
+
+# ---------------------------------------------------------------------------
 # Apply defaults that depend on mode
 # ---------------------------------------------------------------------------
 if [[ "${SYSTEM_MODE}" -eq 1 ]]; then
@@ -247,6 +332,28 @@ if [[ "${SYSTEM_MODE}" -eq 1 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Persist settings that `idtrack serve` cannot take directly.
+# ---------------------------------------------------------------------------
+# See "Settings persistence" in the header comment: backup-*, idle-timeout,
+# and the branding options only take effect via ~/.idtrack/defaults.json, so
+# they are saved here with `idtrack default` rather than added to the
+# plist's ProgramArguments (which only ever invokes `idtrack serve`).
+DEFAULT_ARGS=()
+[[ -n "${BACKUP_INTERVAL}" ]] && DEFAULT_ARGS+=(--backup-interval "${BACKUP_INTERVAL}")
+[[ -n "${BACKUP_COUNT}"    ]] && DEFAULT_ARGS+=(--backup-count "${BACKUP_COUNT}")
+[[ -n "${BACKUP_AGE}"      ]] && DEFAULT_ARGS+=(--backup-age "${BACKUP_AGE}")
+[[ -n "${BACKUP_SIZE}"     ]] && DEFAULT_ARGS+=(--backup-size "${BACKUP_SIZE}")
+[[ -n "${IDLE_TIMEOUT}"    ]] && DEFAULT_ARGS+=(--idle-timeout "${IDLE_TIMEOUT}")
+[[ -n "${APP_NAME}"        ]] && DEFAULT_ARGS+=(--app-name "${APP_NAME}")
+[[ -n "${APP_DESC}"        ]] && DEFAULT_ARGS+=(--app-description "${APP_DESC}")
+
+if [[ "${#DEFAULT_ARGS[@]}" -gt 0 ]]; then
+    echo "Saving server settings to idtrack defaults (~/.idtrack/defaults.json)..."
+    idtrack_default "${DEFAULT_ARGS[@]}"
+    echo ""
+fi
+
+# ---------------------------------------------------------------------------
 # Build the ProgramArguments array for the plist.
 # Each argument becomes its own <string> element.
 # ---------------------------------------------------------------------------
@@ -269,29 +376,13 @@ PROG_ARGS="        <string>${BINARY}</string>
         <string>--server-key</string>
         <string>${KEY_FILE}</string>"
 
-[[ -n "${BACKUP_INTERVAL}" ]] && PROG_ARGS+="
-        <string>--backup-interval</string>
-        <string>${BACKUP_INTERVAL}</string>"
+[[ -n "${INSECURE}"        ]] && PROG_ARGS+="
+        <string>--insecure</string>
+        <string>${INSECURE}</string>"
 
-[[ -n "${BACKUP_COUNT}"    ]] && PROG_ARGS+="
-        <string>--backup-count</string>
-        <string>${BACKUP_COUNT}</string>"
-
-[[ -n "${BACKUP_AGE}"      ]] && PROG_ARGS+="
-        <string>--backup-age</string>
-        <string>${BACKUP_AGE}</string>"
-
-[[ -n "${IDLE_TIMEOUT}"    ]] && PROG_ARGS+="
-        <string>--idle-timeout</string>
-        <string>${IDLE_TIMEOUT}</string>"
-
-[[ -n "${APP_NAME}"        ]] && PROG_ARGS+="
-        <string>--app-name</string>
-        <string>${APP_NAME}</string>"
-
-[[ -n "${APP_DESC}"        ]] && PROG_ARGS+="
-        <string>--app-description</string>
-        <string>${APP_DESC}</string>"
+[[ -n "${BASE_PATH}"       ]] && PROG_ARGS+="
+        <string>--base-path</string>
+        <string>${BASE_PATH}</string>"
 
 # ---------------------------------------------------------------------------
 # Generate the plist
@@ -403,6 +494,15 @@ echo "  TLS cert     : ${CERT_FILE}"
 echo "  TLS key      : ${KEY_FILE}"
 else
 echo "  TLS cert     : built-in self-signed"
+fi
+if [[ -n "${INSECURE}" ]]; then
+echo "  Insecure     : ${INSECURE}"
+fi
+if [[ -n "${BASE_PATH}" ]]; then
+echo "  Base path    : ${BASE_PATH}"
+fi
+if [[ "${#DEFAULT_ARGS[@]}" -gt 0 ]]; then
+echo "  Other settings saved to ~/.idtrack/defaults.json (backup/idle-timeout/branding)"
 fi
 if [[ "${SYSTEM_MODE}" -eq 1 ]]; then
 echo "  Mode         : LaunchDaemon (starts at boot, runs as ${RUN_AS})"

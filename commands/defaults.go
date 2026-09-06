@@ -28,12 +28,12 @@ const offValue = "off"
 // --app-description, --backup-interval, --backup-count, --backup-age,
 // --backup-size, --webauthn/--webauthn-rp-id/--webauthn-rp-origin,
 // --apns-key-path/--apns-key-id/--apns-team-id/--apns-topic/--apns-sandbox
-// (see docs/NOTIFICATIONS.md). Each duration/count/size flag also accepts
-// the literal value "off" as a synonym for its disabled/zero state (see
-// offValue and parseBackupSize). Validation failures (bad port number,
-// malformed duration, a --server-cert file that doesn't exist, etc.) print
-// an error to stderr and exit the process with status 1 — nothing is
-// written to disk in that case.
+// (see docs/NOTIFICATIONS.md), and --export-shell (see exportDefaultsShell).
+// Each duration/count/size flag also accepts the literal value "off" as a
+// synonym for its disabled/zero state (see offValue and parseBackupSize).
+// Validation failures (bad port number, malformed duration, a --server-cert
+// file that doesn't exist, etc.) print an error to stderr and exit the
+// process with status 1 — nothing is written to disk in that case.
 //
 // Side effects on success: writes ~/.idtrack/defaults.json (creating
 // ~/.idtrack with mode 0700 if needed) and prints a confirmation summary of
@@ -87,10 +87,14 @@ func Default(args []string) {
 		apnsTopicSet        bool
 		apnsSandbox         bool
 		apnsSandboxSet      bool
+		exportShell         bool
 	)
 
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--export-shell":
+			exportShell = true
+
 		case "--server-cert", "--cert", "--cert-file":
 			if i+1 < len(args) {
 				i++
@@ -404,6 +408,15 @@ func Default(args []string) {
 			Usage()
 			os.Exit(1)
 		}
+	}
+
+	// --export-shell is a standalone reporting action, like showDefaults()
+	// below — it takes priority over every other flag and never touches
+	// defaults.json.
+	if exportShell {
+		exportDefaultsShell(loadDefaults())
+
+		return
 	}
 
 	anySet := port != 0 || database != "" || idleTimeoutSet || appName != "" || appDescription != "" ||
@@ -779,4 +792,77 @@ func showDefaults() {
 	}
 
 	row("apns-sandbox", fmt.Sprintf("%t", defs.ApnsSandbox))
+}
+
+// exportDefaultsShell prints every field of defs as a shell variable
+// assignment named IDTRACK_DEFAULT_<FIELD>, one per line, each value
+// single-quoted for safe use as a POSIX shell word. It exists so external
+// tooling — currently tools/install-service-macos.sh's --use-defaults
+// option — can pull in the operator's already-configured idtrack settings
+// with a plain `eval "$(idtrack default --export-shell)"` instead of
+// re-parsing ~/.idtrack/defaults.json itself.
+//
+// A field whose stored value means "unset"/"disabled" (0, "", or false for
+// a bool that defaults false) is printed as an empty string, so a caller can
+// use bash's "${VAR:=$IDTRACK_DEFAULT_X}" idiom uniformly: an explicit value
+// already in VAR is left alone, an unset VAR is filled from the default (or
+// stays empty if the default itself is unset). Booleans are always printed
+// as "true"/"false" rather than being blanked when false, since false is
+// itself the field's meaningful default state.
+func exportDefaultsShell(defs defaults) {
+	row := func(name, value string) {
+		fmt.Printf("IDTRACK_DEFAULT_%s=%s\n", name, shellQuote(value))
+	}
+
+	rowInt := func(name string, value int) {
+		s := ""
+		if value != 0 {
+			s = strconv.Itoa(value)
+		}
+
+		row(name, s)
+	}
+
+	rowBool := func(name string, value bool) {
+		row(name, strconv.FormatBool(value))
+	}
+
+	rowInt("PORT", defs.Port)
+	row("DATABASE", defs.Database)
+	row("SERVER_CERT", defs.ServerCert)
+	row("SERVER_KEY", defs.ServerKey)
+
+	// Stored in seconds; re-expressed with an explicit unit so the value is
+	// immediately usable as a Go duration string (the form --idle-timeout
+	// itself accepts) rather than a bare, unit-less number.
+	idleTimeout := ""
+	if defs.IdleTimeout > 0 {
+		idleTimeout = fmt.Sprintf("%ds", defs.IdleTimeout)
+	}
+
+	row("IDLE_TIMEOUT", idleTimeout)
+
+	row("APP_NAME", defs.AppName)
+	row("APP_DESCRIPTION", defs.AppDescription)
+	row("BACKUP_INTERVAL", defs.BackupInterval)
+	rowInt("BACKUP_COUNT", defs.BackupCount)
+	row("BACKUP_AGE", defs.BackupAge)
+	row("BACKUP_SIZE", defs.BackupSize)
+	rowBool("INSECURE", defs.Insecure)
+	row("BASE_PATH", defs.BasePath)
+	rowBool("WEBAUTHN", defs.WebAuthn)
+	row("WEBAUTHN_RP_ID", defs.WebAuthnRPID)
+	row("WEBAUTHN_RP_ORIGIN", defs.WebAuthnRPOrigin)
+	row("APNS_KEY_PATH", defs.ApnsKeyPath)
+	row("APNS_KEY_ID", defs.ApnsKeyID)
+	row("APNS_TEAM_ID", defs.ApnsTeamID)
+	row("APNS_TOPIC", defs.ApnsTopic)
+	rowBool("APNS_SANDBOX", defs.ApnsSandbox)
+}
+
+// shellQuote wraps s in single quotes for safe use as a single POSIX shell
+// word, escaping any embedded single quotes with the standard close-quote /
+// escaped-quote / reopen-quote idiom ('\'').
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
