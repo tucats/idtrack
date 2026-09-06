@@ -51,10 +51,24 @@
 #   --backup-interval DURATION   Backup interval, e.g. 1h, 30m. Default: off.
 #   --backup-count N             Maximum number of backups. Default: off.
 #   --backup-age DURATION        Delete backups older than this. Default: off.
+#   --backup-size SIZE           Total backup size limit, e.g. 500mb. Default: off.
 #
 #   --idle-timeout DURATION      Idle logout timer. Default: off.
 #   --app-name TEXT              Custom application name.
 #   --app-description TEXT       Custom tagline.
+#
+#   --insecure true|false        Listen with plain HTTP instead of TLS (for
+#                                 use behind a TLS-terminating reverse proxy).
+#                                 Default: false.
+#   --base-path PATH             Mount the whole app under this URL prefix,
+#                                 e.g. /idtrack, instead of the origin root.
+#
+#   --use-defaults       Fill in any option above that was not given
+#                       explicitly on this command line from the current
+#                       `idtrack default` settings for the account that will
+#                       run the service (see "Settings persistence" below).
+#                       An explicit flag always wins over an inherited
+#                       default.
 #
 #   --service-user NAME  (System mode only) The system user the service runs
 #                        as.  Created automatically if it does not exist.
@@ -83,11 +97,36 @@
 #   # User service (no sudo needed)
 #   ./tools/install-service-linux.sh --user-service
 #
+#   # System service picking up port/database/backup/etc. from `idtrack
+#   # default`, overriding only the port
+#   sudo ./tools/install-service-linux.sh --use-defaults --port 9443
+#
 #   # Remove system service
 #   sudo ./tools/install-service-linux.sh --uninstall
 #
 #   # Remove user service
 #   ./tools/install-service-linux.sh --uninstall --user-service
+#
+# Settings persistence:
+#   `idtrack serve` only accepts --port, --database, --server-cert/
+#   --server-key, --insecure, and --base-path on its own command line —
+#   everything else (backup-interval/-count/-age/-size, idle-timeout,
+#   app-name, app-description) is read by the server straight out of
+#   ~/.idtrack/defaults.json at startup, with no per-invocation flag. So this
+#   script writes those values into defaults.json with `idtrack default`
+#   before generating the unit file, rather than (incorrectly) passing them
+#   as ExecStart arguments to `idtrack serve`, where they would make the
+#   service fail immediately with "unknown option".
+#
+#   For a user service this defaults.json is simply $HOME/.idtrack/ for the
+#   invoking user. For a system service, though, the server runs as
+#   --service-user — normally a freshly created system account with no home
+#   directory at all (see `useradd --no-create-home` below), so there is
+#   nowhere sensible for that account's $HOME to resolve to on its own. This
+#   script gives the service account a fixed home at /var/lib/idtrack purely
+#   for ~/.idtrack/defaults.json (independent of wherever --database itself
+#   points), and the generated unit file sets the same HOME= so the running
+#   server resolves the identical path at boot.
 # =============================================================================
 
 set -euo pipefail
@@ -103,12 +142,21 @@ KEY_FILE=""
 BACKUP_INTERVAL=""
 BACKUP_COUNT=""
 BACKUP_AGE=""
+BACKUP_SIZE=""
 IDLE_TIMEOUT=""
 APP_NAME=""
 APP_DESC=""
+INSECURE=""
+BASE_PATH=""
 SERVICE_USER="idtrack"
 USER_SERVICE=0
 UNINSTALL=0
+USE_DEFAULTS=0
+
+# Fixed home for the system service account's ~/.idtrack/defaults.json — see
+# "Settings persistence" in the header comment above for why this can't just
+# be the account's own (usually absent) home directory.
+SERVICE_HOME="/var/lib/idtrack"
 
 SERVICE_NAME="idtrack"
 
@@ -125,9 +173,13 @@ while [[ $# -gt 0 ]]; do
         --backup-interval) BACKUP_INTERVAL="$2"; shift 2 ;;
         --backup-count)    BACKUP_COUNT="$2";    shift 2 ;;
         --backup-age)      BACKUP_AGE="$2";      shift 2 ;;
+        --backup-size)     BACKUP_SIZE="$2";     shift 2 ;;
         --idle-timeout)    IDLE_TIMEOUT="$2";    shift 2 ;;
         --app-name)        APP_NAME="$2";        shift 2 ;;
         --app-description) APP_DESC="$2";        shift 2 ;;
+        --insecure)        INSECURE="$2";        shift 2 ;;
+        --base-path)       BASE_PATH="$2";       shift 2 ;;
+        --use-defaults)    USE_DEFAULTS=1;       shift ;;
         --service-user)    SERVICE_USER="$2";    shift 2 ;;
         --user-service)    USER_SERVICE=1;       shift ;;
         --uninstall)       UNINSTALL=1;          shift ;;
@@ -222,6 +274,67 @@ if [[ ! -x "${BINARY}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# System service: create the dedicated service account
+# ---------------------------------------------------------------------------
+# Done here — before any defaults are read or written below — so that the
+# --use-defaults / settings-persistence steps further down have an account
+# to run `idtrack default` as. The data directory itself (which may differ
+# from SERVICE_HOME if --database points elsewhere) is created later, once
+# DATABASE is resolved.
+if [[ "${USER_SERVICE}" -eq 0 ]]; then
+    # Create the system user if it doesn't already exist.
+    # -r / --system  — no home directory, no password, UID in the system range
+    # -s             — login shell set to nologin for security
+    # -M             — don't create a home directory
+    if ! id "${SERVICE_USER}" &>/dev/null; then
+        echo "Creating system user '${SERVICE_USER}'..."
+        NOLOGIN="$(command -v nologin 2>/dev/null || echo /usr/sbin/nologin)"
+        useradd --system --no-create-home --shell "${NOLOGIN}" "${SERVICE_USER}"
+    fi
+
+    mkdir -p "${SERVICE_HOME}"
+    chown "${SERVICE_USER}:${SERVICE_USER}" "${SERVICE_HOME}"
+fi
+
+# idtrack_default: run `idtrack default ...` as the account that will
+# actually run the service, so it reads/writes the same defaults.json the
+# server itself will read at boot (see "Settings persistence" above).
+idtrack_default() {
+    if [[ "${USER_SERVICE}" -eq 0 ]]; then
+        sudo -u "${SERVICE_USER}" env HOME="${SERVICE_HOME}" "${BINARY}" default "$@"
+    else
+        "${BINARY}" default "$@"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# --use-defaults: inherit unset options from the current idtrack defaults
+# ---------------------------------------------------------------------------
+# `idtrack default --export-shell` prints the target account's existing
+# ~/.idtrack/defaults.json as IDTRACK_DEFAULT_<NAME> shell assignments (see
+# commands/defaults.go's exportDefaultsShell). Eval'ing that output and then
+# filling with bash's "${VAR:=fallback}" form only touches a variable this
+# script did not already receive an explicit value for above — an explicit
+# flag on this command line always wins over an inherited default.
+if [[ "${USE_DEFAULTS}" -eq 1 ]]; then
+    eval "$(idtrack_default --export-shell)"
+
+    : "${DATABASE:=${IDTRACK_DEFAULT_DATABASE}}"
+    : "${PORT:=${IDTRACK_DEFAULT_PORT}}"
+    : "${CERT_FILE:=${IDTRACK_DEFAULT_SERVER_CERT}}"
+    : "${KEY_FILE:=${IDTRACK_DEFAULT_SERVER_KEY}}"
+    : "${BACKUP_INTERVAL:=${IDTRACK_DEFAULT_BACKUP_INTERVAL}}"
+    : "${BACKUP_COUNT:=${IDTRACK_DEFAULT_BACKUP_COUNT}}"
+    : "${BACKUP_AGE:=${IDTRACK_DEFAULT_BACKUP_AGE}}"
+    : "${BACKUP_SIZE:=${IDTRACK_DEFAULT_BACKUP_SIZE}}"
+    : "${IDLE_TIMEOUT:=${IDTRACK_DEFAULT_IDLE_TIMEOUT}}"
+    : "${APP_NAME:=${IDTRACK_DEFAULT_APP_NAME}}"
+    : "${APP_DESC:=${IDTRACK_DEFAULT_APP_DESCRIPTION}}"
+    : "${INSECURE:=${IDTRACK_DEFAULT_INSECURE}}"
+    : "${BASE_PATH:=${IDTRACK_DEFAULT_BASE_PATH}}"
+fi
+
+# ---------------------------------------------------------------------------
 # Apply defaults that depend on mode
 # ---------------------------------------------------------------------------
 if [[ "${USER_SERVICE}" -eq 1 ]]; then
@@ -252,21 +365,16 @@ if [[ -n "${CERT_FILE}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# System service: create the dedicated service account and data directory
+# Create the data directory (the service account itself was already created
+# above, before defaults were read/written)
 # ---------------------------------------------------------------------------
 if [[ "${USER_SERVICE}" -eq 0 ]]; then
-    # Create the system user if it doesn't already exist.
-    # -r / --system  — no home directory, no password, UID in the system range
-    # -s             — login shell set to nologin for security
-    # -M             — don't create a home directory
-    if ! id "${SERVICE_USER}" &>/dev/null; then
-        echo "Creating system user '${SERVICE_USER}'..."
-        NOLOGIN="$(command -v nologin 2>/dev/null || echo /usr/sbin/nologin)"
-        useradd --system --no-create-home --shell "${NOLOGIN}" "${SERVICE_USER}"
-    fi
-
     # Create the database directory and give the service user ownership so
-    # idtrack can create and write the database and backup files.
+    # idtrack can create and write the database and backup files. This may
+    # be the same directory as SERVICE_HOME (the default --database path
+    # lives under it) or a different one if --database was overridden —
+    # either way it's independent of where the account's defaults.json
+    # lives.
     mkdir -p "${DB_DIR}"
     chown "${SERVICE_USER}:${SERVICE_USER}" "${DB_DIR}"
     chmod 750 "${DB_DIR}"
@@ -282,21 +390,36 @@ fi
 DATABASE="$(cd "${DB_DIR}" && pwd)/$(basename "${DATABASE}")"
 
 # ---------------------------------------------------------------------------
+# Persist settings that `idtrack serve` cannot take directly.
+# ---------------------------------------------------------------------------
+# See "Settings persistence" in the header comment: backup-*, idle-timeout,
+# and the branding options only take effect via ~/.idtrack/defaults.json, so
+# they are saved here with `idtrack default` rather than added to
+# ExecStart= (which only ever invokes `idtrack serve`).
+DEFAULT_ARGS=()
+[[ -n "${BACKUP_INTERVAL}" ]] && DEFAULT_ARGS+=(--backup-interval "${BACKUP_INTERVAL}")
+[[ -n "${BACKUP_COUNT}"    ]] && DEFAULT_ARGS+=(--backup-count "${BACKUP_COUNT}")
+[[ -n "${BACKUP_AGE}"      ]] && DEFAULT_ARGS+=(--backup-age "${BACKUP_AGE}")
+[[ -n "${BACKUP_SIZE}"     ]] && DEFAULT_ARGS+=(--backup-size "${BACKUP_SIZE}")
+[[ -n "${IDLE_TIMEOUT}"    ]] && DEFAULT_ARGS+=(--idle-timeout "${IDLE_TIMEOUT}")
+[[ -n "${APP_NAME}"        ]] && DEFAULT_ARGS+=(--app-name "${APP_NAME}")
+[[ -n "${APP_DESC}"        ]] && DEFAULT_ARGS+=(--app-description "${APP_DESC}")
+
+if [[ "${#DEFAULT_ARGS[@]}" -gt 0 ]]; then
+    echo "Saving server settings to idtrack defaults..."
+    idtrack_default "${DEFAULT_ARGS[@]}"
+    echo ""
+fi
+
+# ---------------------------------------------------------------------------
 # Build the ExecStart command line
 # ---------------------------------------------------------------------------
 EXEC_START="${BINARY} serve --foreground --database ${DATABASE}"
 
-[[ -n "${PORT}"            ]] && EXEC_START+=" --port ${PORT}"
-[[ -n "${CERT_FILE}"       ]] && EXEC_START+=" --server-cert ${CERT_FILE} --server-key ${KEY_FILE}"
-[[ -n "${BACKUP_INTERVAL}" ]] && EXEC_START+=" --backup-interval ${BACKUP_INTERVAL}"
-[[ -n "${BACKUP_COUNT}"    ]] && EXEC_START+=" --backup-count ${BACKUP_COUNT}"
-[[ -n "${BACKUP_AGE}"      ]] && EXEC_START+=" --backup-age ${BACKUP_AGE}"
-[[ -n "${IDLE_TIMEOUT}"    ]] && EXEC_START+=" --idle-timeout ${IDLE_TIMEOUT}"
-
-# App name and description may contain spaces; shell quoting inside a unit
-# file's ExecStart line uses double-quotes around the argument value.
-[[ -n "${APP_NAME}"  ]] && EXEC_START+=" --app-name \"${APP_NAME}\""
-[[ -n "${APP_DESC}"  ]] && EXEC_START+=" --app-description \"${APP_DESC}\""
+[[ -n "${PORT}"      ]] && EXEC_START+=" --port ${PORT}"
+[[ -n "${CERT_FILE}" ]] && EXEC_START+=" --server-cert ${CERT_FILE} --server-key ${KEY_FILE}"
+[[ -n "${INSECURE}"  ]] && EXEC_START+=" --insecure ${INSECURE}"
+[[ -n "${BASE_PATH}" ]] && EXEC_START+=" --base-path ${BASE_PATH}"
 
 # ---------------------------------------------------------------------------
 # Generate the systemd unit file
@@ -352,6 +475,12 @@ Type=simple
 User=${SERVICE_USER}
 Group=${SERVICE_USER}
 WorkingDirectory=${DB_DIR}
+# HOME must match what the install script used above when running
+# idtrack default as this account (see Settings persistence and
+# SERVICE_HOME in the header comment) — otherwise the server would resolve
+# ~/.idtrack/defaults.json to a different, non-existent path at boot and
+# silently see none of the settings just configured.
+Environment=HOME=${SERVICE_HOME}
 ExecStart=${EXEC_START}
 Restart=on-failure
 RestartSec=5s
@@ -359,7 +488,7 @@ RestartSec=5s
 # Remove or comment out these lines if they cause problems on older kernels.
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=${DB_DIR}
+ReadWritePaths=${DB_DIR} ${SERVICE_HOME}
 PrivateTmp=true
 
 [Install]
@@ -408,6 +537,15 @@ echo "  TLS key      : ${KEY_FILE}"
 else
 echo "  TLS cert     : built-in self-signed"
 fi
+if [[ -n "${INSECURE}" ]]; then
+echo "  Insecure     : ${INSECURE}"
+fi
+if [[ -n "${BASE_PATH}" ]]; then
+echo "  Base path    : ${BASE_PATH}"
+fi
+if [[ "${#DEFAULT_ARGS[@]}" -gt 0 ]]; then
+echo "  Other settings saved to idtrack defaults (backup/idle-timeout/branding)"
+fi
 if [[ "${USER_SERVICE}" -eq 1 ]]; then
 echo "  Mode         : user service (runs as ${USER})"
 echo ""
@@ -415,6 +553,7 @@ echo "  NOTE: To keep the service running when you are not logged in:"
 echo "    loginctl enable-linger ${USER}"
 else
 echo "  Mode         : system service (runs as ${SERVICE_USER}, starts at boot)"
+echo "  Defaults home: ${SERVICE_HOME} (idtrack default / defaults.json for ${SERVICE_USER})"
 fi
 echo ""
 echo "Managing the service:"
