@@ -23,6 +23,23 @@ const (
 	notifyCategoryStatusChanged
 )
 
+// webCategory returns the wire string used in webNotifyEvent.Category for
+// this category, matching db.NotificationPrefs' JSON field names exactly so
+// the client's category handling reads the same word its Settings toggle
+// labels use. See webnotify.go.
+func (c notifyCategory) webCategory() string {
+	switch c {
+	case notifyCategoryNewIssue:
+		return "new_issue"
+	case notifyCategoryNewComment:
+		return "new_comment"
+	case notifyCategoryStatusChanged:
+		return "resolved"
+	default:
+		return ""
+	}
+}
+
 // notificationTitleMaxLen and notificationBodyMaxLen keep push payloads
 // small and legible on a lock screen. APNs itself has a much larger overall
 // payload limit (4KB), but a multi-paragraph comment as a push body would be
@@ -44,19 +61,23 @@ func truncateForNotification(s string, max int) string {
 	return string(runes[:max]) + "…"
 }
 
-// notify sends one push notification to every user in usernames who (a) has
-// the relevant category enabled in their preferences and (b) has at least
-// one registered device token. It is always invoked as `go s.notify(...)`
-// from the HTTP handlers below (handleCreateIssue, handleCreateComment,
-// handleUpdateIssue) so a slow or failing APNs call never delays the API
-// response the caller is waiting on — see docs/NOTIFICATIONS.md §2.
+// notify sends one notification — a push to every registered device and/or
+// an in-app event to every open web tab, per recipient — to every user in
+// usernames who has the relevant category enabled in their preferences. It
+// is always invoked as `go s.notify(...)` from the HTTP handlers below
+// (handleCreateIssue, handleCreateComment, handleUpdateIssue) so a slow or
+// failing APNs call never delays the API response the caller is waiting on
+// — see docs/NOTIFICATIONS.md §2.
 //
 // usernames may contain blanks, duplicates, and the empty string; all are
 // handled safely (blanks and dupes are skipped). It is always safe to call
 // even when push notifications are not configured at all — s.apns is nil in
-// that case and this becomes a no-op immediately.
+// that case and notifyOne simply skips the APNs fan-out; s.webNotify, by
+// contrast, is always non-nil once server.Start has run (see webnotify.go),
+// so the in-app-notification half of this is not gated by any operator
+// configuration the way push is.
 func (s *srv) notify(usernames []string, category notifyCategory, title, body string, issueID int64) {
-	if s.apns == nil {
+	if s.apns == nil && s.webNotify == nil {
 		return
 	}
 
@@ -75,10 +96,10 @@ func (s *srv) notify(usernames []string, category notifyCategory, title, body st
 	}
 }
 
-// notifyOne handles a single recipient: preference check, token fan-out,
-// badge accounting, and invalid-token cleanup. Split out from notify so the
-// per-recipient logic (several early-return branches) doesn't nest three
-// loops deep.
+// notifyOne handles a single recipient: preference check, web-tab fan-out,
+// token fan-out, badge accounting, and invalid-token cleanup. Split out from
+// notify so the per-recipient logic (several early-return branches) doesn't
+// nest three loops deep.
 func (s *srv) notifyOne(username string, category notifyCategory, title, body string, issueID int64) {
 	prefs, err := db.GetNotificationPrefs(s.database, username)
 	if err != nil || prefs == nil {
@@ -101,6 +122,23 @@ func (s *srv) notifyOne(username string, category notifyCategory, title, body st
 	}
 
 	if !enabled {
+		return
+	}
+
+	// Web tabs: an in-memory, instant, best-effort fan-out — see webnotify.go
+	// — gated by the exact same preference check above rather than a
+	// separate web-specific preference (the simplest option, and what was
+	// asked for: one set of rules governs both channels).
+	if s.webNotify != nil {
+		s.webNotify.publish(username, webNotifyEvent{
+			Category: category.webCategory(),
+			Title:    title,
+			Body:     body,
+			IssueID:  issueID,
+		})
+	}
+
+	if s.apns == nil {
 		return
 	}
 

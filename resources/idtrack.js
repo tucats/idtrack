@@ -194,12 +194,20 @@ let _darkMode       = false;  // body.dark CSS class active (resolved from _dark
 let _keepLoggedIn   = false;  // request 30-day session cookie on next login
 let _desktopMode    = false;  // html.desktop-mode class active (disables RWD CSS)
 let _usePasskeys    = true;   // client-side "Use passkeys" preference (default on); see toggleUsePasskeys()
+let _desktopNotify  = false;  // show a browser Notification when a toast arrives on an unfocused tab; opt-in (default off) since it requires OS permission — see toggleDesktopNotify()
 
 // Whether THIS server instance has passkey login turned on at all — from
 // GET /api/status's webauthn_enabled field (set in init()). Server-off
 // always wins over the _usePasskeys preference above: every passkey UI
 // element checks both.
 let _webauthnEnabled = false;
+
+// The open SSE connection to GET /api/notifications/stream (server/webnotify.go),
+// delivering the same new-issue/new-comment/status-change events push
+// notifications get, gated by the same three server-side preferences (see
+// docs/NOTIFICATIONS.md). null when signed out. See startNotifyStream()/
+// stopNotifyStream() and handleWebNotifyEvent().
+let _notifyStream = null;
 
 // Idle-logout state. The timeout value comes from GET /api/status.
 // 0 means the feature is disabled.
@@ -498,6 +506,7 @@ async function apiFetch(url, options = {}) {
         _currentUser = null;
         sessionStorage.removeItem(SESSION_KEY);
         localStorage.removeItem(PERSIST_KEY);
+        stopNotifyStream();
         showLogin('Session expired. Please sign in again.');
         // Throwing stops execution in the caller's try block and jumps
         // to its catch block, preventing it from trying to use a response
@@ -984,6 +993,7 @@ async function launchApp() {
     await populateProjectDropdowns();
     await loadIssueWindow();
     startPolling();
+    startNotifyStream();
 }
 
 // doLogout is triggered by "Sign out" in the menu and by the idle-
@@ -997,6 +1007,7 @@ async function launchApp() {
 async function doLogout() {
     stopIdleTracking();
     stopPolling();
+    stopNotifyStream();
     dismissRefreshHint();
     // Fire-and-forget: if the network call fails we still clear local
     // state so the user is at least logged out on this device.
@@ -3675,6 +3686,15 @@ function openSettings() {
     if (psSel) psSel.value = String(_pageSize);
     document.getElementById('use-passkeys-toggle').checked = _usePasskeys;
     updateSettingsPasskeysVisibility();
+    document.getElementById('notify-prefs-error').textContent = '';
+    loadNotificationPrefs();
+    document.getElementById('desktop-notify-error').textContent = '';
+    document.getElementById('desktop-notify-toggle').checked = _desktopNotify;
+    // Hidden entirely on a browser with no Notification API at all (rather
+    // than shown-then-erroring on first use), the same treatment the
+    // passkeys row gets for a server instance without webauthn_enabled.
+    document.getElementById('desktop-notify-row').style.display =
+        (typeof Notification !== 'undefined') ? 'flex' : 'none';
     document.getElementById('settings-overlay').style.display = 'flex';
 }
 
@@ -3795,6 +3815,51 @@ function toggleUsePasskeys(on) {
         localStorage.setItem(PREFS_KEY, JSON.stringify(p));
     } catch {}
     updateSettingsPasskeysVisibility();
+}
+
+// loadNotificationPrefs fetches the caller's own server-side notification
+// preferences (GET /api/notifications/prefs) and syncs the three Settings
+// toggles to them. These are account-wide, not a browser/localStorage
+// preference like every other Settings toggle above — the same three
+// columns gate both APNs push (iOS/Catalyst app) and this browser's own
+// in-app toasts/desktop notifications (see docs/NOTIFICATIONS.md §9), so
+// there is exactly one source of truth: the server. Called every time
+// Settings opens (mirroring loadPasskeys()) rather than cached, since
+// another client (the iOS app's own Settings screen, or another browser)
+// may have changed them since this tab last checked.
+async function loadNotificationPrefs() {
+    try {
+        const prefs = await apiGet('/api/notifications/prefs');
+        document.getElementById('notify-new-issue-toggle').checked   = !!prefs.new_issue;
+        document.getElementById('notify-new-comment-toggle').checked = !!prefs.new_comment;
+        document.getElementById('notify-resolved-toggle').checked    = !!prefs.resolved;
+    } catch {
+        document.getElementById('notify-prefs-error').textContent = 'Failed to load notification settings.';
+    }
+}
+
+// saveNotificationPrefs sends the current state of all three toggles to
+// PUT /api/notifications/prefs, which replaces all three at once (there is
+// no partial-update form — see docs/API.md). Called on every individual
+// toggle's onchange; reading all three current checkbox states each time
+// (rather than tracking just the one that changed) keeps this in lockstep
+// with the "always send the complete set" shape the endpoint expects.
+async function saveNotificationPrefs() {
+    const err = document.getElementById('notify-prefs-error');
+    err.textContent = '';
+
+    const prefs = {
+        new_issue:   document.getElementById('notify-new-issue-toggle').checked,
+        new_comment: document.getElementById('notify-new-comment-toggle').checked,
+        resolved:    document.getElementById('notify-resolved-toggle').checked,
+    };
+
+    try {
+        await apiPut('/api/notifications/prefs', prefs);
+    } catch {
+        err.textContent = 'Failed to save notification settings.';
+        loadNotificationPrefs();
+    }
 }
 
 // loadPasskeys fetches the current user's registered passkeys and renders
@@ -4071,6 +4136,161 @@ async function applyRefreshHint() {
     await loadIssueWindow();
 }
 
+// =====================================================================
+// IN-APP NOTIFICATIONS (server-sent events)
+// =====================================================================
+// A live counterpart to the iOS/Catalyst app's push notifications
+// (docs/NOTIFICATIONS.md), for a user who leaves an idtrack browser tab
+// open: the same three trigger rules (new issue, new comment, status
+// change) and the same three server-side preferences drive an in-app toast
+// here instead of an APNs push there — see server/webnotify.go and
+// notify.go's notifyOne, which publish to both channels from one place.
+//
+// This is additive to, not a replacement for, the existing 30-second
+// pollForChanges() loop above: if the SSE connection never establishes (an
+// old browser, a restrictive proxy) or drops and is still reconnecting, the
+// poll still eventually surfaces the same underlying data change — just
+// without the richer per-event toast/desktop-notification treatment below.
+
+// startNotifyStream opens the SSE connection. Called once per login/session
+// restore from launchApp(), alongside startPolling(). EventSource has
+// built-in auto-reconnect with backoff, so no custom retry logic is needed
+// here; a 401 (session expired) permanently closes the connection per the
+// SSE spec (any non-200 response is a fatal error, not a retryable one),
+// which is why apiFetch's own 401 handler also calls stopNotifyStream() —
+// to tidy up immediately rather than waiting on the browser to notice.
+function startNotifyStream() {
+    stopNotifyStream();
+    if (typeof EventSource === 'undefined') return;
+    _notifyStream = new EventSource(BASE_PATH + '/api/notifications/stream');
+    _notifyStream.onmessage = (e) => {
+        try {
+            handleWebNotifyEvent(JSON.parse(e.data));
+        } catch {}
+    };
+}
+
+// stopNotifyStream closes the SSE connection, if any. Called on sign-out and
+// on session expiry.
+function stopNotifyStream() {
+    if (_notifyStream) { _notifyStream.close(); _notifyStream = null; }
+}
+
+// handleWebNotifyEvent reacts to one { category, title, body, issue_id }
+// event from the stream: always shows an in-app toast, and — only when the
+// tab is in the background and the user has opted into desktop
+// notifications with OS permission granted — also raises a browser
+// Notification so a backgrounded/minimized tab still gets the user's
+// attention, not just a focused one.
+function handleWebNotifyEvent(evt) {
+    if (!evt || !evt.title) return;
+    showNotifyToast(evt);
+
+    if (document.hidden && _desktopNotify &&
+        typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try {
+            const n = new Notification(evt.title, { body: evt.body || '' });
+            n.onclick = () => {
+                window.focus();
+                if (evt.issue_id) selectIssue(evt.issue_id);
+                n.close();
+            };
+        } catch {}
+    }
+}
+
+// NOTIFY_TOAST_DURATION is how long a toast stays visible before
+// auto-dismissing itself.
+const NOTIFY_TOAST_DURATION = 8000;
+
+// showNotifyToast renders one dismissible, auto-expiring toast in the
+// top-right stack (#notify-toast-stack — see idtrack.css's .notify-toast*
+// rules). Clicking the toast body opens the issue it refers to; the ✕
+// button dismisses it without navigating.
+function showNotifyToast(evt) {
+    const stack = document.getElementById('notify-toast-stack');
+    if (!stack) return;
+
+    const el = document.createElement('div');
+    el.className = 'notify-toast';
+
+    const body = document.createElement('div');
+    body.className = 'notify-toast-body';
+
+    const title = document.createElement('div');
+    title.className = 'notify-toast-title';
+    title.textContent = evt.title || '';
+
+    const text = document.createElement('div');
+    text.className = 'notify-toast-text';
+    text.textContent = evt.body || '';
+
+    body.appendChild(title);
+    body.appendChild(text);
+
+    const close = document.createElement('button');
+    close.className = 'notify-toast-close';
+    close.title = 'Dismiss';
+    close.innerHTML = '&#10005;';
+    close.onclick = (ev) => { ev.stopPropagation(); el.remove(); };
+
+    el.appendChild(body);
+    el.appendChild(close);
+
+    el.onclick = () => {
+        el.remove();
+        if (evt.issue_id) selectIssue(evt.issue_id);
+    };
+
+    stack.appendChild(el);
+    setTimeout(() => el.remove(), NOTIFY_TOAST_DURATION);
+}
+
+// toggleDesktopNotify handles the Settings "Desktop notifications" toggle.
+// Turning it on requires the browser's Notification permission, which can
+// only be requested (not silently checked) from a user gesture — this
+// handler is that gesture. Turning it on but being denied reverts the
+// toggle and leaves an explanatory message in place, mirroring how
+// toggleUsePasskeys/addPasskey report errors in this same Settings sheet.
+async function toggleDesktopNotify(on) {
+    const err = document.getElementById('desktop-notify-error');
+    if (err) err.textContent = '';
+
+    if (!on) {
+        _desktopNotify = false;
+        saveDesktopNotifyPref(false);
+        return;
+    }
+
+    if (typeof Notification === 'undefined') {
+        if (err) err.textContent = 'This browser does not support desktop notifications.';
+        document.getElementById('desktop-notify-toggle').checked = false;
+        return;
+    }
+
+    let permission = Notification.permission;
+    if (permission === 'default') {
+        permission = await Notification.requestPermission();
+    }
+
+    if (permission !== 'granted') {
+        document.getElementById('desktop-notify-toggle').checked = false;
+        if (err) err.textContent = 'Notifications are blocked for this site in your browser settings.';
+        return;
+    }
+
+    _desktopNotify = true;
+    saveDesktopNotifyPref(true);
+}
+
+function saveDesktopNotifyPref(on) {
+    try {
+        const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+        p.desktopNotify = on;
+        localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    } catch {}
+}
+
 // setPageSize updates the page size, persists it, and reloads the window.
 function setPageSize(val) {
     if (![10,25,50,100,200].includes(val)) return;
@@ -4114,6 +4334,15 @@ function loadPrefs() {
             // prefs blob) leaves the true default in place.
             if (p.usePasskeys === false) {
                 _usePasskeys = false;
+            }
+            // Only honor a saved "on" if the browser still actually grants
+            // the permission — if the user revoked it since via their
+            // browser's own site settings, Notification.permission will
+            // have moved to 'denied'/'default' and we should fall back to
+            // the off default rather than silently trying (and failing) to
+            // notify on every event.
+            if (p.desktopNotify && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+                _desktopNotify = true;
             }
             if (p.desktopMode) {
                 _desktopMode = true;

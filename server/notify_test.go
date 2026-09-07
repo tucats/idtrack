@@ -210,6 +210,80 @@ func TestNotify_InvalidTokenIsRemoved(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// notify() / notifyOne() — web (in-app) fan-out. These confirm the behavior
+// the user asked for explicitly: the web channel shares the exact same
+// per-category preferences as push, and — unlike push — is never gated on
+// s.apns being configured at all, since in-app notification is a property of
+// the web client itself, not an operator-configured external integration.
+// ---------------------------------------------------------------------------
+
+func TestNotify_PublishesToWebEvenWithoutApnsConfigured(t *testing.T) {
+	s := newTestSrv(t)
+	s.webNotify = newWebNotifyHub()
+	// s.apns is deliberately left nil here.
+
+	addTestUser(t, s, "alice", false)
+
+	ch, unsubscribe := s.webNotify.subscribe("alice")
+	defer unsubscribe()
+
+	s.notify([]string{"alice"}, notifyCategoryNewComment, "T", "B", 9)
+
+	select {
+	case evt := <-ch:
+		if evt.Category != "new_comment" || evt.Title != "T" || evt.Body != "B" || evt.IssueID != 9 {
+			t.Errorf("unexpected event: %+v", evt)
+		}
+	default:
+		t.Fatal("expected a web notification event even with no APNs configured")
+	}
+}
+
+func TestNotify_WebRespectsDisabledPreference(t *testing.T) {
+	s := newTestSrv(t)
+	s.webNotify = newWebNotifyHub()
+
+	addTestUser(t, s, "alice", false)
+	db.SetNotificationPrefs(s.database, "alice", db.NotificationPrefs{NewIssue: false, NewComment: true, Resolved: true})
+
+	ch, unsubscribe := s.webNotify.subscribe("alice")
+	defer unsubscribe()
+
+	s.notify([]string{"alice"}, notifyCategoryNewIssue, "T", "B", 1)
+
+	select {
+	case evt := <-ch:
+		t.Fatalf("expected no web event for a disabled category, got %+v", evt)
+	default:
+	}
+}
+
+func TestNotify_WebAndPushBothFireForTheSameEvent(t *testing.T) {
+	s := newTestSrv(t)
+	s.webNotify = newWebNotifyHub()
+	fake := &fakeSender{}
+	s.apns = fake
+
+	addTestUser(t, s, "alice", false)
+	db.RegisterToken(s.database, "alice", "tok1")
+
+	ch, unsubscribe := s.webNotify.subscribe("alice")
+	defer unsubscribe()
+
+	s.notify([]string{"alice"}, notifyCategoryStatusChanged, "T", "B", 4)
+
+	if len(fake.sends) != 1 {
+		t.Errorf("expected 1 push send, got %d", len(fake.sends))
+	}
+
+	select {
+	case <-ch:
+	default:
+		t.Error("expected a web event alongside the push send")
+	}
+}
+
 func TestNotify_UnknownUserIsSkipped(t *testing.T) {
 	s := newTestSrv(t)
 	fake := &fakeSender{}

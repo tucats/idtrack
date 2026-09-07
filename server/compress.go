@@ -21,8 +21,20 @@ const gzipThreshold = 1400
 // Every response receives Vary: Accept-Encoding so intermediate caches and
 // CDN proxies never serve a compressed response to a client that did not
 // advertise gzip support.
+//
+// The SSE notification stream (isNotificationStreamRequest, middleware.go)
+// bypasses this middleware entirely: bufferingWriter below only flushes to
+// the real ResponseWriter after the wrapped handler returns, which for a
+// long-lived stream would mean the client never sees a single byte (and
+// every event would sit in memory) until the connection is torn down.
 func gzipHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isNotificationStreamRequest(r) {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
 		w.Header().Add("Vary", "Accept-Encoding")
 
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {

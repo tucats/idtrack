@@ -5,7 +5,14 @@
 1. All issue state transitions get a notification (not narrowed to just →Resolved).
 2. No per-device token management UI/API for now (no WebAuthn-credentials-style listing).
 3. Badge counts are included (§3.1, §3.3, §3.6, §4.9) — the OS-level "show badge" toggle in the device's own Notification Settings is what actually governs whether the badge is displayed; idtrack always sends a count and lets each device honor or ignore it per Apple's own per-device Settings control.
-4. No notion of "watchers" — only the issue's reporter and assignee are ever notified, and only via this iOS/Catalyst push mechanism (there is no browser/web-push counterpart in this plan).
+4. No notion of "watchers" — only the issue's reporter and assignee are ever notified.
+
+**Update (web in-app notifications, §9):** point 4 above was revisited once a
+browser counterpart was added — see §9. The "only reporter/assignee, only
+these three trigger rules" scope is unchanged; what changed is that a second
+delivery channel (an SSE stream to open browser tabs) now exists alongside
+APNs push, sharing the same three server-side preferences and the same
+trigger wiring in `notify()`.
 
 ## Table of Contents
 
@@ -17,6 +24,7 @@
 6. [Implementation Phases](#6-implementation-phases)
 7. [Testing Plan](#7-testing-plan)
 8. [Open Questions](#8-open-questions)
+9. [Web In-App Notifications](#9-web-in-app-notifications)
 
 ---
 
@@ -287,3 +295,190 @@ Each phase is intended to be a small, reviewable, independently-buildable unit o
 ## 8. Open Questions
 
 All four questions raised in the original draft were resolved on review — see "Resolved decisions" at the top of this document. Nothing currently open; new questions that come up during implementation get added here.
+
+## 9. Web In-App Notifications
+
+Added after the iOS/Catalyst push design above shipped, in response to: "for
+the user who leaves the window up, can we have notification-style messaging
+in the web app." Three decisions were made up front, deliberately choosing
+the simplest option at each fork:
+
+1. **Share the existing three preferences** (`notify_new_issue`,
+   `notify_new_comment`, `notify_resolved`) rather than adding web-specific
+   ones. A user cannot have push on and web toasts off independently — one
+   set of rules governs both channels, per the original request.
+2. **A toast, not a persistent notification inbox.** No unread list, no
+   badge-count-on-a-bell-icon; a dismissible, auto-expiring message per event
+   (`resources/idtrack.js`'s `showNotifyToast`), styled distinctly from the
+   pre-existing `#refresh-hint` "there are updates, click Refresh" toast.
+3. **Nudge a backgrounded tab via the browser Notification API**, opt-in
+   (`toggleDesktopNotify` in Settings), since it requires an OS-level
+   permission prompt a user must explicitly grant — the same "soft ask,
+   then the real permission dialog" shape the iOS design uses in §4.3, just
+   triggered by a Settings toggle instead of a first-run screen (there is no
+   natural "first run" moment in a web app the way there is for an app
+   install).
+
+### 9.1 Why Server-Sent Events, not WebSockets or a shorter poll
+
+The web client already had a 30-second poll (`pollForChanges`,
+`GET /api/issues/changes`) for catching up on other users' changes. Two
+options were considered for something more immediate:
+
+- **Shrink the poll interval and enrich its payload** — rejected. The
+  `/api/issues/changes` response is issue rows, with no field distinguishing
+  *why* `updated_at` changed (new issue vs. status change vs. new comment) or
+  who did it — recreating APNs' `"Alice changed status from Open to
+  Blocked"`-style message would mean redesigning that endpoint into
+  something that isn't really "changes since a timestamp" anymore.
+- **Server-Sent Events** (chosen) — one-directional (server → client is all
+  this needs), requires zero new Go dependency (`net/http` supports it
+  natively — see `server/webnotify.go`), and degrades gracefully: if a
+  stream never connects or drops, the existing poll still eventually
+  surfaces the same underlying data change, just without the richer
+  per-event toast. WebSockets were not considered seriously: they are
+  bidirectional, which nothing here needs, and would have been the first
+  case in this codebase where a feature reached for a new third-party
+  dependency for something the standard library already covers using a
+  narrower, purpose-built primitive — the same minimal-dependency reasoning
+  that governed both WebAuthn's addition and APNs' hand-rolled client (see
+  CLAUDE.md's "Important Implementation Decisions").
+
+The existing 30-second poll and its refresh-hint toast are unchanged and
+still run — SSE is additive, not a replacement.
+
+### 9.2 The backup/quiesce conflict
+
+An SSE connection is intentionally long-lived — open for as long as a
+browser tab is. Two pieces of existing middleware assume the opposite
+("every request finishes shortly after it starts") and both had to
+explicitly bypass the new route (`isNotificationStreamRequest`,
+`server/middleware.go`):
+
+- **`quiesce`** (`server/backup.go`) holds `s.backupMu.RLock()` for a
+  request's entire lifetime so `doBackup` can safely take the write lock
+  once every in-flight request finishes. Left unbypassed, one held RLock per
+  open browser tab would never release on its own — `doBackup`'s `Lock()`
+  would then wait for every such RLock to release before it could ever run,
+  in practice forever, silently disabling backups the moment any browser had
+  the app open. This was flagged before implementation started and treated
+  as a hard requirement, not a nice-to-have.
+- **`gzipHandler`** (`server/compress.go`) buffers an entire response body
+  in memory (`bufferingWriter`) until the wrapped handler returns, so it can
+  decide whether the final size clears the compression threshold. For a
+  stream that never returns until the client disconnects, this would mean
+  the browser receives literally nothing — not delayed, but withheld
+  indefinitely — while every event sat in server memory instead.
+
+Two further, related fixes specific to `handleNotificationStream`
+(`server/webnotify.go`) itself:
+
+- `http.Server`'s `WriteTimeout`/`ReadTimeout` (set in `server.Start`) are
+  reset per-request but still apply to a stream's total lifetime; left in
+  place, `WriteTimeout` would silently kill every stream 30 seconds after it
+  opened. Both are disabled per-connection via
+  `http.NewResponseController(w).Set{Write,Read}Deadline(time.Time{})`.
+- `X-Accel-Buffering: no` is sent so a reverse-proxy deployment (see
+  CLAUDE.md's `--base-path` story) doesn't silently buffer the stream at the
+  proxy layer, which would defeat the feature just as surely as the two
+  bypasses above, just one hop further downstream.
+
+### 9.3 Server-side shape
+
+`server/webnotify.go`:
+
+- `webNotifyHub` — an in-memory, mutex-guarded `map[username][]chan
+  webNotifyEvent`, mirroring `sessionStore`'s shape but with potentially many
+  subscriber channels per user (one per open tab/device), the same shape
+  `TokensForUser` has for APNs tokens. Constructed unconditionally in
+  `server.Start` (`s.webNotify`), unlike `s.apns`/`s.webauthn` — in-app
+  notification is a property of the web client itself, not an
+  operator-opted-into external integration, so there is no equivalent of
+  `idtrack default --apns-*` gating it.
+- `publish` sends to each subscriber's channel with a non-blocking
+  `select`/`default` — a slow or backgrounded tab's full buffer just drops
+  the event rather than blocking every other recipient's delivery, the same
+  fire-and-forget treatment `sendToToken` gives a slow APNs call.
+- `handleNotificationStream` serves `GET /api/notifications/stream`: an
+  auth-required, long-lived handler that subscribes, writes each event as an
+  SSE `data:` line plus a periodic `: keep-alive` comment, and returns when
+  the client disconnects (`r.Context().Done()`).
+
+`notify.go`'s `notifyOne` (the shared per-recipient decision logic already
+used by push) now also calls `s.webNotify.publish(...)` right after the
+preference check, before the APNs branch — so it fires **even when APNs
+isn't configured at all** (`s.apns == nil`), which is the one behavioral
+change to existing logic: `notify()`'s early-return guard changed from `if
+s.apns == nil` to `if s.apns == nil && s.webNotify == nil`.
+
+### 9.4 Client-side shape
+
+`resources/idtrack.js`:
+
+- `startNotifyStream()`/`stopNotifyStream()` open/close a plain
+  `EventSource(BASE_PATH + '/api/notifications/stream')`. Called from the
+  same choke points push-adjacent state already uses:
+  `startNotifyStream()` at the end of `launchApp()` (alongside
+  `startPolling()`); `stopNotifyStream()` in `doLogout()` (alongside
+  `stopPolling()`) and in `apiFetch`'s 401 handler (session-expiry path,
+  which does not otherwise go through `doLogout()`). `EventSource` has
+  built-in reconnect-with-backoff, so no custom retry logic was written; per
+  the SSE spec a non-200 response (e.g. an expired session) is a *fatal*
+  error, not a retryable one, so the browser stops retrying on its own even
+  without the explicit `stopNotifyStream()` calls — those exist for prompt
+  cleanup rather than correctness.
+- `handleWebNotifyEvent(evt)` always calls `showNotifyToast(evt)`, and
+  additionally raises a `Notification` (browser desktop notification) when
+  `document.hidden` is true, `_desktopNotify` is on, and
+  `Notification.permission === 'granted'`. Clicking either the toast or the
+  desktop notification calls `selectIssue(evt.issue_id)` — the same function
+  the issue list already uses, which fetches the issue standalone
+  (`fetchIssue`) regardless of whether it happens to be in the currently
+  loaded `_issueWindow` page.
+- `toggleDesktopNotify(on)` (Settings → "Desktop notifications") is the
+  user-gesture handler `Notification.requestPermission()` requires. Turning
+  it on calls that (skipped if permission is already resolved one way or the
+  other); a denial reverts the toggle and leaves an inline error, mirroring
+  how `toggleUsePasskeys`/`addPasskey` report errors in this same Settings
+  sheet — there is no way to re-trigger the browser's own permission prompt
+  after a denial, same limitation the iOS design notes for its own OS-level
+  prompt. `loadPrefs()` only honors a previously-saved "on" if
+  `Notification.permission` is *still* `'granted'` at load time, so a
+  permission revoked via the browser's own site settings since the last
+  visit falls back to off instead of silently trying (and failing) to
+  notify on every event.
+- The Settings row itself (`#desktop-notify-row`) is hidden entirely on a
+  browser with no `Notification` API at all, the same treatment
+  `#use-passkeys-row` gets when `webauthn_enabled` is off server-side.
+
+### 9.5 Editing the shared preferences from web Settings
+
+The three preferences were, before this addition, only ever *read* by the
+web client (to decide whether to show a toast) — there was no web UI to
+*change* `notify_new_issue`/`notify_new_comment`/`notify_resolved` at all;
+only the iOS app's Settings screen could. Settings now gets a "Notifications"
+section with three toggles (New issues / New comments / Status changes)
+wired straight to the existing `GET`/`PUT /api/notifications/prefs`
+endpoints — no new API surface, since these endpoints were already
+self-service and channel-agnostic (see §3.5/§3.2).
+
+- `loadNotificationPrefs()` fetches fresh from the server every time Settings
+  opens (mirroring `loadPasskeys()`'s same "always re-fetch, never cache"
+  treatment) rather than trusting any client-side copy — another client
+  (the iOS app, or another browser tab) may have changed them since this tab
+  last checked, and unlike every other Settings toggle in this file, these
+  three are not a `localStorage`/`idtrack_prefs` value at all.
+- `saveNotificationPrefs()` fires on any one toggle's `onchange` but always
+  sends the current state of all three together, since `PUT
+  /api/notifications/prefs` replaces the full set — there is no
+  partial-update form (see docs/API.md). A failed save reverts the toggles
+  by re-running `loadNotificationPrefs()`, rather than leaving the UI
+  showing a state that was never actually persisted.
+- A `.hint` line underneath states plainly that these three settings are
+  account-wide, not browser-local — explicitly contrasted against the
+  adjacent, deliberately-separate "Desktop notifications" toggle from §9.4,
+  which *is* browser-local (it only controls whether *this* browser raises
+  an OS-level pop-up, never which categories are received at all). Keeping
+  these two toggle groups visually adjacent but conceptually distinct, each
+  with its own one-line caption, was chosen over merging them into a single
+  ambiguous "Notifications" list.

@@ -45,6 +45,23 @@ const maxRequestBodyBytes = 64 * 1024 // 64 KiB — plenty for any API call
 // its own decoded-pixel-count cap on top of this raw byte cap.
 const maxAttachmentBodyBytes = 12 * 1024 * 1024 // 12 MiB
 
+// notificationStreamPath is the literal path suffix of the SSE in-app
+// notification stream endpoint (see webnotify.go's handleNotificationStream).
+// gzipHandler (compress.go) and quiesce (backup.go) both bypass their normal
+// per-request handling for it: gzipHandler buffers a handler's entire
+// response body in memory until the handler returns, which for a stream is
+// never, until the client disconnects; quiesce's RLock, held for a
+// connection's whole lifetime otherwise, would permanently starve
+// doBackup's writer lock the moment any browser tab has the app open.
+const notificationStreamPath = "/api/notifications/stream"
+
+// isNotificationStreamRequest reports whether r targets the SSE notification
+// stream route, accounting for an optional --base-path prefix (see CLAUDE.md)
+// by matching on suffix rather than exact path.
+func isNotificationStreamRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, notificationStreamPath)
+}
+
 // sessionToken extracts the session token from the request. It prefers the
 // HttpOnly session cookie (set by handleLogin/handleOnboarding) over the
 // Authorization: Bearer header (provided for non-browser API clients).

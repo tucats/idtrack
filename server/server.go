@@ -65,6 +65,7 @@ type srv struct {
 	apnsTopic          string                 // APNs topic, i.e. the app's bundle id (e.g. "com.tucats.idtrack")
 	apnsSandbox        bool                   // true = talk to APNs' sandbox environment instead of production
 	apns               pushSender             // nil unless the four Apns* config fields above are all set (see notify.go); every push send/notify() call checks this for nil first
+	webNotify          *webNotifyHub          // in-app (SSE) notification fan-out for the web client; always non-nil once Start has run — see webnotify.go
 }
 
 // pushSender is the subset of *apns.Client's API that notify.go depends on.
@@ -155,6 +156,7 @@ func Start(cfg Config) error {
 		appDescription:  cfg.AppDescription,
 		loginLimiter:    newRateLimiter(),
 		sessions:        newSessionStore(),
+		webNotify:       newWebNotifyHub(),
 		dbPath:          cfg.DBPath,
 		backupInterval:  cfg.BackupInterval,
 		backupCount:     cfg.BackupCount,
@@ -357,6 +359,14 @@ func Start(cfg Config) error {
 	mux.Handle(route("GET /api/notifications/prefs"), s.auth(http.HandlerFunc(s.handleGetNotificationPrefs)))
 	mux.Handle(route("PUT /api/notifications/prefs"), s.auth(requireJSON(http.HandlerFunc(s.handleUpdateNotificationPrefs))))
 	mux.Handle(route("POST /api/notifications/badge/reset"), s.auth(requireJSON(http.HandlerFunc(s.handleResetNotificationBadge))))
+
+	// In-app (web) notification stream (webnotify.go): a long-lived SSE
+	// connection, unlike every route above. It is deliberately excluded from
+	// gzipHandler's buffering and quiesce's backup-quiescing RLock — see
+	// isNotificationStreamRequest in middleware.go and its call sites in
+	// compress.go/backup.go — since both assume a request finishes shortly
+	// after it starts, which a notification stream never does by design.
+	mux.Handle(route("GET /api/notifications/stream"), s.auth(http.HandlerFunc(s.handleNotificationStream)))
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 

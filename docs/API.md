@@ -1116,11 +1116,52 @@ Response `200 OK`: `{ "ok": true }`, whether or not the token still exists.
 
 Errors: `400` missing/blank token.
 
+##### `GET /api/notifications/stream`
+
+Opens a long-lived [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
+connection delivering the same three notification categories as push, in-app
+— the web client's counterpart to APNs for a browser tab left open. One
+connection covers one tab/device; a user with several open simply gets
+several independent subscriptions. There is no request body and no
+`{token}` registration step (unlike push): the connection itself, tied to
+the caller's session, is the subscription.
+
+Response: `200 OK`, `Content-Type: text/event-stream`, held open
+indefinitely. Each event is a `data:` line containing a JSON object:
+
+```text
+data: {"category":"new_issue","title":"New Issue #42","body":"Alice assigned you: Fix the thing","issue_id":42}
+```
+
+`category` is one of `"new_issue"`, `"new_comment"`, `"resolved"` — matching
+`GET /api/notifications/prefs`' field names exactly. Blank comment lines
+(`: keep-alive`) may appear roughly every 25 seconds to hold the connection
+open through proxies/load balancers; clients using the standard `EventSource`
+API never see these (they aren't dispatched as `message` events). A
+reconnecting client (`EventSource`'s built-in auto-retry, or a fresh
+`GET`) simply gets a new subscription from that point forward — there is no
+event replay or "since" parameter, unlike `/api/issues/changes`.
+
+This endpoint is **not gated by any server-side push configuration** —
+unlike APNs, in-app notification requires no operator setup (`apns-key-path`
+etc.) and works on every idtrack instance. It **is** gated by the same
+`GET /api/notifications/prefs` categories push uses (see "Server-initiated
+notifications" below) — a category disabled there produces no event on this
+stream either, for the same recipient.
+
+Deploying behind a reverse proxy: this route needs the proxy to not buffer
+or time out a long-idle response. An nginx `proxy_pass` in front of idtrack
+should disable buffering for this path (idtrack already sends
+`X-Accel-Buffering: no`, which nginx honors by default) and set a generous
+`proxy_read_timeout`.
+
 ##### Server-initiated notifications
 
-The server sends a push (subject to the recipient's preferences from
-`GET /api/notifications/prefs` and them having at least one registered
-token) in three situations — see NOTIFICATIONS.md for the full rationale:
+The server sends a notification — subject to the recipient's preferences
+from `GET /api/notifications/prefs` — in three situations, fanned out to
+every channel the recipient has open (APNs push to every registered device
+token, and an SSE event to every open `GET /api/notifications/stream`
+connection); see NOTIFICATIONS.md for the full rationale:
 
 - **New issue created** (`POST /api/issues`) — notifies the assignee, unless
   the assignee is also the reporter.
@@ -1132,8 +1173,10 @@ token) in three situations — see NOTIFICATIONS.md for the full rationale:
   the change. Fires for every transition (Open↔Blocked↔Resolved↔Duplicate),
   gated by the single `resolved` preference.
 
-A client has no way to opt out of receiving these pushes selectively per
-issue or project — the three category toggles are the only granularity.
+A client has no way to opt out of receiving these selectively per issue or
+project — the three category toggles are the only granularity, and they
+apply identically to both the push and in-app channels (there is no separate
+"web-only" preference).
 
 ## Quick-start client flow
 

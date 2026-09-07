@@ -185,6 +185,41 @@
       </div>
       <div id="passkeys-error" class="error-text"></div>
     </div>
+
+    <div class="settings-section-title">Notifications</div>
+    <div class="settings-row">
+      <span class="settings-label">New issues</span>
+      <label class="toggle">
+        <input type="checkbox" id="notify-new-issue-toggle" onchange="saveNotificationPrefs()">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div class="settings-row">
+      <span class="settings-label">New comments</span>
+      <label class="toggle">
+        <input type="checkbox" id="notify-new-comment-toggle" onchange="saveNotificationPrefs()">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <div class="settings-row">
+      <span class="settings-label">Status changes</span>
+      <label class="toggle">
+        <input type="checkbox" id="notify-resolved-toggle" onchange="saveNotificationPrefs()">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <span class="hint">These settings apply to your account on every connected client — this browser, other browsers, and the mobile app — not just this one.</span>
+    <div id="notify-prefs-error" class="error-text"></div>
+
+    <div class="settings-row" id="desktop-notify-row" style="display:none">
+      <span class="settings-label">Desktop notifications</span>
+      <label class="toggle">
+        <input type="checkbox" id="desktop-notify-toggle" onchange="toggleDesktopNotify(this.checked)">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+    <span class="hint">This only controls whether this browser shows a desktop pop-up — it doesn't affect the categories above.</span>
+    <div id="desktop-notify-error" class="error-text"></div>
     <div class="button-row">
       <button class="btn btn-primary" onclick="hideSettings()">Done</button>
     </div>
@@ -561,6 +596,12 @@
     <button class="btn btn-primary btn-sm" onclick="applyRefreshHint()">Refresh</button>
     <button class="btn btn-ghost btn-sm" onclick="dismissRefreshHint()" title="Dismiss">&#10005;</button>
   </div>
+
+  <!-- In-app notification toasts — populated by showNotifyToast() when the
+       server pushes a new-issue/new-comment/status-change event over the
+       SSE stream opened in startNotifyStream(). Distinct from refresh-hint
+       above: each event gets its own dismissible, auto-expiring toast. -->
+  <div id="notify-toast-stack" class="notify-toast-stack"></div>
 
   <div id="main-layout" class="main-layout" onclick="mainLayoutClick(event)">
 

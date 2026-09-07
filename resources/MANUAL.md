@@ -135,7 +135,7 @@ idtrack user passkeys alice revoke <credential-id>
 
 #### Push Notifications (iOS/Catalyst App)
 
-The iOS/iPadOS/Mac Catalyst app can receive push notifications for three events: a new issue assigned to you, a new comment on an issue you reported or are assigned (when you're not the one who commented), and a status change on an issue you reported or are assigned (when you're not the one who changed it). This is a feature of the iOS app only — the web application does not receive push notifications.
+The iOS/iPadOS/Mac Catalyst app can receive push notifications for three events: a new issue assigned to you, a new comment on an issue you reported or are assigned (when you're not the one who commented), and a status change on an issue you reported or are assigned (when you're not the one who changed it). The web application has its own, separate mechanism for the same three events when a browser tab is left open — see [In-App Notifications (Web)](#in-app-notifications-web) below; the two share the same per-user preferences.
 
 Setting it up requires an Apple Developer account:
 
@@ -156,9 +156,21 @@ idtrack restart
 
 All four of `--apns-key-path`, `--apns-key-id`, `--apns-team-id`, and `--apns-topic` must be set together — the command refuses to save a partial set. Add `--apns-sandbox true` only if this server exclusively serves Xcode debug builds of the app rather than TestFlight/App Store builds.
 
-Each user controls which of the three notification categories they receive from **Settings → Notifications** in the app itself — this is a per-user, per-device preference, not something the server operator configures. The app also asks for notification permission once, during onboarding or first launch; declining turns all three categories off for that installation until the user re-enables it from Settings.
+Each user controls which of the three notification categories they receive from **Settings → Notifications** in the app itself — this is a per-account preference (shared with the web app's own Notifications toggles, below — not something the server operator configures, and not separate settings per device). The app also asks for notification permission once, during onboarding or first launch; declining turns all three categories off for that installation until the user re-enables it from Settings.
 
 If none of the four required settings are configured, the server simply never sends push notifications — nothing else about the app's behavior changes, and no error is shown to users.
+
+---
+
+#### In-App Notifications (Web)
+
+The web application shows the same three notification categories as the iOS app — new issue assigned to you, new comment, status change — as an in-app toast while a browser tab is open, using the exact same per-account preferences (there is nothing to configure separately for the web client; if push and web are both in use for the same account, the same three toggles govern both). Unlike push, this requires **no server configuration at all** — it works on every idtrack instance regardless of whether APNs (`--apns-*`, above) is set up.
+
+The three categories — **New issues**, **New comments**, **Status changes** — appear as toggles under **Settings → Notifications** in the web app, exactly as they do in the iOS app's own Settings screen. A note beneath them makes clear these are account-wide: turning one off there also stops the corresponding push notification on every device signed into that account, and vice versa — there is a single set of three preferences, not one per client.
+
+A toast appears in the corner of the screen for each event and fades automatically, or can be dismissed immediately. Clicking a toast opens the issue it refers to. If the browser tab is in the background when an event arrives, an ordinary desktop/OS notification can also be shown — this requires the browser's own notification permission, which is off by default and is a separate, per-browser setting (**Settings → Desktop notifications**) from the three account-wide category toggles above: it only controls *whether this browser pops up an OS notification*, not *which categories* it or the mobile app receive. The browser will prompt for permission the first time this is turned on; if notifications are blocked at the browser level, this toggle cannot re-request permission — the browser's own site settings must be changed first.
+
+Because this only works while a tab is open, it does not replace push notifications for a user who wants to be notified when the app isn't running — the two are complementary, not alternatives.
 
 ---
 

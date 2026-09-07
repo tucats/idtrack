@@ -365,8 +365,25 @@ func (s *srv) ageBackups(backupDir string) {
 // requests have finished, and any request that arrives mid-backup simply
 // waits (briefly) for the copy to complete rather than failing. When backup
 // is disabled the mutex is never write-locked and RLock is essentially free.
+//
+// The SSE notification stream (isNotificationStreamRequest, middleware.go)
+// bypasses this middleware entirely. It is intentionally long-lived — open
+// for as long as a browser tab is — and never touches the database file
+// directly (it only reads from an in-memory channel; see webnotify.go), so
+// it has no need of backupMu's protection. Left unbypassed, one held RLock
+// per open tab would sit for the tab's entire lifetime, and doBackup's
+// Lock() would then wait for every such RLock to release before it could
+// ever run — in practice never, since a stream reconnects long before the
+// user closes the tab. This would silently disable backups the moment any
+// browser has the app open.
 func (s *srv) quiesce(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isNotificationStreamRequest(r) {
+			next.ServeHTTP(w, r)
+
+			return
+		}
+
 		s.backupMu.RLock()
 		defer s.backupMu.RUnlock()
 		next.ServeHTTP(w, r)
