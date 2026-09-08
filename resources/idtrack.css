@@ -640,6 +640,30 @@ html.hide-col-comments  .col-comments  { display: none; }
   margin: .75rem auto;
   border-radius: var(--radius);
 }
+.av-pdf {
+  display: block;
+  width: 100%;
+  height: 65vh;
+  margin: .75rem auto;
+  background: #fff;
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+}
+.av-text {
+  display: block;
+  max-height: 65vh;
+  overflow: auto;
+  margin: .75rem auto;
+  padding: .75rem;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .8rem;
+  background: var(--surface);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+}
 .av-meta {
   color: var(--text-muted);
   font-size: .8rem;

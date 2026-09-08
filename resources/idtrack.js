@@ -160,6 +160,11 @@ let _detailAttachments = [];
 // since the overlay only has a bare "Delete" button, not the id itself.
 let _avAttachmentId = null;
 
+// The blob: URL currently assigned to #av-pdf, or null. Tracked so
+// closeAttachmentViewer() can revoke it — an un-revoked blob: URL leaks
+// the fetched bytes for the life of the page.
+let _avObjectUrl = null;
+
 // Staging list of blocking issue IDs assembled inside the Blocked dialog
 // before the user confirms. Separate from _dependentIssues so cancelling
 // the dialog leaves the form in its original state.
@@ -585,6 +590,22 @@ async function apiUpload(url, formData) {
         throw new Error(msg);
     }
     return res.json();
+}
+
+// apiGetBlob performs a GET request and returns the raw response body as a
+// Blob rather than parsing it as JSON — used for non-image attachment
+// bytes (PDF, text), which openAttachmentViewer turns into a blob: URL or
+// plain text rather than pointing an element directly at the API URL (the
+// server's frame-ancestors CSP blocks framing its own responses even from
+// this same page — see openAttachmentViewer's doc comment).
+async function apiGetBlob(url) {
+    const res = await apiFetch(url);
+    if (!res.ok) {
+        let msg = `Error ${res.status}`;
+        try { const d = await res.json(); msg = d.error || msg; } catch {}
+        throw new Error(msg);
+    }
+    return res.blob();
 }
 
 // =====================================================================
@@ -2256,15 +2277,15 @@ function renderComments(comments) {
                 <span class="comment-author">${esc(displayName(c.author))}</span>
                 <span class="comment-date">${fmtDateTime(c.created_at)}</span>
                 <div class="comment-actions">
-                    <button class="btn-comment-img" onclick="toggleCommentImageDropzone(${c.id})" title="Add image" aria-label="Add image">${CAMERA_ICON_SVG}</button>
+                    <button class="btn-comment-img" onclick="toggleCommentImageDropzone(${c.id})" title="Add file" aria-label="Add file">${CAMERA_ICON_SVG}</button>
                     ${trashBtn(c.id)}
                 </div>
             </div>
             <div id="comment-dropzone-${c.id}" class="image-dropzone" style="display:none"
                  onclick="triggerCommentImagePicker(${c.id})"
                  ondragover="onDropzoneDragOver(event)" ondragleave="onDropzoneDragLeave(event)" ondrop="onCommentDropzoneDrop(event, ${c.id})">
-                <span class="dropzone-hint">Drop images here, or click to browse — PNG or JPEG, up to 10&nbsp;MB each</span>
-                <input type="file" id="comment-image-input-${c.id}" accept="image/png,image/jpeg" multiple
+                <span class="dropzone-hint">Drop files here, or click to browse — images, PDF, or text, up to 10&nbsp;MB each</span>
+                <input type="file" id="comment-image-input-${c.id}" accept="image/png,image/jpeg,application/pdf,.txt,.md,.markdown,.log,.csv,.json,.yaml,.yml" multiple
                        style="display:none" onchange="onCommentImageFilesSelected(event, ${c.id})">
             </div>
             <div id="comment-image-error-${c.id}" class="error-text"></div>
@@ -2348,20 +2369,38 @@ async function confirmDeleteComment(commentId, event) {
 // =====================================================================
 // UI — ATTACHMENTS
 // =====================================================================
-// Image attachments on the currently-open issue's description. The upload
-// flow is: click "Add Image…" to reveal a drop-zone (also click-to-browse
-// via a hidden <input type=file>), pick/drop one or more PNG/JPEG files,
-// each is POSTed individually to POST /api/issues/{id}/attachments as
-// multipart/form-data, then the whole list is refetched from the server
-// and re-rendered as a row of thumbnails under the description. Clicking a
-// thumbnail opens the full-size image in an overlay, which carries a
-// Delete button when the current user is the uploader or an admin — see
-// server/attachments.go's handleDeleteAttachment for the matching
-// server-side check this mirrors (client-side hiding is a convenience;
-// the server enforces the real rule).
+// File attachments (image, PDF, or text — see db.AttachmentType) on the
+// currently-open issue's description. The upload flow is: click "Add
+// File…" to reveal a drop-zone (also click-to-browse via a hidden
+// <input type=file>), pick/drop one or more files, each is POSTed
+// individually to POST /api/issues/{id}/attachments as multipart/form-data,
+// then the whole list is refetched from the server and re-rendered as a
+// row of thumbnails under the description — every kind gets a thumbnail
+// (a real preview for images and text, a generic icon for PDF; see
+// server/images.go). Clicking a thumbnail opens the full attachment in an
+// overlay (openAttachmentViewer), which carries a Delete button when the
+// current user is the uploader or an admin — see server/attachments.go's
+// handleDeleteAttachment for the matching server-side check this mirrors
+// (client-side hiding is a convenience; the server enforces the real rule).
 
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024; // headroom under the server's 12 MiB multipart cap
-const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg'];
+
+// ATTACHMENT_MIME_TYPES/ATTACHMENT_TEXT_EXTENSIONS back isAcceptedAttachmentFile,
+// a client-side pre-check that's purely a fast-fail UX nicety — the server
+// always re-sniffs the actual bytes regardless (see detectAttachmentKind in
+// server/images.go) and is the sole source of truth for acceptance. Text
+// files are matched by extension rather than MIME type because browsers
+// report wildly inconsistent (often empty) File.type values for plain-text
+// extensions; images and PDF have reliable MIME types, so those are
+// matched directly.
+const ATTACHMENT_MIME_TYPES = ['image/png', 'image/jpeg', 'application/pdf'];
+const ATTACHMENT_TEXT_EXTENSIONS = ['.txt', '.md', '.markdown', '.log', '.csv', '.json', '.yaml', '.yml'];
+
+function isAcceptedAttachmentFile(f) {
+    if (ATTACHMENT_MIME_TYPES.includes(f.type)) return true;
+    const lower = f.name.toLowerCase();
+    return ATTACHMENT_TEXT_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
 
 // CAMERA_ICON_SVG is the per-comment "Add Image" button's glyph — an inline
 // stroke-based SVG (Feather Icons' "camera", MIT licensed) rather than a
@@ -2415,7 +2454,7 @@ function renderAllAttachments() {
 // layout math needed.
 function attachmentThumbsHTML(list) {
     return list.map(a => `
-        <button type="button" class="attachment-thumb" onclick="openAttachmentViewer('${a.id}')" title="${esc(a.filename || 'image.png')}">
+        <button type="button" class="attachment-thumb" onclick="openAttachmentViewer('${a.id}')" title="${esc(a.filename || 'attachment')}">
             <img src="${BASE_PATH}/api/attachments/${a.id}/thumbnail" alt="${esc(a.filename || '')}" loading="lazy">
         </button>
     `).join('');
@@ -2474,9 +2513,11 @@ function toggleImageDropzone() {
 
 // triggerImageFilePicker opens the native OS file picker by forwarding the
 // click to the hidden <input type=file> — this is what makes the drop-zone
-// clickable as well as drag-droppable. accept="image/png,image/jpeg" on
-// that input filters the picker's file listing in every major browser,
-// Safari included.
+// clickable as well as drag-droppable. That input's accept attribute
+// filters the picker's file listing in every major browser, Safari
+// included — it's a UX hint only, not enforcement; isAcceptedAttachmentFile
+// and, ultimately, the server's own content sniffing are what actually
+// decide what's accepted.
 function triggerImageFilePicker() {
     document.getElementById('detail-image-input').click();
 }
@@ -2520,13 +2561,13 @@ async function uploadAttachmentFiles(fileList, uploadUrl, errEl, dropzoneEl) {
     const files = Array.from(fileList);
     const rejected = [];
     const accepted = files.filter(f => {
-        if (!ATTACHMENT_MIME_TYPES.includes(f.type)) { rejected.push(`${f.name} (unsupported format)`); return false; }
+        if (!isAcceptedAttachmentFile(f)) { rejected.push(`${f.name} (unsupported format)`); return false; }
         if (f.size > ATTACHMENT_MAX_BYTES) { rejected.push(`${f.name} (too large)`); return false; }
         return true;
     });
 
     if (rejected.length) {
-        errEl.textContent = `Skipped ${rejected.join(', ')} — only PNG/JPEG images up to 10 MB are supported.`;
+        errEl.textContent = `Skipped ${rejected.join(', ')} — only images, PDF, or text files up to 10 MB are supported.`;
     }
     if (!accepted.length) return { uploaded: 0, failed: 0 };
 
@@ -2536,7 +2577,7 @@ async function uploadAttachmentFiles(fileList, uploadUrl, errEl, dropzoneEl) {
     try {
         for (const file of accepted) {
             const fd = new FormData();
-            fd.append('image', file);
+            fd.append('file', file); // matches attachmentFormField in server/attachments.go
             try {
                 await apiUpload(uploadUrl, fd);
                 uploaded++;
@@ -2601,35 +2642,99 @@ async function handleCommentImageFiles(fileList, commentId) {
     if (uploaded && !failed) toggleCommentImageDropzone(commentId);
 }
 
-// openAttachmentViewer shows one attachment's full-size image in the
-// #attachment-viewer-overlay sheet — used for both description- and
-// comment-level attachments, since _detailAttachments holds both. The
+// openAttachmentViewer shows one attachment (image, PDF, or text) at full
+// size in the #attachment-viewer-overlay sheet — used for both description-
+// and comment-level attachments, since _detailAttachments holds both. The
 // Delete button is shown only when the current user is the uploader or an
 // admin, mirroring handleDeleteAttachment's server-side check — see this
 // section's header comment.
-function openAttachmentViewer(id) {
+//
+// Images are pointed directly at GET /api/attachments/{id} via <img src> —
+// unaffected by the server's frame-ancestors CSP, since that only governs
+// framing (iframe/embed/object), not plain resource loads. PDF and text
+// are NOT pointed directly at that URL from #av-pdf/#av-text, though: the
+// server's frame-ancestors 'none' (secureHeaders in server/middleware.go)
+// blocks framing its own responses even from this same page. Instead their
+// bytes are fetched via an authenticated JS request and turned into a
+// blob: URL (PDF, via <embed>) or plain text (via <pre>.textContent) —
+// neither is a second framed HTTP response, so the header doesn't apply.
+async function openAttachmentViewer(id) {
     const a = _detailAttachments.find(x => x.id === id);
     if (!a) return;
 
     _avAttachmentId = id;
-    document.getElementById('av-filename').textContent = a.filename || 'image.png';
+    document.getElementById('av-filename').textContent = a.filename || 'attachment';
 
     const img = document.getElementById('av-image');
-    img.src = `${BASE_PATH}/api/attachments/${id}`;
-    img.alt = a.filename || '';
+    const pdf = document.getElementById('av-pdf');
+    const text = document.getElementById('av-text');
 
-    document.getElementById('av-meta').textContent =
-        `${a.width}×${a.height} · uploaded by ${displayName(a.uploader)} · ${fmtDateTime(a.created_at)}`;
+    img.style.display = 'none';
+    pdf.style.display = 'none';
+    text.style.display = 'none';
+    img.src = '';
+    pdf.src = '';
+    text.textContent = '';
+    revokeAvObjectUrl();
+
+    document.getElementById('av-meta').textContent = a.type === 'image'
+        ? `${a.width}×${a.height} · uploaded by ${displayName(a.uploader)} · ${fmtDateTime(a.created_at)}`
+        : `uploaded by ${displayName(a.uploader)} · ${fmtDateTime(a.created_at)}`;
 
     const canDelete = _currentUser && (_currentUser.is_admin || _currentUser.username === a.uploader);
     document.getElementById('av-delete-btn').style.display = canDelete ? '' : 'none';
 
     document.getElementById('attachment-viewer-overlay').style.display = '';
+
+    if (a.type === 'pdf') {
+        await loadAvBlobInto(id, pdf, 'pdf', text);
+    } else if (a.type === 'text') {
+        await loadAvBlobInto(id, text, 'text', text);
+    } else {
+        img.src = `${BASE_PATH}/api/attachments/${id}`;
+        img.alt = a.filename || '';
+        img.style.display = '';
+    }
+}
+
+// loadAvBlobInto fetches attachment id's bytes and shows them in target
+// (an <embed> for kind 'pdf', a <pre> for kind 'text'), bailing out
+// without touching the DOM if the viewer has since moved on to a
+// different attachment while the fetch was in flight. errEl receives a
+// human-readable message (and is shown) on failure.
+async function loadAvBlobInto(id, target, kind, errEl) {
+    try {
+        const blob = await apiGetBlob(`/api/attachments/${id}`);
+        if (_avAttachmentId !== id) return;
+
+        if (kind === 'pdf') {
+            _avObjectUrl = URL.createObjectURL(blob);
+            target.src = _avObjectUrl;
+        } else {
+            target.textContent = await blob.text();
+        }
+
+        target.style.display = '';
+    } catch (e) {
+        if (e.message === 'Unauthorized' || _avAttachmentId !== id) return;
+        errEl.textContent = 'Failed to load file: ' + (e.message || 'unknown error');
+        errEl.style.display = '';
+    }
+}
+
+function revokeAvObjectUrl() {
+    if (_avObjectUrl) {
+        URL.revokeObjectURL(_avObjectUrl);
+        _avObjectUrl = null;
+    }
 }
 
 function closeAttachmentViewer() {
     document.getElementById('attachment-viewer-overlay').style.display = 'none';
     document.getElementById('av-image').src = '';
+    document.getElementById('av-pdf').src = '';
+    document.getElementById('av-text').textContent = '';
+    revokeAvObjectUrl();
     _avAttachmentId = null;
 }
 
@@ -2637,7 +2742,7 @@ function closeAttachmentViewer() {
 // viewer. DELETE /api/attachments/{id}
 async function confirmDeleteAttachment() {
     if (!_avAttachmentId) return;
-    if (!confirm('Delete this image? This cannot be undone.')) return;
+    if (!confirm('Delete this attachment? This cannot be undone.')) return;
 
     const id = _avAttachmentId;
 
@@ -2647,7 +2752,7 @@ async function confirmDeleteAttachment() {
         renderAllAttachments();
         closeAttachmentViewer();
     } catch (e) {
-        if (e.message !== 'Unauthorized') alert('Failed to delete image: ' + (e.message || 'unknown error'));
+        if (e.message !== 'Unauthorized') alert('Failed to delete attachment: ' + (e.message || 'unknown error'));
     }
 }
 

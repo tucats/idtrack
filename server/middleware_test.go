@@ -112,6 +112,15 @@ func TestSecureHeaders_CSP(t *testing.T) {
 	if !strings.Contains(csp, "frame-ancestors 'none'") {
 		t.Errorf("CSP header missing frame-ancestors: %q", csp)
 	}
+
+	// frame-src blob: is required for the attachment viewer's PDF <iframe>
+	// (openAttachmentViewer in idtrack.js) — without it the directive falls
+	// back to default-src 'self', which doesn't cover blob: and the
+	// browser silently refuses to render the PDF (verified by hand: this
+	// exact regression was hit and fixed during development).
+	if !strings.Contains(csp, "frame-src blob:") {
+		t.Errorf("CSP header missing frame-src blob: (needed for the PDF attachment viewer): %q", csp)
+	}
 }
 
 // ---------------------------------------------------------------------------
