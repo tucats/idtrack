@@ -209,21 +209,38 @@ var (
 	genericIconPage    = color.RGBA{0xff, 0xff, 0xff, 0xff} // document body
 	genericIconBorder  = color.RGBA{0x9c, 0xa3, 0xaf, 0xff} // document outline
 	genericIconFold    = color.RGBA{0xe5, 0xe7, 0xeb, 0xff} // folded-corner shading
-	genericLabelColor  = color.RGBA{0x37, 0x41, 0x51, 0xff}
+	genericBadgeBg     = color.RGBA{0xdc, 0x26, 0x26, 0xff} // strong red "badge" behind the label — high-contrast, reads at a glance
+	genericBadgeText   = color.RGBA{0xff, 0xff, 0xff, 0xff}
 	genericCaptionText = color.RGBA{0x6b, 0x72, 0x80, 0xff}
 )
 
+// genericBadgeScale is how many times basicfont.Face7x13's native 7x13
+// glyph size the label (e.g. "PDF") is blown up before being drawn onto
+// the badge — the bitmap font reads as too small/low-contrast at
+// genericThumbSize on its own, so the label is rendered small, then
+// nearest-neighbor scaled up (see drawScaledLabel) for a crisp, clearly
+// legible result rather than a blurry one a smooth interpolator would give
+// a 1-bit-per-pixel font.
+const genericBadgeScale = 4
+
+// genericBadgePadding is the margin, in already-scaled pixels, between the
+// enlarged label and the edge of its colored badge rectangle.
+const genericBadgePadding = 16
+
 // genericThumbnail renders the fallback icon used for an attachment kind
-// with no content-derived preview: a simple document silhouette with label
-// (e.g. "PDF") drawn in the middle and the original filename captioned
-// underneath, so entries stay distinguishable in the thumbnail grid without
-// opening each one.
+// with no content-derived preview: a document silhouette with a bold,
+// high-contrast colored badge carrying label (e.g. "PDF") centered on the
+// page, and the original filename captioned underneath — so entries stay
+// distinguishable, and their kind unambiguous at a glance, in the
+// thumbnail grid without opening each one.
 func genericThumbnail(label, filename string) ([]byte, error) {
 	img := image.NewRGBA(image.Rect(0, 0, genericThumbSize, genericThumbSize))
 	draw.Draw(img, img.Bounds(), &image.Uniform{genericIconBg}, image.Point{}, draw.Src)
 
-	drawDocumentIcon(img)
-	drawCenteredText(img, label, genericThumbSize/2+6, genericLabelColor)
+	page := drawDocumentIcon(img)
+	cx, cy := (page.Min.X+page.Max.X)/2, (page.Min.Y+page.Max.Y)/2
+
+	drawBadgeLabel(img, label, cx, cy)
 	drawCenteredText(img, truncateMonospace(displayFilename(filename), genericThumbSize-2*textPadding), genericCaptionY, genericCaptionText)
 
 	var buf bytes.Buffer
@@ -238,8 +255,10 @@ const genericCaptionY = genericThumbSize - 30
 
 // drawDocumentIcon paints a plain white page with a bordered outline and a
 // shaded, dog-eared top-right corner onto img — just enough of a "document"
-// silhouette to read as a file icon at thumbnail size.
-func drawDocumentIcon(img *image.RGBA) {
+// silhouette to read as a file icon at thumbnail size. Returns the page's
+// rectangle so the caller can center further content (the badge label) on
+// it.
+func drawDocumentIcon(img *image.RGBA) image.Rectangle {
 	const (
 		marginX = 90
 		top     = 40
@@ -258,6 +277,43 @@ func drawDocumentIcon(img *image.RGBA) {
 			img.Set(page.Max.X-fold+x, page.Min.Y+y, genericIconFold)
 		}
 	}
+
+	return page
+}
+
+// drawBadgeLabel paints a solid, high-contrast rectangle centered at
+// (cx, cy) sized to fit label at genericBadgeScale, then draws label in
+// genericBadgeText on top via drawScaledLabel.
+func drawBadgeLabel(img *image.RGBA, label string, cx, cy int) {
+	natW := font.MeasureString(basicfont.Face7x13, label).Round()
+	natH := basicfont.Face7x13.Height
+
+	badgeW := natW*genericBadgeScale + 2*genericBadgePadding
+	badgeH := natH*genericBadgeScale + 2*genericBadgePadding
+	badge := image.Rect(cx-badgeW/2, cy-badgeH/2, cx-badgeW/2+badgeW, cy-badgeH/2+badgeH)
+
+	draw.Draw(img, badge, &image.Uniform{genericBadgeBg}, image.Point{}, draw.Src)
+	drawScaledLabel(img, label, cx, cy, genericBadgeScale, genericBadgeText)
+}
+
+// drawScaledLabel renders s at basicfont.Face7x13's native size onto a
+// small offscreen bitmap, nearest-neighbor scales it up by scale (crisp
+// and blocky, rather than the blur a smooth interpolator would produce
+// from a 1-bit-per-pixel font), and composites the result centered at
+// (cx, cy) on img in fg.
+func drawScaledLabel(img *image.RGBA, s string, cx, cy, scale int, fg color.Color) {
+	natW := font.MeasureString(basicfont.Face7x13, s).Round()
+	natH := basicfont.Face7x13.Height
+
+	small := image.NewRGBA(image.Rect(0, 0, natW, natH))
+	drawText(small, s, 0, basicfont.Face7x13.Ascent, fg)
+
+	scaled := image.NewRGBA(image.Rect(0, 0, natW*scale, natH*scale))
+	draw.NearestNeighbor.Scale(scaled, scaled.Bounds(), small, small.Bounds(), draw.Over, nil)
+
+	sw, sh := scaled.Bounds().Dx(), scaled.Bounds().Dy()
+	dst := image.Rect(cx-sw/2, cy-sh/2, cx-sw/2+sw, cy-sh/2+sh)
+	draw.Draw(img, dst, scaled, image.Point{}, draw.Over)
 }
 
 func drawRectBorder(img *image.RGBA, r image.Rectangle, c color.Color) {

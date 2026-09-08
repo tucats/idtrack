@@ -509,29 +509,29 @@
   </div>
 </div>
 
-<!-- Attachment viewer: shows one attachment (image, PDF, or text) at full
-     size, with delete for the uploader/admin. Exactly one of #av-image /
-     #av-pdf / #av-text is shown at a time, chosen by openAttachmentViewer()
-     based on the attachment's type. PDF/text content is loaded as a blob
-     and shown via a blob: URL (av-pdf) or as plain text (av-text) rather
-     than pointed directly at the API URL, because the server's
-     frame-ancestors 'none' CSP (secureHeaders in server/middleware.go)
-     blocks framing its own responses even from this same page — see
-     openAttachmentViewer's doc comment. av-pdf is an <iframe>, not an
-     <embed>: <embed type="application/pdf"> depends on the browser having
-     a legacy NPAPI-style PDF plugin registered, which is inconsistent
-     (absent entirely in some Chromium builds); <iframe> is the approach
-     MDN recommends and every evergreen browser renders a PDF response
-     inside one using its built-in viewer. -->
+<!-- Attachment viewer: shows one attachment (image or text) at full size, or
+     a plain "can't preview this" notice for a kind with no inline
+     rendering (PDF today, and the fallback for any future kind added
+     without one), with Save and delete-for-the-uploader/admin actions.
+     Exactly one of #av-image / #av-text / #av-unavailable is shown at a
+     time, chosen by openAttachmentViewer() based on the attachment's type
+     — see its doc comment. Embedding a PDF inline (an <iframe>/<embed>
+     pointed at a blob: URL built from a fetched copy) was tried and
+     dropped: support was inconsistent across real browsers, so a message
+     the user can trust beats a preview that might silently render blank. -->
 <div id="attachment-viewer-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'attachment-viewer-overlay',closeAttachmentViewer)">
   <div class="sheet attachment-viewer-sheet">
     <h3 id="av-filename"></h3>
     <img id="av-image" class="av-image" alt="">
-    <iframe id="av-pdf" class="av-pdf" title="PDF attachment" style="display:none"></iframe>
     <pre id="av-text" class="av-text" style="display:none"></pre>
+    <div id="av-unavailable" class="av-unavailable" style="display:none">
+      <p id="av-unavailable-message"></p>
+      <p class="av-unavailable-hint">Use Save to download it and open it on your device.</p>
+    </div>
     <div id="av-meta" class="av-meta"></div>
     <div class="button-row">
       <button id="av-delete-btn" class="btn btn-danger" onclick="confirmDeleteAttachment()" style="display:none">Delete</button>
+      <button class="btn btn-secondary" onclick="saveCurrentAttachment()">Save…</button>
       <button class="btn btn-secondary" onclick="closeAttachmentViewer()">Close</button>
     </div>
   </div>

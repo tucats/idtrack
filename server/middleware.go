@@ -204,22 +204,12 @@ func secureHeaders(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 
 		// Restrict what resources the browser can load for this page.
-		// frame-src blob: is required for the attachment viewer's PDF
-		// <iframe> (openAttachmentViewer in idtrack.js): a PDF's bytes are
-		// fetched via an authenticated JS request and shown via a blob: URL
-		// rather than pointed directly at GET /api/attachments/{id}, since
-		// that endpoint's own frame-ancestors 'none' would otherwise block
-		// framing it even from this same page (see the doc comment on
-		// openAttachmentViewer). Without this directive, frame-src falls
-		// back to default-src 'self', which does not cover blob: and the
-		// browser silently refuses to render the iframe's content.
 		h.Set("Content-Security-Policy",
 			"default-src 'self'; "+
 				"script-src 'self' 'unsafe-inline'; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"img-src 'self' data:; "+
 				"connect-src 'self'; "+
-				"frame-src blob:; "+
 				"frame-ancestors 'none'")
 
 		// Tell the browser to always use HTTPS when connecting to this host.

@@ -160,11 +160,6 @@ let _detailAttachments = [];
 // since the overlay only has a bare "Delete" button, not the id itself.
 let _avAttachmentId = null;
 
-// The blob: URL currently assigned to #av-pdf, or null. Tracked so
-// closeAttachmentViewer() can revoke it — an un-revoked blob: URL leaks
-// the fetched bytes for the life of the page.
-let _avObjectUrl = null;
-
 // Staging list of blocking issue IDs assembled inside the Blocked dialog
 // before the user confirms. Separate from _dependentIssues so cancelling
 // the dialog leaves the form in its original state.
@@ -593,11 +588,9 @@ async function apiUpload(url, formData) {
 }
 
 // apiGetBlob performs a GET request and returns the raw response body as a
-// Blob rather than parsing it as JSON — used for non-image attachment
-// bytes (PDF, text), which openAttachmentViewer turns into a blob: URL or
-// plain text rather than pointing an element directly at the API URL (the
-// server's frame-ancestors CSP blocks framing its own responses even from
-// this same page — see openAttachmentViewer's doc comment).
+// Blob rather than parsing it as JSON — used to fetch an attachment's raw
+// bytes, both for showing a text attachment's content in the viewer
+// (openAttachmentViewer) and for saveAttachment's local-download flow.
 async function apiGetBlob(url) {
     const res = await apiFetch(url);
     if (!res.ok) {
@@ -2642,22 +2635,23 @@ async function handleCommentImageFiles(fileList, commentId) {
     if (uploaded && !failed) toggleCommentImageDropzone(commentId);
 }
 
-// openAttachmentViewer shows one attachment (image, PDF, or text) at full
-// size in the #attachment-viewer-overlay sheet — used for both description-
-// and comment-level attachments, since _detailAttachments holds both. The
+// openAttachmentViewer shows one attachment at full size in the
+// #attachment-viewer-overlay sheet — used for both description- and
+// comment-level attachments, since _detailAttachments holds both. The
 // Delete button is shown only when the current user is the uploader or an
 // admin, mirroring handleDeleteAttachment's server-side check — see this
 // section's header comment.
 //
-// Images are pointed directly at GET /api/attachments/{id} via <img src> —
-// unaffected by the server's frame-ancestors CSP, since that only governs
-// framing (iframe/embed/object), not plain resource loads. PDF and text
-// are NOT pointed directly at that URL from #av-pdf/#av-text, though: the
-// server's frame-ancestors 'none' (secureHeaders in server/middleware.go)
-// blocks framing its own responses even from this same page. Instead their
-// bytes are fetched via an authenticated JS request and turned into a
-// blob: URL (PDF, via <embed>) or plain text (via <pre>.textContent) —
-// neither is a second framed HTTP response, so the header doesn't apply.
+// Images are pointed directly at GET /api/attachments/{id} via <img src>.
+// Text is fetched via an authenticated JS request (apiGetBlob) and shown
+// as plain text in a <pre> — a client-side fetch, not a framed response,
+// so it's unaffected by the server's frame-ancestors CSP. Any other kind
+// (PDF today) has no inline preview at all: embedding a PDF (an
+// <iframe>/<embed> pointed at a blob: URL built from a fetched copy) was
+// tried and dropped — support for that turned out inconsistent across
+// real browsers, so attachmentUnavailableMessage() shows a plain "can't
+// preview this" notice instead, pointing at the Save button, rather than
+// risking a preview that silently renders blank.
 async function openAttachmentViewer(id) {
     const a = _detailAttachments.find(x => x.id === id);
     if (!a) return;
@@ -2666,16 +2660,14 @@ async function openAttachmentViewer(id) {
     document.getElementById('av-filename').textContent = a.filename || 'attachment';
 
     const img = document.getElementById('av-image');
-    const pdf = document.getElementById('av-pdf');
     const text = document.getElementById('av-text');
+    const unavailable = document.getElementById('av-unavailable');
 
     img.style.display = 'none';
-    pdf.style.display = 'none';
     text.style.display = 'none';
+    unavailable.style.display = 'none';
     img.src = '';
-    pdf.src = '';
     text.textContent = '';
-    revokeAvObjectUrl();
 
     document.getElementById('av-meta').textContent = a.type === 'image'
         ? `${a.width}×${a.height} · uploaded by ${displayName(a.uploader)} · ${fmtDateTime(a.created_at)}`
@@ -2686,56 +2678,94 @@ async function openAttachmentViewer(id) {
 
     document.getElementById('attachment-viewer-overlay').style.display = '';
 
-    if (a.type === 'pdf') {
-        await loadAvBlobInto(id, pdf, 'pdf', text);
-    } else if (a.type === 'text') {
-        await loadAvBlobInto(id, text, 'text', text);
-    } else {
+    if (a.type === 'image') {
         img.src = `${BASE_PATH}/api/attachments/${id}`;
         img.alt = a.filename || '';
         img.style.display = '';
-    }
-}
-
-// loadAvBlobInto fetches attachment id's bytes and shows them in target
-// (an <embed> for kind 'pdf', a <pre> for kind 'text'), bailing out
-// without touching the DOM if the viewer has since moved on to a
-// different attachment while the fetch was in flight. errEl receives a
-// human-readable message (and is shown) on failure.
-async function loadAvBlobInto(id, target, kind, errEl) {
-    try {
-        const blob = await apiGetBlob(`/api/attachments/${id}`);
-        if (_avAttachmentId !== id) return;
-
-        if (kind === 'pdf') {
-            _avObjectUrl = URL.createObjectURL(blob);
-            target.src = _avObjectUrl;
-        } else {
-            target.textContent = await blob.text();
+    } else if (a.type === 'text') {
+        try {
+            const blob = await apiGetBlob(`/api/attachments/${id}`);
+            if (_avAttachmentId !== id) return; // viewer moved on while this was in flight
+            text.textContent = await blob.text();
+            text.style.display = '';
+        } catch (e) {
+            if (e.message === 'Unauthorized' || _avAttachmentId !== id) return;
+            text.textContent = 'Failed to load file: ' + (e.message || 'unknown error');
+            text.style.display = '';
         }
-
-        target.style.display = '';
-    } catch (e) {
-        if (e.message === 'Unauthorized' || _avAttachmentId !== id) return;
-        errEl.textContent = 'Failed to load file: ' + (e.message || 'unknown error');
-        errEl.style.display = '';
+    } else {
+        document.getElementById('av-unavailable-message').textContent = attachmentUnavailableMessage(a);
+        unavailable.style.display = '';
     }
 }
 
-function revokeAvObjectUrl() {
-    if (_avObjectUrl) {
-        URL.revokeObjectURL(_avObjectUrl);
-        _avObjectUrl = null;
-    }
+// attachmentUnavailableMessage returns the notice shown in place of a
+// preview for an attachment kind with none — named after the kind when
+// recognized (today, only "pdf"), or a generic fallback for anything else,
+// so a kind added later without its own preview logic still reads clearly
+// rather than silently falling through to a blank panel.
+function attachmentUnavailableMessage(a) {
+    if (a.type === 'pdf') return "This PDF can't be previewed here.";
+    return "This file can't be previewed here.";
 }
 
 function closeAttachmentViewer() {
     document.getElementById('attachment-viewer-overlay').style.display = 'none';
     document.getElementById('av-image').src = '';
-    document.getElementById('av-pdf').src = '';
     document.getElementById('av-text').textContent = '';
-    revokeAvObjectUrl();
+    document.getElementById('av-unavailable').style.display = 'none';
     _avAttachmentId = null;
+}
+
+// saveAttachment downloads attachment id's full bytes to the user's local
+// filesystem. When the File System Access API is available (Chromium-
+// based browsers), it opens the real "Save As" file picker so the user
+// chooses where the file lands; otherwise it falls back to the classic
+// <a download> trick, which browsers turn into a normal downloads-folder
+// save. showSaveFilePicker() is called first, before any await, so it
+// still runs synchronously within the click handler's user-activation
+// window — calling it after an intervening await risks browsers rejecting
+// it as not user-initiated.
+async function saveAttachment(id, filename) {
+    const suggestedName = filename || 'attachment';
+
+    if (window.showSaveFilePicker) {
+        try {
+            const handle = await window.showSaveFilePicker({ suggestedName });
+            const blob = await apiGetBlob(`/api/attachments/${id}`);
+            const writable = await handle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            return;
+        } catch (e) {
+            if (e.name === 'AbortError') return; // user cancelled the save dialog
+            console.error('showSaveFilePicker failed, falling back to a plain download:', e);
+            // fall through to the <a download> approach below
+        }
+    }
+
+    try {
+        const blob = await apiGetBlob(`/api/attachments/${id}`);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = suggestedName;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        if (e.message !== 'Unauthorized') alert('Failed to save attachment: ' + (e.message || 'unknown error'));
+    }
+}
+
+// saveCurrentAttachment is the Save button's onclick target — it resolves
+// the currently-viewed attachment's filename from _detailAttachments and
+// delegates to saveAttachment.
+function saveCurrentAttachment() {
+    if (!_avAttachmentId) return;
+    const a = _detailAttachments.find(x => x.id === _avAttachmentId);
+    saveAttachment(_avAttachmentId, a ? a.filename : 'attachment');
 }
 
 // confirmDeleteAttachment deletes the attachment currently shown in the
