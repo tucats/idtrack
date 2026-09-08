@@ -114,19 +114,24 @@ func initSchema(database *sql.DB) error {
 			created_at    TEXT NOT NULL,
 			last_used_at  TEXT NOT NULL DEFAULT ''
 		);
-		-- Image attachments on an issue's description or one of its comments.
-		-- Like webauthn_credentials above, this is a brand-new table rather than
-		-- a migrated addition to an existing one, so an old database gets it for
-		-- free via CREATE TABLE IF NOT EXISTS with nothing to backfill. comment_id
-		-- uses 0 (not NULL) as the "attached to the description, not a comment"
-		-- sentinel — no comment row ever has id 0 (AUTOINCREMENT starts at 1) — to
-		-- keep the column a plain NOT NULL INTEGER like the rest of the schema.
+		-- File attachments (image, pdf, or text) on an issue's description or
+		-- one of its comments. Like webauthn_credentials above, this is a
+		-- brand-new table rather than a migrated addition to an existing one,
+		-- so an old database gets it for free via CREATE TABLE IF NOT EXISTS
+		-- with nothing to backfill. comment_id uses 0 (not NULL) as the
+		-- "attached to the description, not a comment" sentinel — no comment
+		-- row ever has id 0 (AUTOINCREMENT starts at 1) — to keep the column a
+		-- plain NOT NULL INTEGER like the rest of the schema. type was added
+		-- after the table's initial (image-only) release and does need the
+		-- usual addColumnIfMissing treatment for a pre-existing database — see
+		-- below.
 		CREATE TABLE IF NOT EXISTS attachments (
 			id          TEXT PRIMARY KEY,
 			issue_id    INTEGER NOT NULL,
 			comment_id  INTEGER NOT NULL DEFAULT 0,
 			uploader    TEXT NOT NULL,
 			filename    TEXT NOT NULL DEFAULT '',
+			type        TEXT NOT NULL DEFAULT 'image',
 			width       INTEGER NOT NULL DEFAULT 0,
 			height      INTEGER NOT NULL DEFAULT 0,
 			size        INTEGER NOT NULL DEFAULT 0,
@@ -239,6 +244,17 @@ func initSchema(database *sql.DB) error {
 		return err
 	}
 
+	// type distinguishes what kind of file an attachment's blob column holds:
+	// "image" (a converted PNG, the only kind that existed before this
+	// column), "pdf" (raw PDF bytes, unconverted), or "text" (raw text
+	// bytes). DEFAULT '' plus the backfill below follows the same
+	// empty-string-guard pattern as the teams columns above — every
+	// pre-existing attachment predates this feature and was, by definition,
+	// an image.
+	if err := addColumnIfMissing(database, "attachments", "type", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
 	// Seed the two reserved team names.  INSERT OR IGNORE is idempotent.
 	if _, err := database.Exec(`
 		INSERT OR IGNORE INTO teams (name, description) VALUES ('admin', '');
@@ -277,6 +293,14 @@ func initSchema(database *sql.DB) error {
 	}
 
 	if _, err := database.Exec(`UPDATE issues SET teams = 'any' WHERE teams = ''`); err != nil {
+		return err
+	}
+
+	// Backfill type for every attachment that predates the column: they were
+	// all images, since that was the only kind of attachment this feature
+	// supported at the time. WHERE type = '' makes this a no-op after the
+	// first run, same as every other backfill above.
+	if _, err := database.Exec(`UPDATE attachments SET type = 'image' WHERE type = ''`); err != nil {
 		return err
 	}
 
