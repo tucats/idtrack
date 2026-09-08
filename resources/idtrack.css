@@ -640,6 +640,32 @@ html.hide-col-comments  .col-comments  { display: none; }
   margin: .75rem auto;
   border-radius: var(--radius);
 }
+.av-unavailable {
+  display: block;
+  margin: .75rem auto;
+  padding: 2.5rem 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+}
+.av-unavailable p { margin: 0 0 .4rem; color: var(--text); }
+.av-unavailable p:last-child { margin-bottom: 0; }
+.av-unavailable .av-unavailable-hint { color: var(--text-muted); font-size: .85rem; }
+.av-text {
+  display: block;
+  max-height: 65vh;
+  overflow: auto;
+  margin: .75rem auto;
+  padding: .75rem;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .8rem;
+  background: var(--surface);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+}
 .av-meta {
   color: var(--text-muted);
   font-size: .8rem;

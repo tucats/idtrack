@@ -11,8 +11,10 @@ import (
 )
 
 // attachmentFormField is the multipart form field name an upload must use
-// for the image file, on both attachment-creation routes.
-const attachmentFormField = "image"
+// for the file, on both attachment-creation routes. Named generically
+// ("file", not "image") because uploads are no longer image-only — see
+// db.AttachmentType.
+const attachmentFormField = "file"
 
 // attachmentID parses the {aid} path parameter shared by every
 // /api/attachments/{aid}... route. Unlike issueID/comment IDs this is a
@@ -30,11 +32,12 @@ func attachmentID(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return id, true
 }
 
-// readUploadedImage extracts the uploaded file from a multipart form
-// (field name attachmentFormField), converts it via processUploadedImage
-// (server/images.go), and writes an appropriate error response on any
-// failure. ok is false whenever an error has already been written to w.
-func readUploadedImage(w http.ResponseWriter, r *http.Request) (pngBytes, thumbBytes []byte, width, height int, filename string, ok bool) {
+// readUploadedAttachment extracts the uploaded file from a multipart form
+// (field name attachmentFormField), sniffs and converts it via
+// processUploadedAttachment (server/images.go), and writes an appropriate
+// error response on any failure. ok is false whenever an error has already
+// been written to w.
+func readUploadedAttachment(w http.ResponseWriter, r *http.Request) (kind db.AttachmentType, stored, thumb []byte, width, height int, filename string, ok bool) {
 	// The in-memory-vs-temp-file threshold below only controls how
 	// ParseMultipartForm buffers the request as it reads it; the request
 	// body itself is already capped at maxAttachmentBodyBytes by the
@@ -43,14 +46,14 @@ func readUploadedImage(w http.ResponseWriter, r *http.Request) (pngBytes, thumbB
 	if err := r.ParseMultipartForm(maxAttachmentBodyBytes); err != nil {
 		jsonError(w, "invalid multipart upload", http.StatusBadRequest)
 
-		return nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, "", false
 	}
 
 	file, header, err := r.FormFile(attachmentFormField)
 	if err != nil {
 		jsonError(w, "missing '"+attachmentFormField+"' file field", http.StatusBadRequest)
 
-		return nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, "", false
 	}
 	defer file.Close()
 
@@ -58,38 +61,40 @@ func readUploadedImage(w http.ResponseWriter, r *http.Request) (pngBytes, thumbB
 	if err != nil {
 		jsonError(w, "failed to read uploaded file", http.StatusBadRequest)
 
-		return nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, "", false
 	}
 
-	png, thumb, w2, h2, err := processUploadedImage(data)
+	k, storedBytes, thumbBytes, w2, h2, err := processUploadedAttachment(data, header.Filename)
 	if err != nil {
 		switch {
-		case errors.Is(err, errUnsupportedImage):
-			jsonError(w, "unsupported image format — only PNG and JPEG are accepted", http.StatusUnsupportedMediaType)
+		case errors.Is(err, errUnsupportedAttachment):
+			jsonError(w, "unsupported file format — only PNG/JPEG images, PDF, and plain text are accepted", http.StatusUnsupportedMediaType)
 		case errors.Is(err, errImageTooLarge):
 			jsonError(w, "image dimensions too large", http.StatusBadRequest)
 		default:
 			internalError(w, err)
 		}
 
-		return nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, "", false
 	}
 
-	return png, thumb, w2, h2, header.Filename, true
+	return k, storedBytes, thumbBytes, w2, h2, header.Filename, true
 }
 
 // handleCreateIssueAttachment serves POST /api/issues/{id}/attachments —
-// attaches an uploaded image to an issue's description. Auth: any
-// authenticated user, matching handleCreateComment's "any signed-in user may
-// add content to any issue they can reach" rule.
+// attaches an uploaded file (image, PDF, or text — see db.AttachmentType)
+// to an issue's description. Auth: any authenticated user, matching
+// handleCreateComment's "any signed-in user may add content to any issue
+// they can reach" rule.
 //
-// Request: multipart/form-data with the image in the "image" field.
-// Response (201 Created): {"attachment": {...}} — metadata only, no image
-// bytes (see db.Attachment's doc comment); fetch the image itself via
-// GET /api/attachments/{id} or /{id}/thumbnail.
+// Request: multipart/form-data with the file in the "file" field.
+// Response (201 Created): {"attachment": {...}} — metadata only, no file
+// bytes (see db.Attachment's doc comment); fetch the file itself via
+// GET /api/attachments/{id} or its thumbnail via /{id}/thumbnail.
 //
 // Errors: 400 invalid issue id / malformed upload; 404 issue does not exist;
-// 415 the uploaded data isn't a decodable PNG/JPEG image; 500 on db error.
+// 415 the uploaded data doesn't sniff as a supported kind (see
+// detectAttachmentKind in server/images.go); 500 on db error.
 func (s *srv) handleCreateIssueAttachment(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -109,12 +114,12 @@ func (s *srv) handleCreateIssueAttachment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	pngBytes, thumbBytes, width, height, filename, ok := readUploadedImage(w, r)
+	kind, stored, thumb, width, height, filename, ok := readUploadedAttachment(w, r)
 	if !ok {
 		return
 	}
 
-	attachment, err := db.CreateAttachment(s.database, id, 0, currentUser(r).Username, filename, pngBytes, thumbBytes, width, height)
+	attachment, err := db.CreateAttachment(s.database, id, 0, currentUser(r).Username, filename, kind, stored, thumb, width, height)
 	if err != nil {
 		internalError(w, err)
 
@@ -126,7 +131,7 @@ func (s *srv) handleCreateIssueAttachment(w http.ResponseWriter, r *http.Request
 
 // handleCreateCommentAttachment serves
 // POST /api/issues/{id}/comments/{cid}/attachments — attaches an uploaded
-// image to one specific comment. Auth and request/response shape are
+// file to one specific comment. Auth and request/response shape are
 // identical to handleCreateIssueAttachment; the only difference is the
 // parent-existence check also confirms {cid} is a real comment belonging to
 // {id}, the same pattern handleCreateComment uses for {id} alone (see its
@@ -135,7 +140,7 @@ func (s *srv) handleCreateIssueAttachment(w http.ResponseWriter, r *http.Request
 //
 // Errors: 400 invalid issue/comment id or malformed upload; 404 the issue
 // does not exist, or the comment does not exist under that issue; 415
-// unsupported image data; 500 on db error.
+// unsupported file data; 500 on db error.
 func (s *srv) handleCreateCommentAttachment(w http.ResponseWriter, r *http.Request) {
 	id, ok := issueID(w, r)
 	if !ok {
@@ -162,12 +167,12 @@ func (s *srv) handleCreateCommentAttachment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	pngBytes, thumbBytes, width, height, filename, ok := readUploadedImage(w, r)
+	kind, stored, thumb, width, height, filename, ok := readUploadedAttachment(w, r)
 	if !ok {
 		return
 	}
 
-	attachment, err := db.CreateAttachment(s.database, id, cid, currentUser(r).Username, filename, pngBytes, thumbBytes, width, height)
+	attachment, err := db.CreateAttachment(s.database, id, cid, currentUser(r).Username, filename, kind, stored, thumb, width, height)
 	if err != nil {
 		internalError(w, err)
 
@@ -184,12 +189,12 @@ func (s *srv) handleCreateCommentAttachment(w http.ResponseWriter, r *http.Reque
 // GETs; see buildWhereClause).
 //
 // Response (200 OK): {"attachments": [...]} — metadata only (id, filename,
-// dimensions, uploader, comment_id when present, timestamps); no image
+// type, dimensions, uploader, comment_id when present, timestamps); no file
 // bytes. The frontend renders each entry's thumbnail via an <img> tag
 // pointed at GET /api/attachments/{id}/thumbnail rather than embedding
 // thumbnail bytes in this response, so the browser can cache/lazy-load each
-// image independently instead of the whole list paying for every thumbnail
-// up front.
+// thumbnail independently instead of the whole list paying for every one up
+// front.
 //
 // Errors: 400 invalid issue id; 404 issue does not exist; 500 on db error.
 func (s *srv) handleListAttachments(w http.ResponseWriter, r *http.Request) {
@@ -221,13 +226,27 @@ func (s *srv) handleListAttachments(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"attachments": attachments})
 }
 
+// defaultDispositionFilename returns a sensible placeholder filename, with
+// an extension matching t, for an attachment that was somehow stored with
+// no filename at all.
+func defaultDispositionFilename(t db.AttachmentType) string {
+	switch t {
+	case db.AttachmentPDF:
+		return "document.pdf"
+	case db.AttachmentText:
+		return "text.txt"
+	default:
+		return "image.png"
+	}
+}
+
 // sanitizeDispositionFilename strips CR/LF and other control characters from
 // a stored (user-supplied) filename before it is placed in a
 // Content-Disposition response header, preventing header injection. The
 // stored filename itself is never used as a filesystem path — attachments
 // are stored entirely as database blobs — so this is the only place it
 // needs sanitizing.
-func sanitizeDispositionFilename(name string) string {
+func sanitizeDispositionFilename(name string, t db.AttachmentType) string {
 	name = strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f || r == '"' {
 			return -1
@@ -237,17 +256,34 @@ func sanitizeDispositionFilename(name string) string {
 	}, name)
 
 	if name == "" {
-		return "image.png"
+		return defaultDispositionFilename(t)
 	}
 
 	return name
 }
 
+// attachmentContentType maps an attachment's stored kind to the Content-Type
+// its full blob should be served with. Thumbnails are always PNG regardless
+// of the parent attachment's type (see genericThumbnail/textThumbnail in
+// server/images.go), so this is only consulted for the full-size blob.
+func attachmentContentType(t db.AttachmentType) string {
+	switch t {
+	case db.AttachmentPDF:
+		return "application/pdf"
+	case db.AttachmentText:
+		return "text/plain; charset=utf-8"
+	default:
+		return "image/png"
+	}
+}
+
 // serveAttachmentBlob is the shared tail of handleGetAttachmentImage and
 // handleGetAttachmentThumbnail: look up the attachment's metadata (for its
-// filename and to 404 on a bogus/deleted id), fetch the requested blob
-// column via fetch, and write it as an image/png response.
-func (s *srv) serveAttachmentBlob(w http.ResponseWriter, r *http.Request, fetch func(*srv, string) ([]byte, error)) {
+// filename/type and to 404 on a bogus/deleted id), fetch the requested blob
+// column via fetch, and write it as a response with the appropriate
+// Content-Type. thumbnail is true when serving the always-PNG thumbnail
+// column rather than the type-dependent full blob.
+func (s *srv) serveAttachmentBlob(w http.ResponseWriter, r *http.Request, thumbnail bool, fetch func(*srv, string) ([]byte, error)) {
 	id, ok := attachmentID(w, r)
 	if !ok {
 		return
@@ -279,31 +315,38 @@ func (s *srv) serveAttachmentBlob(w http.ResponseWriter, r *http.Request, fetch 
 		return
 	}
 
-	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Content-Disposition", `inline; filename="`+sanitizeDispositionFilename(attachment.Filename)+`"`)
+	contentType := "image/png"
+	if !thumbnail {
+		contentType = attachmentContentType(attachment.Type)
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `inline; filename="`+sanitizeDispositionFilename(attachment.Filename, attachment.Type)+`"`)
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
 }
 
 // handleGetAttachmentImage serves GET /api/attachments/{aid} — the
-// full-size converted PNG. Auth: any authenticated user (see
-// handleListAttachments' doc comment on the team-visibility precedent this
-// follows). Cache-Control is long-lived and "immutable" because an
-// attachment's bytes never change after upload — only a DELETE removes the
-// row entirely, which naturally invalidates any cached copy the next time
-// it's requested and 404s.
+// full-size stored blob (a converted PNG for an image attachment, or the
+// raw original bytes for a PDF/text attachment — see db.AttachmentType).
+// Auth: any authenticated user (see handleListAttachments' doc comment on
+// the team-visibility precedent this follows). Cache-Control is long-lived
+// and "immutable" because an attachment's bytes never change after upload —
+// only a DELETE removes the row entirely, which naturally invalidates any
+// cached copy the next time it's requested and 404s.
 //
 // Errors: 400 missing {aid}; 404 no such attachment; 500 on db error.
 func (s *srv) handleGetAttachmentImage(w http.ResponseWriter, r *http.Request) {
-	s.serveAttachmentBlob(w, r, (*srv).fetchAttachmentImage)
+	s.serveAttachmentBlob(w, r, false, (*srv).fetchAttachmentImage)
 }
 
 // handleGetAttachmentThumbnail serves GET /api/attachments/{aid}/thumbnail —
-// the smaller preview PNG. Same auth/caching/error behavior as
-// handleGetAttachmentImage.
+// the smaller preview PNG (every attachment kind has one — see
+// server/images.go's genericThumbnail/textThumbnail for the non-image
+// kinds). Same auth/caching/error behavior as handleGetAttachmentImage.
 func (s *srv) handleGetAttachmentThumbnail(w http.ResponseWriter, r *http.Request) {
-	s.serveAttachmentBlob(w, r, (*srv).fetchAttachmentThumbnail)
+	s.serveAttachmentBlob(w, r, true, (*srv).fetchAttachmentThumbnail)
 }
 
 func (s *srv) fetchAttachmentImage(id string) ([]byte, error) {

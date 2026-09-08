@@ -7,44 +7,64 @@ import (
 	"github.com/google/uuid"
 )
 
-// Attachment represents a row in the attachments table: one image attached to
-// an issue's description or to one of its comments. The image and thumbnail
-// blob columns are deliberately not fields on this struct — listing an
-// issue's attachments should never pull image bytes off disk, so callers
-// fetch a blob explicitly via GetAttachmentImage/GetAttachmentThumbnail only
-// when they actually need to serve it.
+// AttachmentType enumerates the kinds of file an attachment's blob column may
+// hold. New values can be added here as support for more file kinds is
+// added; a value not recognized by the server falls back to the generic
+// icon+filename thumbnail (see server/images.go's genericThumbnail) rather
+// than failing.
+type AttachmentType string
+
+const (
+	AttachmentImage AttachmentType = "image" // blob is a converted PNG
+	AttachmentPDF   AttachmentType = "pdf"   // blob is the raw, unconverted PDF
+	AttachmentText  AttachmentType = "text"  // blob is the raw text bytes
+)
+
+// Attachment represents a row in the attachments table: one file (image,
+// PDF, or text) attached to an issue's description or to one of its
+// comments. The image and thumbnail blob columns are deliberately not
+// fields on this struct — listing an issue's attachments should never pull
+// file bytes off disk, so callers fetch a blob explicitly via
+// GetAttachmentImage/GetAttachmentThumbnail only when they actually need to
+// serve it. The "image" blob column name predates non-image attachment
+// types and is kept as-is rather than renamed, to avoid an unnecessary
+// column-rename migration — it holds whatever the Type field says it holds.
 type Attachment struct {
-	ID        string `json:"id"`
-	IssueID   int64  `json:"issue_id"`
-	CommentID int64  `json:"comment_id,omitempty"` // 0 (omitted) = attached to the issue description, not a comment
-	Uploader  string `json:"uploader"`
-	Filename  string `json:"filename"`
-	Width     int    `json:"width"`
-	Height    int    `json:"height"`
-	Size      int64  `json:"size"`
-	CreatedAt string `json:"created_at"`
+	ID        string         `json:"id"`
+	IssueID   int64          `json:"issue_id"`
+	CommentID int64          `json:"comment_id,omitempty"` // 0 (omitted) = attached to the issue description, not a comment
+	Uploader  string         `json:"uploader"`
+	Filename  string         `json:"filename"`
+	Type      AttachmentType `json:"type"`
+	Width     int            `json:"width"`
+	Height    int            `json:"height"`
+	Size      int64          `json:"size"`
+	CreatedAt string         `json:"created_at"`
 }
 
-const attachmentColumns = "id, issue_id, comment_id, uploader, filename, width, height, size, created_at"
+const attachmentColumns = "id, issue_id, comment_id, uploader, filename, type, width, height, size, created_at"
 
 func scanAttachment(scanner interface {
 	Scan(...any) error //nolint:inamedparam
 }, a *Attachment) error {
-	return scanner.Scan(&a.ID, &a.IssueID, &a.CommentID, &a.Uploader, &a.Filename, &a.Width, &a.Height, &a.Size, &a.CreatedAt)
+	return scanner.Scan(&a.ID, &a.IssueID, &a.CommentID, &a.Uploader, &a.Filename, &a.Type, &a.Width, &a.Height, &a.Size, &a.CreatedAt)
 }
 
-// CreateAttachment inserts a new attachment row. image and thumbnail are the
-// already-converted PNG bytes (see server/images.go); commentID is 0 when the
-// attachment belongs to the issue's description rather than a specific
+// CreateAttachment inserts a new attachment row. file and thumbnail are the
+// already-processed bytes to store (see server/images.go's
+// processUploadedAttachment): a converted PNG for AttachmentImage, or the
+// raw original bytes for AttachmentPDF/AttachmentText; width/height are only
+// meaningful for AttachmentImage and are 0 otherwise. commentID is 0 when
+// the attachment belongs to the issue's description rather than a specific
 // comment. Returns the fully populated Attachment (metadata only).
-func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, filename string, image, thumbnail []byte, width, height int) (*Attachment, error) {
+func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, filename string, attachmentType AttachmentType, file, thumbnail []byte, width, height int) (*Attachment, error) {
 	id := uuid.New().String()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	_, err := database.Exec(
-		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, width, height, size, image, thumbnail, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, issueID, commentID, uploader, filename, width, height, len(image), image, thumbnail, now,
+		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, type, width, height, size, image, thumbnail, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, issueID, commentID, uploader, filename, attachmentType, width, height, len(file), file, thumbnail, now,
 	)
 	if err != nil {
 		return nil, err
@@ -56,9 +76,10 @@ func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, file
 		CommentID: commentID,
 		Uploader:  uploader,
 		Filename:  filename,
+		Type:      attachmentType,
 		Width:     width,
 		Height:    height,
-		Size:      int64(len(image)),
+		Size:      int64(len(file)),
 		CreatedAt: now,
 	}, nil
 }

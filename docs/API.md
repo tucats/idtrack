@@ -907,30 +907,47 @@ Errors: `400` invalid comment id; `403` not an admin.
 
 #### Attachments
 
-Image attachments on an issue's description or on one of its comments.
-Every uploaded image is converted server-side to PNG for storage — only
-**PNG** and **JPEG** are accepted as input (never trust a client-declared
-`Content-Type`; acceptance is determined by whether the bytes actually
-decode). HEIC is not yet supported (the only Go HEIC decoders require cgo,
-which conflicts with idtrack's static, cross-compiled build).
+File attachments on an issue's description or on one of its comments.
+Every attachment has a `type` of `"image"`, `"pdf"`, or `"text"`, sniffed
+server-side from the uploaded bytes themselves — never from a
+client-declared `Content-Type` or the filename's extension:
+
+- **image** — accepted input is **PNG** or **JPEG** only (acceptance is
+  determined by whether the bytes actually decode as one); every uploaded
+  image is converted server-side to PNG for storage. HEIC is not yet
+  supported (the only Go HEIC decoders require cgo, which conflicts with
+  idtrack's static, cross-compiled build).
+- **pdf** — detected by the `%PDF-` magic bytes; stored as the raw,
+  unconverted original bytes.
+- **text** — detected by a conservative binary-vs-text heuristic (valid
+  UTF-8, no NUL bytes); stored as the raw original bytes.
+
+Anything that sniffs as none of the above is rejected with `415`.
+
+Every attachment kind has a thumbnail: a real preview for image (scaled,
+longest edge ~320px) and text (an image of the file's first 45 lines); PDF
+gets a generic icon thumbnail captioned with the filename (idtrack does not
+rasterize PDF pages — see the project's CLAUDE.md for the reasoning). The
+thumbnail endpoint always returns `image/png` regardless of the parent
+attachment's `type`.
 
 An attachment record always has exactly one target: `comment_id` present
 means it's attached to that comment; `comment_id` absent (omitted from the
 JSON) means it's attached to the issue's description.
 
-Listing attachments never returns image bytes — fetch the image or
+Listing attachments never returns file bytes — fetch the full file or
 thumbnail for a given attachment via its own dedicated `GET` route so the
 browser can cache/lazy-load each one independently.
 
 ##### `POST /api/issues/{id}/attachments`
 
-Attaches an uploaded image to an issue's description. Any authenticated
-user may attach an image to any issue they can reach — same rule as
-posting a comment.
+Attaches an uploaded file to an issue's description. Any authenticated
+user may attach a file to any issue they can reach — same rule as posting
+a comment.
 
-Request: `multipart/form-data` with the image file in a field named
-`image`. Body size is capped at 12 MiB (well above the 64 KiB limit on
-every other POST/PUT endpoint, which only ever carries small JSON bodies).
+Request: `multipart/form-data` with the file in a field named `file`. Body
+size is capped at 12 MiB (well above the 64 KiB limit on every other
+POST/PUT endpoint, which only ever carries small JSON bodies).
 
 Response `201 Created`:
 
@@ -941,6 +958,7 @@ Response `201 Created`:
     "issue_id": 42,
     "uploader": "bob",
     "filename": "screenshot.png",
+    "type": "image",
     "width": 1000,
     "height": 600,
     "size": 3171,
@@ -949,14 +967,17 @@ Response `201 Created`:
 }
 ```
 
+`width`/`height` are only meaningful for `type: "image"` — always `0` for
+`pdf` and `text`.
+
 Errors: `400` invalid issue id, malformed multipart body, or image
 dimensions too large; `404` the issue does not exist; `415` the uploaded
-data isn't a decodable PNG/JPEG image or the request's `Content-Type` isn't
+data doesn't sniff as image/pdf/text, or the request's `Content-Type` isn't
 `multipart/form-data`.
 
 ##### `POST /api/issues/{id}/comments/{cid}/attachments`
 
-Attaches an uploaded image to one specific comment. Identical request/
+Attaches an uploaded file to one specific comment. Identical request/
 response shape to the description-attachment endpoint above, except the
 returned attachment includes `"comment_id": <cid>` and the server also
 confirms `{cid}` is a real comment belonging to `{id}` before accepting the
@@ -968,7 +989,7 @@ issue.
 ##### `GET /api/issues/{id}/attachments`
 
 Lists every attachment on an issue — both on its description and on any of
-its comments — oldest first. Metadata only, no image bytes.
+its comments — oldest first. Metadata only, no file bytes.
 
 Response `200 OK`:
 
@@ -976,11 +997,11 @@ Response `200 OK`:
 {
   "attachments": [
     { "id": "46a66c34-...", "issue_id": 42, "uploader": "bob",
-      "filename": "screenshot.png", "width": 1000, "height": 600,
+      "filename": "screenshot.png", "type": "image", "width": 1000, "height": 600,
       "size": 3171, "created_at": "2026-08-02T10:15:00Z" },
     { "id": "e8ec1ff9-...", "issue_id": 42, "comment_id": 7, "uploader": "alice",
-      "filename": "detail.jpg", "width": 900, "height": 900,
-      "size": 6849, "created_at": "2026-08-02T10:20:00Z" }
+      "filename": "notes.txt", "type": "text", "width": 0, "height": 0,
+      "size": 240, "created_at": "2026-08-02T10:20:00Z" }
   ]
 }
 ```
@@ -989,17 +1010,20 @@ Errors: `400` invalid issue id; `404` the issue does not exist.
 
 ##### `GET /api/attachments/{aid}`
 
-Returns the full-size converted image as raw `image/png` bytes (not JSON).
-Sets `Cache-Control: private, max-age=31536000, immutable` — an
-attachment's bytes never change after upload, so a fetched copy is safe to
-cache indefinitely until the attachment is deleted.
+Returns the full-size stored bytes (not JSON): `image/png` for `type:
+"image"` (converted at upload time), `application/pdf` for `type: "pdf"`,
+or `text/plain; charset=utf-8` for `type: "text"` (both stored and
+returned as the raw original bytes). Sets `Cache-Control: private,
+max-age=31536000, immutable` — an attachment's bytes never change after
+upload, so a fetched copy is safe to cache indefinitely until the
+attachment is deleted.
 
 Errors: `400` missing `{aid}`; `404` no such attachment.
 
 ##### `GET /api/attachments/{aid}/thumbnail`
 
-Same as above but returns the smaller preview image (longest edge ~320px,
-aspect ratio preserved; never upscaled past the source image's own size).
+Same as above but always returns `image/png` — the smaller preview image
+described above, regardless of the parent attachment's `type`.
 
 ##### `DELETE /api/attachments/{aid}`
 

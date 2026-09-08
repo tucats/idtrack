@@ -38,11 +38,12 @@ const maxRequestBodyBytes = 64 * 1024 // 64 KiB — plenty for any API call
 
 // maxAttachmentBodyBytes caps the size of a POST body on an attachment
 // upload route (see limitBody below) — these carry a multipart-encoded
-// image rather than a small JSON payload, so they need a much larger limit
-// than every other POST/PUT endpoint. 12 MiB comfortably covers a phone
-// photo (including multipart framing overhead) while still bounding
-// worst-case memory use; processUploadedImage (server/images.go) applies
-// its own decoded-pixel-count cap on top of this raw byte cap.
+// file (image, PDF, or text — see db.AttachmentType) rather than a small
+// JSON payload, so they need a much larger limit than every other POST/PUT
+// endpoint. 12 MiB comfortably covers a phone photo or a modest PDF
+// (including multipart framing overhead) while still bounding worst-case
+// memory use; processUploadedImage (server/images.go) applies its own
+// decoded-pixel-count cap on top of this raw byte cap for the image case.
 const maxAttachmentBodyBytes = 12 * 1024 * 1024 // 12 MiB
 
 // notificationStreamPath is the literal path suffix of the SSE in-app
