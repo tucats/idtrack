@@ -1,6 +1,9 @@
 package db_test
 
 import (
+	"bytes"
+	"crypto/rand"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -113,6 +116,177 @@ func TestSetAttachmentPages_CachesLazilyComputedCount(t *testing.T) {
 
 	if got.Pages != 7 {
 		t.Errorf("GetAttachment after SetAttachmentPages: Pages = %d, want 7", got.Pages)
+	}
+}
+
+// rawStoredAttachment reads the compressed flag and the raw (possibly
+// gzipped) image bytes directly via SQL, bypassing GetAttachmentImage's own
+// transparent decompression — used to assert on-disk storage behavior that
+// the public API deliberately hides from every other caller.
+func rawStoredAttachment(t *testing.T, d *sql.DB, id string) (compressed bool, raw []byte) {
+	t.Helper()
+
+	var compressedInt int
+
+	if err := d.QueryRow(`SELECT compressed, image FROM attachments WHERE id = ?`, id).Scan(&compressedInt, &raw); err != nil {
+		t.Fatalf("reading raw stored attachment %s: %v", id, err)
+	}
+
+	return compressedInt != 0, raw
+}
+
+// TestCreateAttachment_CompressesLargeCompressibleBlob covers the success
+// path: a blob well over compressMinSize whose content (a repeated pattern)
+// gzip can shrink by well over compressMinSavings should be stored
+// compressed, and GetAttachmentImage should still hand back the exact
+// original bytes — compression must be completely invisible above db.
+func TestCreateAttachment_CompressesLargeCompressibleBlob(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+
+	db.AddUser(d, "u", "U", "pw", []string{"any"})
+
+	original := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog. "), 500) // ~23KB, highly compressible
+
+	a, err := db.CreateAttachment(d, 1, 0, "u", "notes.txt", db.AttachmentText, original, []byte("thumb"), 0, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	if a.Size != int64(len(original)) {
+		t.Errorf("Size = %d, want %d (the original, uncompressed length)", a.Size, len(original))
+	}
+
+	compressed, raw := rawStoredAttachment(t, d, a.ID)
+	if !compressed {
+		t.Fatal("expected a large, highly-compressible blob to be stored compressed")
+	}
+
+	if len(original)-len(raw) < 1024 {
+		t.Errorf("compressed storage only saved %d bytes, want at least 1024", len(original)-len(raw))
+	}
+
+	got, err := db.GetAttachmentImage(d, a.ID)
+	if err != nil {
+		t.Fatalf("GetAttachmentImage: %v", err)
+	}
+
+	if !bytes.Equal(got, original) {
+		t.Error("GetAttachmentImage should transparently return the original, uncompressed bytes")
+	}
+}
+
+// TestCreateAttachment_SkipsCompressionForSmallBlob covers a blob under
+// compressMinSize: compression should never even be attempted, regardless
+// of how compressible the content is.
+func TestCreateAttachment_SkipsCompressionForSmallBlob(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+
+	db.AddUser(d, "u", "U", "pw", []string{"any"})
+
+	original := bytes.Repeat([]byte("aaaa"), 50) // 200 bytes — trivially compressible, but tiny
+
+	a, err := db.CreateAttachment(d, 1, 0, "u", "small.txt", db.AttachmentText, original, []byte("thumb"), 0, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	compressed, raw := rawStoredAttachment(t, d, a.ID)
+	if compressed {
+		t.Error("a blob under compressMinSize should never be stored compressed")
+	}
+
+	if !bytes.Equal(raw, original) {
+		t.Error("an uncompressed blob's stored bytes should exactly match the original")
+	}
+}
+
+// TestCreateAttachment_SkipsCompressionWhenIncompressible covers a blob
+// over compressMinSize whose content doesn't compress well enough to clear
+// compressMinSavings (simulated here with random bytes, which gzip cannot
+// meaningfully shrink) — it should be stored as-is rather than paying gzip's
+// own overhead for no real benefit.
+func TestCreateAttachment_SkipsCompressionWhenIncompressible(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+
+	db.AddUser(d, "u", "U", "pw", []string{"any"})
+
+	original := make([]byte, 4096)
+	if _, err := rand.Read(original); err != nil {
+		t.Fatalf("rand.Read: %v", err)
+	}
+
+	a, err := db.CreateAttachment(d, 1, 0, "u", "random.bin", db.AttachmentText, original, []byte("thumb"), 0, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	compressed, raw := rawStoredAttachment(t, d, a.ID)
+	if compressed {
+		t.Error("incompressible content should not be stored compressed even though it's over compressMinSize")
+	}
+
+	if !bytes.Equal(raw, original) {
+		t.Error("an uncompressed blob's stored bytes should exactly match the original")
+	}
+}
+
+// TestMigration_AttachmentCompressedBackfill simulates upgrading a
+// pre-existing database that predates the compressed column: a row is
+// inserted directly via raw SQL (bypassing CreateAttachment) with no
+// compressed value, then the database is reopened — re-running initSchema,
+// including the compressed column's addColumnIfMissing — to confirm the row
+// reads back as uncompressed and GetAttachmentImage returns its stored bytes
+// completely unchanged (no gunzip attempted against plain, never-compressed
+// legacy content).
+func TestMigration_AttachmentCompressedBackfill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "migration-compressed.db")
+
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+
+	if err := db.AddUser(d, "uploader", "Uploader", "pw", []string{"any"}); err != nil {
+		t.Fatalf("AddUser: %v", err)
+	}
+
+	legacyBytes := []byte("legacy attachment content, stored long before compression existed")
+
+	if _, err := d.Exec(
+		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, type, width, height, size, image, thumbnail, created_at)
+		 VALUES ('legacy-compressed-1', 1, 0, 'uploader', 'legacy.txt', 'text', 0, 0, ?, ?, X'0102', '2020-01-01T00:00:00Z')`,
+		len(legacyBytes), legacyBytes,
+	); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	d.Close()
+
+	d2, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer d2.Close()
+
+	compressed, raw := rawStoredAttachment(t, d2, "legacy-compressed-1")
+	if compressed {
+		t.Error("a legacy row predating the compressed column should backfill to uncompressed (0)")
+	}
+
+	if !bytes.Equal(raw, legacyBytes) {
+		t.Error("legacy row's raw stored bytes should be untouched by the migration")
+	}
+
+	got, err := db.GetAttachmentImage(d2, "legacy-compressed-1")
+	if err != nil {
+		t.Fatalf("GetAttachmentImage: %v", err)
+	}
+
+	if !bytes.Equal(got, legacyBytes) {
+		t.Error("GetAttachmentImage should return a legacy row's bytes completely unchanged")
 	}
 }
 

@@ -121,10 +121,13 @@ func initSchema(database *sql.DB) error {
 		-- with nothing to backfill. comment_id uses 0 (not NULL) as the
 		-- "attached to the description, not a comment" sentinel — no comment
 		-- row ever has id 0 (AUTOINCREMENT starts at 1) — to keep the column a
-		-- plain NOT NULL INTEGER like the rest of the schema. type and pages
-		-- were each added after the table's initial (image-only) release and
-		-- do need the usual addColumnIfMissing treatment for a pre-existing
-		-- database — see below.
+		-- plain NOT NULL INTEGER like the rest of the schema. type, pages, and
+		-- compressed were each added after the table's initial (image-only)
+		-- release and do need the usual addColumnIfMissing treatment for a
+		-- pre-existing database — see below. compressed's DEFAULT 0 means
+		-- "uncompressed", which is exactly correct for every attachment
+		-- created before compression existed — see db.CreateAttachment/
+		-- db.compressBlob.
 		CREATE TABLE IF NOT EXISTS attachments (
 			id          TEXT PRIMARY KEY,
 			issue_id    INTEGER NOT NULL,
@@ -136,6 +139,7 @@ func initSchema(database *sql.DB) error {
 			height      INTEGER NOT NULL DEFAULT 0,
 			size        INTEGER NOT NULL DEFAULT 0,
 			pages       INTEGER NOT NULL DEFAULT 0,
+			compressed  INTEGER NOT NULL DEFAULT 0,
 			image       BLOB NOT NULL,
 			thumbnail   BLOB NOT NULL,
 			created_at  TEXT NOT NULL
@@ -265,6 +269,20 @@ func initSchema(database *sql.DB) error {
 	// case is backfilled lazily, on first request, rather than eagerly here
 	// at startup like every other column's backfill in this function.
 	if err := addColumnIfMissing(database, "attachments", "pages", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
+	// compressed flags whether the "image" blob column holds gzip-compressed
+	// bytes (db.CreateAttachment/db.compressBlob) rather than the original
+	// file content as-is. DEFAULT 0 (uncompressed) is not just a safe
+	// placeholder here, unlike some other DEFAULT 0 columns in this
+	// function — it is the only correct value for every attachment that
+	// predates this feature, since none of them were ever compressed. No
+	// backfill is needed or possible: retroactively compressing existing
+	// blobs would require reading and rewriting every one, for a purely
+	// internal storage optimization no caller can observe either way (see
+	// db.GetAttachmentImage, which decompresses transparently).
+	if err := addColumnIfMissing(database, "attachments", "compressed", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 

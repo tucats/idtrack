@@ -924,6 +924,12 @@ client-declared `Content-Type` or the filename's extension:
 
 Anything that sniffs as none of the above is rejected with `415`.
 
+Attachment content may be stored gzip-compressed internally when doing so
+saves meaningful space — this is a transparent storage optimization with no
+API-visible effect whatsoever: `size` is always the original file's byte
+count, every `GET` route returns the exact original bytes, and there is no
+request parameter or response field to control or observe it either way.
+
 Every attachment kind has a thumbnail: a real preview for image (scaled,
 longest edge ~320px), text (an image of the file's first 45 lines), and pdf
 (a server-side render of the document's first page, scaled the same way —

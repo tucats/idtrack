@@ -1,7 +1,10 @@
 package db
 
 import (
+	"bytes"
+	"compress/gzip"
 	"database/sql"
+	"io"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,6 +48,72 @@ type Attachment struct {
 
 const attachmentColumns = "id, issue_id, comment_id, uploader, filename, type, width, height, size, pages, created_at"
 
+// compressMinSize is the smallest blob CreateAttachment will even attempt to
+// gzip. Below this, there's no realistic way to clear compressMinSavings —
+// gzip's own header/footer overhead alone is about 18-20 bytes, so trying on
+// anything this small is just wasted CPU with no possible payoff.
+const compressMinSize = 1024
+
+// compressMinSavings is the minimum number of bytes gzip must actually save,
+// compared to the original, for the compressed form to be kept. Below this,
+// the original bytes are stored instead — this is what keeps compression
+// from being applied to a blob that doesn't meaningfully benefit from it
+// (most obviously: image attachments are already-compressed PNG, and many
+// PDFs already Flate-compress their own internal streams, so gzipping the
+// whole file again on top often saves little or nothing), which would
+// otherwise cost every future read a decompression pass for no real storage
+// benefit.
+const compressMinSavings = 1024
+
+// compressBlob gzips data and returns (compressed bytes, true) if doing so
+// saves at least compressMinSavings bytes versus the original; otherwise it
+// returns (data, false) unchanged, meaning "store as-is." Only the main
+// attachment blob (the "image" column, holding the actual file content) is
+// ever compressed — the thumbnail is always a small, already-PNG-encoded
+// preview that's rarely near compressMinSize in the first place and
+// wouldn't benefit from a second compression pass on top of PNG's own, so
+// it's never passed through this function.
+func compressBlob(data []byte) (stored []byte, compressed bool) {
+	if len(data) < compressMinSize {
+		return data, false
+	}
+
+	var buf bytes.Buffer
+
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(data); err != nil {
+		return data, false
+	}
+
+	if err := gw.Close(); err != nil {
+		return data, false
+	}
+
+	if len(data)-buf.Len() < compressMinSavings {
+		return data, false
+	}
+
+	return buf.Bytes(), true
+}
+
+// decompressBlob reverses compressBlob: it returns data unchanged when
+// compressed is false (the common case, and always true for any attachment
+// created before this feature existed — see the compressed column's
+// addColumnIfMissing default in db.go), or gunzips it when true.
+func decompressBlob(data []byte, compressed bool) ([]byte, error) {
+	if !compressed {
+		return data, nil
+	}
+
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+
+	return io.ReadAll(gr)
+}
+
 func scanAttachment(scanner interface {
 	Scan(...any) error //nolint:inamedparam
 }, a *Attachment) error {
@@ -59,16 +128,33 @@ func scanAttachment(scanner interface {
 // meaningful for AttachmentPDF (the page count computed at upload time from
 // the just-uploaded bytes — see server/images.go's processUploadedAttachment)
 // and is 0 otherwise. commentID is 0 when the attachment belongs to the
-// issue's description rather than a specific comment. Returns the fully
-// populated Attachment (metadata only).
+// issue's description rather than a specific comment.
+//
+// file is transparently gzip-compressed before storage when compressBlob
+// determines it's worth it (see that function's doc comment); the caller
+// never needs to know either way — GetAttachmentImage reverses this on
+// read, so every caller above this package always sees the original,
+// uncompressed bytes. The returned Attachment's Size field (and the stored
+// size column) is always len(file), the original byte count — the
+// meaningful, user-facing "how big is this file" answer, independent of
+// whatever this package chose to do with it on disk.
+//
+// Returns the fully populated Attachment (metadata only).
 func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, filename string, attachmentType AttachmentType, file, thumbnail []byte, width, height, pages int) (*Attachment, error) {
 	id := uuid.New().String()
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	stored, compressed := compressBlob(file)
+
+	compressedInt := 0
+	if compressed {
+		compressedInt = 1
+	}
+
 	_, err := database.Exec(
-		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, type, width, height, size, pages, image, thumbnail, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, issueID, commentID, uploader, filename, attachmentType, width, height, len(file), pages, file, thumbnail, now,
+		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, type, width, height, size, pages, compressed, image, thumbnail, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, issueID, commentID, uploader, filename, attachmentType, width, height, len(file), pages, compressedInt, stored, thumbnail, now,
 	)
 	if err != nil {
 		return nil, err
@@ -139,17 +225,30 @@ func GetAttachment(database *sql.DB, id string) (*Attachment, error) {
 	return &a, nil
 }
 
-// GetAttachmentImage returns the full-size PNG bytes for an attachment, or
-// nil if id does not exist.
+// GetAttachmentImage returns the full-size original bytes for an attachment
+// (a converted PNG for AttachmentImage, or the raw original bytes for
+// AttachmentPDF/AttachmentText — see the Attachment.Type doc comment), or
+// nil if id does not exist. Transparently gunzips the stored blob first when
+// the row's compressed flag is set (see CreateAttachment/compressBlob) — the
+// caller always gets back exactly the bytes originally passed to
+// CreateAttachment, never needing to know whether this package chose to
+// compress them on disk.
 func GetAttachmentImage(database *sql.DB, id string) ([]byte, error) {
-	var image []byte
+	var (
+		image         []byte
+		compressedInt int
+	)
 
-	err := database.QueryRow(`SELECT image FROM attachments WHERE id = ?`, id).Scan(&image)
+	err := database.QueryRow(`SELECT image, compressed FROM attachments WHERE id = ?`, id).Scan(&image, &compressedInt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 
-	return image, err
+	if err != nil {
+		return nil, err
+	}
+
+	return decompressBlob(image, compressedInt != 0)
 }
 
 // GetAttachmentThumbnail returns the thumbnail PNG bytes for an attachment,
