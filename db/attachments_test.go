@@ -19,7 +19,7 @@ func TestCreateAttachment_RoundTripsType(t *testing.T) {
 	cases := []db.AttachmentType{db.AttachmentImage, db.AttachmentPDF, db.AttachmentText}
 
 	for _, wantType := range cases {
-		a, err := db.CreateAttachment(d, 1, 0, "uploader", "file.bin", wantType, []byte("stored bytes"), []byte("thumb bytes"), 10, 20)
+		a, err := db.CreateAttachment(d, 1, 0, "uploader", "file.bin", wantType, []byte("stored bytes"), []byte("thumb bytes"), 10, 20, 0)
 		if err != nil {
 			t.Fatalf("CreateAttachment(%s): %v", wantType, err)
 		}
@@ -47,13 +47,72 @@ func TestCreateAttachment_NonImageHasZeroDimensions(t *testing.T) {
 	d, _ := db.Open(":memory:")
 	defer d.Close()
 
-	a, err := db.CreateAttachment(d, 1, 0, "uploader", "notes.txt", db.AttachmentText, []byte("hello"), []byte("thumb"), 0, 0)
+	a, err := db.CreateAttachment(d, 1, 0, "uploader", "notes.txt", db.AttachmentText, []byte("hello"), []byte("thumb"), 0, 0, 0)
 	if err != nil {
 		t.Fatalf("CreateAttachment: %v", err)
 	}
 
 	if a.Width != 0 || a.Height != 0 {
 		t.Errorf("text attachment should have zero dimensions, got %dx%d", a.Width, a.Height)
+	}
+}
+
+func TestCreateAttachment_PDFPagesRoundTrip(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+
+	db.AddUser(d, "u", "U", "pw", []string{"any"})
+
+	a, err := db.CreateAttachment(d, 1, 0, "u", "doc.pdf", db.AttachmentPDF, []byte("%PDF-"), []byte("thumb"), 0, 0, 53)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	if a.Pages != 53 {
+		t.Errorf("CreateAttachment: returned Pages = %d, want 53", a.Pages)
+	}
+
+	got, err := db.GetAttachment(d, a.ID)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+
+	if got.Pages != 53 {
+		t.Errorf("GetAttachment: Pages = %d, want 53", got.Pages)
+	}
+}
+
+// TestSetAttachmentPages_CachesLazilyComputedCount exercises the lazy
+// backfill path a PDF uploaded before this feature existed takes: created
+// with pages == 0 (as every pre-existing row would be, via the addColumnIfMissing
+// default), SetAttachmentPages caches a later-computed count exactly like
+// server/attachments.go's handleGetAttachmentPage does on first request.
+func TestSetAttachmentPages_CachesLazilyComputedCount(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+
+	db.AddUser(d, "u", "U", "pw", []string{"any"})
+
+	a, err := db.CreateAttachment(d, 1, 0, "u", "legacy.pdf", db.AttachmentPDF, []byte("%PDF-"), []byte("thumb"), 0, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	if a.Pages != 0 {
+		t.Fatalf("expected freshly created attachment to have Pages = 0, got %d", a.Pages)
+	}
+
+	if err := db.SetAttachmentPages(d, a.ID, 7); err != nil {
+		t.Fatalf("SetAttachmentPages: %v", err)
+	}
+
+	got, err := db.GetAttachment(d, a.ID)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+
+	if got.Pages != 7 {
+		t.Errorf("GetAttachment after SetAttachmentPages: Pages = %d, want 7", got.Pages)
 	}
 }
 
@@ -117,7 +176,7 @@ func TestDeleteAttachmentsByIssue(t *testing.T) {
 
 	db.AddUser(d, "u", "U", "pw", []string{"any"})
 
-	if _, err := db.CreateAttachment(d, 5, 0, "u", "a.pdf", db.AttachmentPDF, []byte("%PDF-"), []byte("thumb"), 0, 0); err != nil {
+	if _, err := db.CreateAttachment(d, 5, 0, "u", "a.pdf", db.AttachmentPDF, []byte("%PDF-"), []byte("thumb"), 0, 0, 0); err != nil {
 		t.Fatalf("CreateAttachment: %v", err)
 	}
 

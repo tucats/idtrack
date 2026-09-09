@@ -160,6 +160,17 @@ let _detailAttachments = [];
 // since the overlay only has a bare "Delete" button, not the id itself.
 let _avAttachmentId = null;
 
+// PDF viewer paging state, meaningful only while a PDF attachment is shown
+// in the viewer (see openAttachmentViewer/avPdfLoadPage). _avPdfPage is
+// 1-based, matching the page number shown to the user and the URL's own
+// 1-based {page} path parameter (GET /api/attachments/{id}/page/{n}).
+// _avPdfTotalPages is null until known — the attachment's own "pages"
+// metadata field is populated for every PDF uploaded after this feature
+// shipped, but a PDF attached before then still says 0 until the first
+// page fetch's response tells us the real count (see avPdfLoadPage).
+let _avPdfPage = 1;
+let _avPdfTotalPages = null;
+
 // Staging list of blocking issue IDs assembled inside the Blocked dialog
 // before the user confirms. Separate from _dependentIssues so cancelling
 // the dialog leaves the form in its original state.
@@ -2643,15 +2654,17 @@ async function handleCommentImageFiles(fileList, commentId) {
 // section's header comment.
 //
 // Images are pointed directly at GET /api/attachments/{id} via <img src>.
-// Text is fetched via an authenticated JS request (apiGetBlob) and shown
-// as plain text in a <pre> — a client-side fetch, not a framed response,
-// so it's unaffected by the server's frame-ancestors CSP. Any other kind
-// (PDF today) has no inline preview at all: embedding a PDF (an
-// <iframe>/<embed> pointed at a blob: URL built from a fetched copy) was
-// tried and dropped — support for that turned out inconsistent across
-// real browsers, so attachmentUnavailableMessage() shows a plain "can't
-// preview this" notice instead, pointing at the Save button, rather than
-// risking a preview that silently renders blank.
+// PDF pages are rendered to PNG server-side (server/pdf.go) and fetched one
+// at a time via avPdfLoadPage, which also drives the #av-pdf-nav
+// forward/back buttons and page counter. Text is fetched via an
+// authenticated JS request (apiGetBlob) and shown as plain text in a <pre>.
+// Any other kind has no inline preview at all: attachmentUnavailableMessage()
+// shows a plain "can't preview this" notice instead, pointing at the Save
+// button — the same fallback a PDF used before server-side rendering
+// existed (an earlier attempt embedded it via an <iframe>/<embed> pointed
+// at a blob: URL, but browser support for that was inconsistent, so a
+// message the user can trust beat a preview that might silently render
+// blank).
 async function openAttachmentViewer(id) {
     const a = _detailAttachments.find(x => x.id === id);
     if (!a) return;
@@ -2660,10 +2673,12 @@ async function openAttachmentViewer(id) {
     document.getElementById('av-filename').textContent = a.filename || 'attachment';
 
     const img = document.getElementById('av-image');
+    const pdfNav = document.getElementById('av-pdf-nav');
     const text = document.getElementById('av-text');
     const unavailable = document.getElementById('av-unavailable');
 
     img.style.display = 'none';
+    pdfNav.style.display = 'none';
     text.style.display = 'none';
     unavailable.style.display = 'none';
     img.src = '';
@@ -2682,6 +2697,14 @@ async function openAttachmentViewer(id) {
         img.src = `${BASE_PATH}/api/attachments/${id}`;
         img.alt = a.filename || '';
         img.style.display = '';
+    } else if (a.type === 'pdf') {
+        // a.pages is populated at upload time for every PDF uploaded after
+        // this feature shipped; a PDF attached before then still reads 0
+        // (see db.SetAttachmentPages's doc comment) until the first page
+        // fetch below reports the real count via its X-Attachment-Pages
+        // response header.
+        _avPdfTotalPages = a.pages > 0 ? a.pages : null;
+        avPdfLoadPage(id, 1);
     } else if (a.type === 'text') {
         try {
             const blob = await apiGetBlob(`/api/attachments/${id}`);
@@ -2699,22 +2722,113 @@ async function openAttachmentViewer(id) {
     }
 }
 
+// avPdfLoadPage displays one 1-based page of the PDF attachment id, updating
+// the #av-pdf-nav counter and enabling/disabling its forward/back buttons.
+//
+// It first makes an authenticated fetch (apiFetch) to the page endpoint —
+// not to read the image bytes (a plain <img src> pointed at the same
+// same-origin, cookie-authenticated URL works fine for that, exactly like
+// an image attachment's <img src>, and was tried first — but the server's
+// Content-Security-Policy only allows img-src 'self'/'data:', not 'blob:',
+// so building an <img> from a fetched Blob via URL.createObjectURL is a
+// dead end here) — but to read the response's X-Attachment-Pages header
+// (needed to learn the real page count for a legacy PDF whose upload-time
+// metadata still says 0 — see openAttachmentViewer's doc comment on
+// _avPdfTotalPages) and to distinguish "no such page" (404, e.g. clicking
+// Next past a legacy PDF's not-yet-known last page) from a genuine render
+// failure, surfacing each with its own message instead of a broken-image
+// icon. Once that fetch confirms success, #av-image is pointed at the
+// plain URL directly — the browser reuses the fetch's own response for
+// that load rather than requesting it twice, since every attachment
+// response (server/attachments.go) is already served with
+// Cache-Control: immutable.
+async function avPdfLoadPage(id, page) {
+    const img = document.getElementById('av-image');
+    const nav = document.getElementById('av-pdf-nav');
+    const url = `/api/attachments/${id}/page/${page}`;
+
+    nav.style.display = '';
+
+    try {
+        const res = await apiFetch(url);
+        if (_avAttachmentId !== id) return; // viewer moved on while this was in flight
+
+        if (!res.ok) {
+            if (res.status === 404 && _avPdfTotalPages == null) {
+                // A legacy PDF's total page count wasn't known yet, and
+                // this speculative Next click landed past the real last
+                // page — now we know it: clamp back down silently rather
+                // than showing a scary "failed to load" message for what
+                // is actually just "you've reached the end."
+                _avPdfTotalPages = page - 1;
+                updateAvPdfNav();
+
+                return;
+            }
+
+            let msg = `Error ${res.status}`;
+            try { const d = await res.json(); msg = d.error || msg; } catch {}
+            throw new Error(msg);
+        }
+
+        const totalHeader = parseInt(res.headers.get('X-Attachment-Pages'), 10);
+        if (!isNaN(totalHeader) && totalHeader > 0) _avPdfTotalPages = totalHeader;
+
+        _avPdfPage = page;
+        img.src = `${BASE_PATH}${url}`;
+        img.alt = `Page ${page}`;
+        img.style.display = '';
+        updateAvPdfNav();
+    } catch (e) {
+        if (e.message === 'Unauthorized' || _avAttachmentId !== id) return;
+        img.style.display = 'none';
+        nav.style.display = 'none';
+        document.getElementById('av-unavailable-message').textContent = 'Failed to load this page: ' + (e.message || 'unknown error');
+        document.getElementById('av-unavailable').style.display = '';
+    }
+}
+
+// updateAvPdfNav refreshes the #av-pdf-nav counter text and the
+// enabled/disabled state of its forward/back buttons from the current
+// _avPdfPage/_avPdfTotalPages — called once a page fetch resolves, whether
+// it succeeded (a new current page) or 404'd against an until-then-unknown
+// total (see avPdfLoadPage), since either case can change what's shown.
+function updateAvPdfNav() {
+    document.getElementById('av-pdf-counter').textContent =
+        _avPdfTotalPages ? `${_avPdfPage} / ${_avPdfTotalPages}` : `${_avPdfPage} / …`;
+    document.getElementById('av-pdf-prev').disabled = _avPdfPage <= 1;
+    document.getElementById('av-pdf-next').disabled = _avPdfTotalPages != null && _avPdfPage >= _avPdfTotalPages;
+}
+
+function avPdfPrevPage() {
+    if (!_avAttachmentId || _avPdfPage <= 1) return;
+    avPdfLoadPage(_avAttachmentId, _avPdfPage - 1);
+}
+
+function avPdfNextPage() {
+    if (!_avAttachmentId) return;
+    if (_avPdfTotalPages != null && _avPdfPage >= _avPdfTotalPages) return;
+    avPdfLoadPage(_avAttachmentId, _avPdfPage + 1);
+}
+
 // attachmentUnavailableMessage returns the notice shown in place of a
-// preview for an attachment kind with none — named after the kind when
-// recognized (today, only "pdf"), or a generic fallback for anything else,
-// so a kind added later without its own preview logic still reads clearly
-// rather than silently falling through to a blank panel.
+// preview for an attachment kind with none — a generic message, since
+// every kind that previously used this (PDF included, before server-side
+// rendering existed) now has a real preview; this remains the fallback for
+// any future kind added without one.
 function attachmentUnavailableMessage(a) {
-    if (a.type === 'pdf') return "This PDF can't be previewed here.";
     return "This file can't be previewed here.";
 }
 
 function closeAttachmentViewer() {
     document.getElementById('attachment-viewer-overlay').style.display = 'none';
+    document.getElementById('av-pdf-nav').style.display = 'none';
     document.getElementById('av-image').src = '';
     document.getElementById('av-text').textContent = '';
     document.getElementById('av-unavailable').style.display = 'none';
     _avAttachmentId = null;
+    _avPdfPage = 1;
+    _avPdfTotalPages = null;
 }
 
 // saveAttachment downloads attachment id's full bytes to the user's local

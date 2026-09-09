@@ -39,32 +39,36 @@ type Attachment struct {
 	Width     int            `json:"width"`
 	Height    int            `json:"height"`
 	Size      int64          `json:"size"`
+	Pages     int            `json:"pages,omitempty"` // PDF page count; 0 for non-PDF types, or a PDF whose count hasn't been computed/cached yet — see SetAttachmentPages
 	CreatedAt string         `json:"created_at"`
 }
 
-const attachmentColumns = "id, issue_id, comment_id, uploader, filename, type, width, height, size, created_at"
+const attachmentColumns = "id, issue_id, comment_id, uploader, filename, type, width, height, size, pages, created_at"
 
 func scanAttachment(scanner interface {
 	Scan(...any) error //nolint:inamedparam
 }, a *Attachment) error {
-	return scanner.Scan(&a.ID, &a.IssueID, &a.CommentID, &a.Uploader, &a.Filename, &a.Type, &a.Width, &a.Height, &a.Size, &a.CreatedAt)
+	return scanner.Scan(&a.ID, &a.IssueID, &a.CommentID, &a.Uploader, &a.Filename, &a.Type, &a.Width, &a.Height, &a.Size, &a.Pages, &a.CreatedAt)
 }
 
 // CreateAttachment inserts a new attachment row. file and thumbnail are the
 // already-processed bytes to store (see server/images.go's
 // processUploadedAttachment): a converted PNG for AttachmentImage, or the
 // raw original bytes for AttachmentPDF/AttachmentText; width/height are only
-// meaningful for AttachmentImage and are 0 otherwise. commentID is 0 when
-// the attachment belongs to the issue's description rather than a specific
-// comment. Returns the fully populated Attachment (metadata only).
-func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, filename string, attachmentType AttachmentType, file, thumbnail []byte, width, height int) (*Attachment, error) {
+// meaningful for AttachmentImage and are 0 otherwise. pages is only
+// meaningful for AttachmentPDF (the page count computed at upload time from
+// the just-uploaded bytes — see server/images.go's processUploadedAttachment)
+// and is 0 otherwise. commentID is 0 when the attachment belongs to the
+// issue's description rather than a specific comment. Returns the fully
+// populated Attachment (metadata only).
+func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, filename string, attachmentType AttachmentType, file, thumbnail []byte, width, height, pages int) (*Attachment, error) {
 	id := uuid.New().String()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	_, err := database.Exec(
-		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, type, width, height, size, image, thumbnail, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, issueID, commentID, uploader, filename, attachmentType, width, height, len(file), file, thumbnail, now,
+		`INSERT INTO attachments (id, issue_id, comment_id, uploader, filename, type, width, height, size, pages, image, thumbnail, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, issueID, commentID, uploader, filename, attachmentType, width, height, len(file), pages, file, thumbnail, now,
 	)
 	if err != nil {
 		return nil, err
@@ -80,6 +84,7 @@ func CreateAttachment(database *sql.DB, issueID, commentID int64, uploader, file
 		Width:     width,
 		Height:    height,
 		Size:      int64(len(file)),
+		Pages:     pages,
 		CreatedAt: now,
 	}, nil
 }
@@ -158,6 +163,23 @@ func GetAttachmentThumbnail(database *sql.DB, id string) ([]byte, error) {
 	}
 
 	return thumbnail, err
+}
+
+// SetAttachmentPages caches a PDF attachment's page count once it has been
+// computed (server/pdf.go), so it never needs to be recomputed by reopening
+// and reparsing the stored PDF bytes on a later request. This is the lazy
+// counterpart to the page count already computed and stored at upload time
+// for new attachments (CreateAttachment's pages parameter): a PDF uploaded
+// before this feature existed has pages == 0 until the first request that
+// needs its page count computes it and calls this to cache the result —
+// deliberately lazy rather than an eager startup backfill (unlike the
+// string-default backfills in db.go's initSchema), since computing a page
+// count means opening and parsing every stored PDF, which could be slow or
+// even fail for a database with many/large attachments.
+func SetAttachmentPages(database *sql.DB, id string, pages int) error {
+	_, err := database.Exec(`UPDATE attachments SET pages = ? WHERE id = ?`, pages, id)
+
+	return err
 }
 
 // DeleteAttachment removes a single attachment by its UUID.

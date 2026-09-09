@@ -121,10 +121,10 @@ func initSchema(database *sql.DB) error {
 		-- with nothing to backfill. comment_id uses 0 (not NULL) as the
 		-- "attached to the description, not a comment" sentinel — no comment
 		-- row ever has id 0 (AUTOINCREMENT starts at 1) — to keep the column a
-		-- plain NOT NULL INTEGER like the rest of the schema. type was added
-		-- after the table's initial (image-only) release and does need the
-		-- usual addColumnIfMissing treatment for a pre-existing database — see
-		-- below.
+		-- plain NOT NULL INTEGER like the rest of the schema. type and pages
+		-- were each added after the table's initial (image-only) release and
+		-- do need the usual addColumnIfMissing treatment for a pre-existing
+		-- database — see below.
 		CREATE TABLE IF NOT EXISTS attachments (
 			id          TEXT PRIMARY KEY,
 			issue_id    INTEGER NOT NULL,
@@ -135,6 +135,7 @@ func initSchema(database *sql.DB) error {
 			width       INTEGER NOT NULL DEFAULT 0,
 			height      INTEGER NOT NULL DEFAULT 0,
 			size        INTEGER NOT NULL DEFAULT 0,
+			pages       INTEGER NOT NULL DEFAULT 0,
 			image       BLOB NOT NULL,
 			thumbnail   BLOB NOT NULL,
 			created_at  TEXT NOT NULL
@@ -252,6 +253,18 @@ func initSchema(database *sql.DB) error {
 	// pre-existing attachment predates this feature and was, by definition,
 	// an image.
 	if err := addColumnIfMissing(database, "attachments", "type", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	// pages holds a PDF attachment's page count, computed at upload time for
+	// every new PDF (see db.CreateAttachment/server/pdf.go). It is 0 for
+	// non-PDF types (permanently — matching width/height's use of 0 for
+	// non-image types) and, for a PDF, either its real page count or 0
+	// meaning "not computed yet" for a PDF attachment uploaded before this
+	// feature existed — see db.SetAttachmentPages's doc comment on why that
+	// case is backfilled lazily, on first request, rather than eagerly here
+	// at startup like every other column's backfill in this function.
+	if err := addColumnIfMissing(database, "attachments", "pages", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 

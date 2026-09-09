@@ -509,20 +509,31 @@
   </div>
 </div>
 
-<!-- Attachment viewer: shows one attachment (image or text) at full size, or
-     a plain "can't preview this" notice for a kind with no inline
-     rendering (PDF today, and the fallback for any future kind added
-     without one), with Save and delete-for-the-uploader/admin actions.
-     Exactly one of #av-image / #av-text / #av-unavailable is shown at a
-     time, chosen by openAttachmentViewer() based on the attachment's type
-     — see its doc comment. Embedding a PDF inline (an <iframe>/<embed>
-     pointed at a blob: URL built from a fetched copy) was tried and
-     dropped: support was inconsistent across real browsers, so a message
-     the user can trust beats a preview that might silently render blank. -->
+<!-- Attachment viewer: shows one attachment (image, PDF, or text) at full
+     size, or a plain "can't preview this" notice for a kind with no inline
+     rendering at all (the fallback for any future kind added without one),
+     with Save and delete-for-the-uploader/admin actions. Exactly one of
+     #av-image / #av-text / #av-unavailable is shown at a time, chosen by
+     openAttachmentViewer() based on the attachment's type — see its doc
+     comment. A PDF reuses #av-image (its pages are rendered to PNG
+     server-side — see server/pdf.go — so from the browser's perspective a
+     PDF page is just another image); #av-pdf-nav's page-forward/back
+     buttons and counter are shown only alongside it. An earlier attempt at
+     embedding a PDF directly (an <iframe>/<embed> pointed at a blob: URL)
+     was tried and dropped before server-side rendering existed: browser
+     support was inconsistent, so a message the user can trust beat a
+     preview that might silently render blank — #av-unavailable is what
+     remains of that fallback, for any kind (not PDF, anymore) with no
+     preview of its own. -->
 <div id="attachment-viewer-overlay" class="overlay" style="display:none" onclick="backdropClick(event,'attachment-viewer-overlay',closeAttachmentViewer)">
   <div class="sheet attachment-viewer-sheet">
     <h3 id="av-filename"></h3>
     <img id="av-image" class="av-image" alt="">
+    <div id="av-pdf-nav" class="av-pdf-nav" style="display:none">
+      <button type="button" id="av-pdf-prev" class="btn btn-secondary av-pdf-nav-btn" onclick="avPdfPrevPage()" aria-label="Previous page">←</button>
+      <span id="av-pdf-counter" class="av-pdf-counter"></span>
+      <button type="button" id="av-pdf-next" class="btn btn-secondary av-pdf-nav-btn" onclick="avPdfNextPage()" aria-label="Next page">→</button>
+    </div>
     <pre id="av-text" class="av-text" style="display:none"></pre>
     <div id="av-unavailable" class="av-unavailable" style="display:none">
       <p id="av-unavailable-message"></p>

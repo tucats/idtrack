@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"errors"
+	"image/png"
 	"io"
 	"net/http"
 	"strconv"
@@ -37,7 +39,7 @@ func attachmentID(w http.ResponseWriter, r *http.Request) (string, bool) {
 // processUploadedAttachment (server/images.go), and writes an appropriate
 // error response on any failure. ok is false whenever an error has already
 // been written to w.
-func readUploadedAttachment(w http.ResponseWriter, r *http.Request) (kind db.AttachmentType, stored, thumb []byte, width, height int, filename string, ok bool) {
+func readUploadedAttachment(w http.ResponseWriter, r *http.Request) (kind db.AttachmentType, stored, thumb []byte, width, height, pages int, filename string, ok bool) {
 	// The in-memory-vs-temp-file threshold below only controls how
 	// ParseMultipartForm buffers the request as it reads it; the request
 	// body itself is already capped at maxAttachmentBodyBytes by the
@@ -46,14 +48,14 @@ func readUploadedAttachment(w http.ResponseWriter, r *http.Request) (kind db.Att
 	if err := r.ParseMultipartForm(maxAttachmentBodyBytes); err != nil {
 		jsonError(w, "invalid multipart upload", http.StatusBadRequest)
 
-		return "", nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, 0, "", false
 	}
 
 	file, header, err := r.FormFile(attachmentFormField)
 	if err != nil {
 		jsonError(w, "missing '"+attachmentFormField+"' file field", http.StatusBadRequest)
 
-		return "", nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, 0, "", false
 	}
 	defer file.Close()
 
@@ -61,10 +63,10 @@ func readUploadedAttachment(w http.ResponseWriter, r *http.Request) (kind db.Att
 	if err != nil {
 		jsonError(w, "failed to read uploaded file", http.StatusBadRequest)
 
-		return "", nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, 0, "", false
 	}
 
-	k, storedBytes, thumbBytes, w2, h2, err := processUploadedAttachment(data, header.Filename)
+	k, storedBytes, thumbBytes, w2, h2, p2, err := processUploadedAttachment(data, header.Filename)
 	if err != nil {
 		switch {
 		case errors.Is(err, errUnsupportedAttachment):
@@ -75,10 +77,10 @@ func readUploadedAttachment(w http.ResponseWriter, r *http.Request) (kind db.Att
 			internalError(w, err)
 		}
 
-		return "", nil, nil, 0, 0, "", false
+		return "", nil, nil, 0, 0, 0, "", false
 	}
 
-	return k, storedBytes, thumbBytes, w2, h2, header.Filename, true
+	return k, storedBytes, thumbBytes, w2, h2, p2, header.Filename, true
 }
 
 // handleCreateIssueAttachment serves POST /api/issues/{id}/attachments —
@@ -114,12 +116,12 @@ func (s *srv) handleCreateIssueAttachment(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	kind, stored, thumb, width, height, filename, ok := readUploadedAttachment(w, r)
+	kind, stored, thumb, width, height, pages, filename, ok := readUploadedAttachment(w, r)
 	if !ok {
 		return
 	}
 
-	attachment, err := db.CreateAttachment(s.database, id, 0, currentUser(r).Username, filename, kind, stored, thumb, width, height)
+	attachment, err := db.CreateAttachment(s.database, id, 0, currentUser(r).Username, filename, kind, stored, thumb, width, height, pages)
 	if err != nil {
 		internalError(w, err)
 
@@ -167,12 +169,12 @@ func (s *srv) handleCreateCommentAttachment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	kind, stored, thumb, width, height, filename, ok := readUploadedAttachment(w, r)
+	kind, stored, thumb, width, height, pages, filename, ok := readUploadedAttachment(w, r)
 	if !ok {
 		return
 	}
 
-	attachment, err := db.CreateAttachment(s.database, id, cid, currentUser(r).Username, filename, kind, stored, thumb, width, height)
+	attachment, err := db.CreateAttachment(s.database, id, cid, currentUser(r).Username, filename, kind, stored, thumb, width, height, pages)
 	if err != nil {
 		internalError(w, err)
 
@@ -355,6 +357,126 @@ func (s *srv) fetchAttachmentImage(id string) ([]byte, error) {
 
 func (s *srv) fetchAttachmentThumbnail(id string) ([]byte, error) {
 	return db.GetAttachmentThumbnail(s.database, id)
+}
+
+// handleGetAttachmentPage serves GET /api/attachments/{aid}/page/{n} — a
+// rendered PNG image of one page of a PDF attachment (see server/pdf.go).
+// {n} is 1-based in the URL, matching the human-facing page counter the web
+// client shows ("3/53"), even though pdf-viewer itself indexes pages
+// zero-based internally (see that package's page-indexing doc comment) —
+// the conversion happens entirely within this handler.
+//
+// A PDF's page count is cached on the attachment row (db.Attachment.Pages)
+// the first time anything needs it: at upload time for a new PDF (see
+// server/images.go's processUploadedPDF), or lazily here, on first request,
+// for a PDF attached before this feature existed (attachment.Pages == 0 —
+// see db.SetAttachmentPages's doc comment on why that backfill is lazy
+// rather than eager).
+//
+// Auth: any authenticated user, matching every other attachment GET route.
+// Cache-Control is long-lived and "immutable", matching
+// handleGetAttachmentImage/handleGetAttachmentThumbnail — a rendered page's
+// bytes never change once the underlying attachment exists.
+//
+// Errors: 400 missing/invalid {n}, or the attachment is not a PDF; 404 no
+// such attachment, or {n} exceeds the document's page count; 422 the PDF
+// cannot be parsed or the requested page cannot be rendered (e.g. an
+// unsupported PDF feature — see pdf-viewer's error taxonomy); 500 on db
+// error.
+func (s *srv) handleGetAttachmentPage(w http.ResponseWriter, r *http.Request) {
+	id, ok := attachmentID(w, r)
+	if !ok {
+		return
+	}
+
+	pageNum, err := strconv.Atoi(r.PathValue("page"))
+	if err != nil || pageNum < 1 {
+		jsonError(w, "invalid page number", http.StatusBadRequest)
+
+		return
+	}
+
+	attachment, err := db.GetAttachment(s.database, id)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if attachment == nil {
+		jsonError(w, "attachment not found", http.StatusNotFound)
+
+		return
+	}
+
+	if attachment.Type != db.AttachmentPDF {
+		jsonError(w, "attachment is not a PDF", http.StatusBadRequest)
+
+		return
+	}
+
+	data, err := db.GetAttachmentImage(s.database, id)
+	if err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	if data == nil {
+		jsonError(w, "attachment not found", http.StatusNotFound)
+
+		return
+	}
+
+	pages := attachment.Pages
+	if pages == 0 {
+		n, err := pdfPageCount(data)
+		if err != nil {
+			jsonError(w, "unable to parse PDF", http.StatusUnprocessableEntity)
+
+			return
+		}
+
+		pages = n
+
+		if err := db.SetAttachmentPages(s.database, id, pages); err != nil {
+			internalError(w, err)
+
+			return
+		}
+	}
+
+	if pageNum > pages {
+		jsonError(w, "page out of range", http.StatusNotFound)
+
+		return
+	}
+
+	img, err := renderPDFPage(data, pageNum-1, pdfPageViewMaxEdge)
+	if err != nil {
+		jsonError(w, "unable to render this page", http.StatusUnprocessableEntity)
+
+		return
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		internalError(w, err)
+
+		return
+	}
+
+	// X-Attachment-Pages lets the client learn (or correct) the document's
+	// page count from any single page fetch, without a separate metadata
+	// round-trip — needed for a legacy PDF whose attachment.Pages was still
+	// 0 (uncomputed) when the viewer opened, since the metadata already
+	// handed to the client at that point can't reflect a count this request
+	// only just finished computing above.
+	w.Header().Set("X-Attachment-Pages", strconv.Itoa(pages))
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 // handleDeleteAttachment serves DELETE /api/attachments/{aid}. Auth: the

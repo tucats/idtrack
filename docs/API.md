@@ -925,11 +925,17 @@ client-declared `Content-Type` or the filename's extension:
 Anything that sniffs as none of the above is rejected with `415`.
 
 Every attachment kind has a thumbnail: a real preview for image (scaled,
-longest edge ~320px) and text (an image of the file's first 45 lines); PDF
-gets a generic icon thumbnail captioned with the filename (idtrack does not
-rasterize PDF pages — see the project's CLAUDE.md for the reasoning). The
-thumbnail endpoint always returns `image/png` regardless of the parent
-attachment's `type`.
+longest edge ~320px), text (an image of the file's first 45 lines), and pdf
+(a server-side render of the document's first page, scaled the same way —
+see the project's CLAUDE.md for how this is implemented); a PDF this package
+cannot parse or render falls back to a generic icon thumbnail captioned with
+the filename. The thumbnail endpoint always returns `image/png` regardless of
+the parent attachment's `type`.
+
+A `pdf` attachment also carries a `pages` field: its total page count,
+computed at upload time. `GET /api/attachments/{aid}/page/{n}` (below)
+renders any one page on demand — the frontend uses `pages` to drive a
+page-forward/back control with a "N / total" counter.
 
 An attachment record always has exactly one target: `comment_id` present
 means it's attached to that comment; `comment_id` absent (omitted from the
@@ -968,7 +974,11 @@ Response `201 Created`:
 ```
 
 `width`/`height` are only meaningful for `type: "image"` — always `0` for
-`pdf` and `text`.
+`pdf` and `text`. `pages` is only present (and only meaningful) for `type:
+"pdf"` — omitted (equivalent to `0`) otherwise, and also `0`/omitted for a
+PDF this package could not parse at upload time (the upload itself still
+succeeds — see `GET /api/attachments/{aid}/page/{n}` below, which computes
+and caches the count lazily in that case).
 
 Errors: `400` invalid issue id, malformed multipart body, or image
 dimensions too large; `404` the issue does not exist; `415` the uploaded
@@ -1001,7 +1011,10 @@ Response `200 OK`:
       "size": 3171, "created_at": "2026-08-02T10:15:00Z" },
     { "id": "e8ec1ff9-...", "issue_id": 42, "comment_id": 7, "uploader": "alice",
       "filename": "notes.txt", "type": "text", "width": 0, "height": 0,
-      "size": 240, "created_at": "2026-08-02T10:20:00Z" }
+      "size": 240, "created_at": "2026-08-02T10:20:00Z" },
+    { "id": "9b6a2e10-...", "issue_id": 42, "uploader": "bob",
+      "filename": "spec.pdf", "type": "pdf", "width": 0, "height": 0,
+      "size": 481920, "pages": 12, "created_at": "2026-08-02T10:22:00Z" }
   ]
 }
 ```
@@ -1024,6 +1037,29 @@ Errors: `400` missing `{aid}`; `404` no such attachment.
 
 Same as above but always returns `image/png` — the smaller preview image
 described above, regardless of the parent attachment's `type`.
+
+##### `GET /api/attachments/{aid}/page/{n}`
+
+Renders one page of a `type: "pdf"` attachment to `image/png`, 1-based
+(`{n} = 1` is the first page — the human-facing page number, not pdf-viewer's
+own zero-based internal indexing). Scaled to a longer edge of 3200px
+(preserving aspect ratio) — sized for a sharp render at a 2x (Retina/HiDPI)
+device pixel ratio, since the web viewer displays this image at a
+CSS-pixel-bounded size (see `.av-image` in `idtrack.css`). Sets
+`Cache-Control: private,
+max-age=31536000, immutable`, same as every other attachment blob route.
+
+Response headers also include `X-Attachment-Pages: <total>` — the
+document's total page count, useful to a caller that hasn't already seen it
+in the attachment's own `pages` metadata field (in particular, a PDF
+uploaded before the `pages` field existed reads `pages: 0`/omitted until
+its first page is rendered through this endpoint, which computes and caches
+the real count at that point).
+
+Errors: `400` `{n}` is missing or not a positive integer, or the attachment
+is not `type: "pdf"`; `404` no such attachment, or `{n}` exceeds the
+document's page count; `422` the PDF cannot be parsed, or this specific page
+cannot be rendered (an unsupported PDF feature, for example).
 
 ##### `DELETE /api/attachments/{aid}`
 

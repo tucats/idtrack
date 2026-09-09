@@ -48,7 +48,7 @@ func TestDetectAttachmentKind(t *testing.T) {
 }
 
 func TestProcessUploadedAttachment_Image(t *testing.T) {
-	kind, stored, thumb, width, height, err := processUploadedAttachment(samplePNG(t), "photo.png")
+	kind, stored, thumb, width, height, _, err := processUploadedAttachment(samplePNG(t), "photo.png")
 	if err != nil {
 		t.Fatalf("processUploadedAttachment: %v", err)
 	}
@@ -66,10 +66,16 @@ func TestProcessUploadedAttachment_Image(t *testing.T) {
 	}
 }
 
-func TestProcessUploadedAttachment_PDF(t *testing.T) {
+// TestProcessUploadedAttachment_PDF_Unparseable covers a PDF-shaped upload
+// (correct magic bytes, but not real PDF structure) that pdf-viewer cannot
+// parse: it should still upload successfully with a 0 page count and fall
+// back to the generic icon+filename thumbnail, exactly as PDFs were handled
+// before first-page rendering existed — see processUploadedPDF's doc
+// comment on why a single malformed upload never fails the whole request.
+func TestProcessUploadedAttachment_PDF_Unparseable(t *testing.T) {
 	pdfBytes := []byte("%PDF-1.7\nfake pdf content for testing\n%%EOF")
 
-	kind, stored, thumb, width, height, err := processUploadedAttachment(pdfBytes, "report.pdf")
+	kind, stored, thumb, width, height, pages, err := processUploadedAttachment(pdfBytes, "report.pdf")
 	if err != nil {
 		t.Fatalf("processUploadedAttachment: %v", err)
 	}
@@ -86,15 +92,55 @@ func TestProcessUploadedAttachment_PDF(t *testing.T) {
 		t.Errorf("PDF dimensions should be 0x0, got %dx%d", width, height)
 	}
 
+	if pages != 0 {
+		t.Errorf("unparseable PDF should have pages = 0, got %d", pages)
+	}
+
 	if _, err := png.Decode(bytes.NewReader(thumb)); err != nil {
 		t.Errorf("PDF thumbnail should be a valid PNG: %v", err)
+	}
+}
+
+// TestProcessUploadedAttachment_PDF_RealDocument uses a real, well-formed
+// two-page PDF fixture (borrowed from github.com/tucats/pdf-viewer's own
+// test corpus — see server/testdata) to confirm the success path: the page
+// count is computed and a first-page render (not the generic icon
+// fallback) becomes the thumbnail.
+func TestProcessUploadedAttachment_PDF_RealDocument(t *testing.T) {
+	pdfBytes := readTestdataPDF(t, "two-pages.pdf")
+
+	kind, stored, thumb, _, _, pages, err := processUploadedAttachment(pdfBytes, "two-pages.pdf")
+	if err != nil {
+		t.Fatalf("processUploadedAttachment: %v", err)
+	}
+
+	if kind != db.AttachmentPDF {
+		t.Errorf("kind = %q, want pdf", kind)
+	}
+
+	if !bytes.Equal(stored, pdfBytes) {
+		t.Error("PDF attachment should store the raw original bytes unchanged")
+	}
+
+	if pages != 2 {
+		t.Errorf("pages = %d, want 2", pages)
+	}
+
+	thumbImg, err := png.Decode(bytes.NewReader(thumb))
+	if err != nil {
+		t.Fatalf("PDF thumbnail should be a valid PNG: %v", err)
+	}
+
+	b := thumbImg.Bounds()
+	if b.Dx() > genericThumbSize || b.Dy() > genericThumbSize {
+		t.Errorf("rendered thumbnail %dx%d exceeds the generic icon canvas size %d — expected a bounded render, not something larger", b.Dx(), b.Dy(), genericThumbSize)
 	}
 }
 
 func TestProcessUploadedAttachment_Text(t *testing.T) {
 	textBytes := []byte("line one\nline two\nline three\n")
 
-	kind, stored, thumb, _, _, err := processUploadedAttachment(textBytes, "notes.txt")
+	kind, stored, thumb, _, _, _, err := processUploadedAttachment(textBytes, "notes.txt")
 	if err != nil {
 		t.Fatalf("processUploadedAttachment: %v", err)
 	}
@@ -113,7 +159,7 @@ func TestProcessUploadedAttachment_Text(t *testing.T) {
 }
 
 func TestProcessUploadedAttachment_Rejected(t *testing.T) {
-	_, _, _, _, _, err := processUploadedAttachment([]byte{0x00, 0x01, 0x02, 0xff, 0xfe}, "mystery.bin")
+	_, _, _, _, _, _, err := processUploadedAttachment([]byte{0x00, 0x01, 0x02, 0xff, 0xfe}, "mystery.bin")
 	if err != errUnsupportedAttachment {
 		t.Errorf("err = %v, want errUnsupportedAttachment", err)
 	}

@@ -640,6 +640,20 @@ html.hide-col-comments  .col-comments  { display: none; }
   margin: .75rem auto;
   border-radius: var(--radius);
 }
+.av-pdf-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: .75rem;
+  margin: -.25rem auto .75rem;
+}
+.av-pdf-nav-btn { min-width: 2.5rem; padding: .35rem .6rem; }
+.av-pdf-nav-btn:disabled { opacity: .4; cursor: default; }
+.av-pdf-counter {
+  min-width: 4.5rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
 .av-unavailable {
   display: block;
   margin: .75rem auto;

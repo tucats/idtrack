@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"image/png"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -103,6 +104,110 @@ func TestHandleCreateIssueAttachment_IssueNotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status: got %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleGetAttachmentPage(t *testing.T) {
+	s := newTestSrv(t)
+	token := addTestUser(t, s, testUser, false)
+	db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c", "")
+
+	pdfBytes := readTestdataPDF(t, "two-pages.pdf")
+
+	uploadReq := multipartUploadReq(t, "/api/issues/1/attachments", "two-pages.pdf", pdfBytes, token)
+	uploadReq.SetPathValue("id", "1")
+	uploadW := do(s, s.handleCreateIssueAttachment, uploadReq)
+
+	if uploadW.Code != http.StatusCreated {
+		t.Fatalf("upload status: got %d: %s", uploadW.Code, uploadW.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(uploadW.Body).Decode(&resp)
+	attachment := resp["attachment"].(map[string]interface{})
+
+	if got := attachment["pages"]; got != float64(2) {
+		t.Fatalf("attachment pages = %v, want 2", got)
+	}
+
+	id := attachment["id"].(string)
+
+	for _, page := range []string{"1", "2"} {
+		t.Run("page "+page, func(t *testing.T) {
+			r := jsonReq(t, http.MethodGet, "/api/attachments/"+id+"/page/"+page, "", token)
+			r.SetPathValue("aid", id)
+			r.SetPathValue("page", page)
+			w := do(s, s.handleGetAttachmentPage, r)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status: got %d: %s", w.Code, w.Body.String())
+			}
+
+			if ct := w.Header().Get("Content-Type"); ct != "image/png" {
+				t.Errorf("Content-Type: got %q, want image/png", ct)
+			}
+
+			if _, err := png.Decode(bytes.NewReader(w.Body.Bytes())); err != nil {
+				t.Errorf("page image should be a valid PNG: %v", err)
+			}
+		})
+	}
+
+	t.Run("out of range", func(t *testing.T) {
+		r := jsonReq(t, http.MethodGet, "/api/attachments/"+id+"/page/3", "", token)
+		r.SetPathValue("aid", id)
+		r.SetPathValue("page", "3")
+		w := do(s, s.handleGetAttachmentPage, r)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("status: got %d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("invalid page number", func(t *testing.T) {
+		r := jsonReq(t, http.MethodGet, "/api/attachments/"+id+"/page/0", "", token)
+		r.SetPathValue("aid", id)
+		r.SetPathValue("page", "0")
+		w := do(s, s.handleGetAttachmentPage, r)
+
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status: got %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+}
+
+// TestHandleGetAttachmentPage_LegacyZeroPagesIsBackfilled simulates a PDF
+// attachment created before this feature existed (pages stored as 0 — see
+// db.SetAttachmentPages's doc comment) and confirms the page endpoint
+// computes and caches the count lazily on first request rather than failing.
+func TestHandleGetAttachmentPage_LegacyZeroPagesIsBackfilled(t *testing.T) {
+	s := newTestSrv(t)
+	token := addTestUser(t, s, testUser, false)
+	db.CreateIssue(s.database, "T", "", testUser, "", "Medium", "p", "c", "")
+
+	pdfBytes := readTestdataPDF(t, "two-pages.pdf")
+
+	a, err := db.CreateAttachment(s.database, 1, 0, testUser, "legacy.pdf", db.AttachmentPDF, pdfBytes, []byte("thumb"), 0, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	r := jsonReq(t, http.MethodGet, "/api/attachments/"+a.ID+"/page/2", "", token)
+	r.SetPathValue("aid", a.ID)
+	r.SetPathValue("page", "2")
+	w := do(s, s.handleGetAttachmentPage, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d: %s", w.Code, w.Body.String())
+	}
+
+	got, err := db.GetAttachment(s.database, a.ID)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+
+	if got.Pages != 2 {
+		t.Errorf("expected Pages to be backfilled to 2, got %d", got.Pages)
 	}
 }
 

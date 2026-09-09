@@ -45,39 +45,70 @@ var errImageTooLarge = errors.New("image dimensions too large")
 // dispatches to the matching per-kind processor, returning the bytes to
 // store as the attachment's blob (stored []byte) plus a generated
 // thumbnail. width/height are only meaningful for AttachmentImage (0
-// otherwise). filename is never used for kind detection — only to caption
-// the icon/generic thumbnails with something the uploader recognizes — see
-// detectAttachmentKind's doc comment on why acceptance never trusts a
-// client-declared Content-Type or a file extension.
-func processUploadedAttachment(data []byte, filename string) (kind db.AttachmentType, stored, thumb []byte, width, height int, err error) {
+// otherwise); pages is only meaningful for AttachmentPDF (0 otherwise, or
+// if the page count couldn't be determined — see below). filename is never
+// used for kind detection — only to caption the icon/generic thumbnails
+// with something the uploader recognizes — see detectAttachmentKind's doc
+// comment on why acceptance never trusts a client-declared Content-Type or
+// a file extension.
+func processUploadedAttachment(data []byte, filename string) (kind db.AttachmentType, stored, thumb []byte, width, height, pages int, err error) {
 	switch detectAttachmentKind(data) {
 	case db.AttachmentImage:
 		stored, thumb, width, height, err = processUploadedImage(data)
 		if err != nil {
-			return "", nil, nil, 0, 0, err
+			return "", nil, nil, 0, 0, 0, err
 		}
 
-		return db.AttachmentImage, stored, thumb, width, height, nil
+		return db.AttachmentImage, stored, thumb, width, height, 0, nil
 
 	case db.AttachmentPDF:
-		thumb, err = genericThumbnail("PDF", filename)
-		if err != nil {
-			return "", nil, nil, 0, 0, err
-		}
+		stored, thumb, pages = processUploadedPDF(data, filename)
 
-		return db.AttachmentPDF, data, thumb, 0, 0, nil
+		return db.AttachmentPDF, stored, thumb, 0, 0, pages, nil
 
 	case db.AttachmentText:
 		thumb, err = textThumbnail(data)
 		if err != nil {
-			return "", nil, nil, 0, 0, err
+			return "", nil, nil, 0, 0, 0, err
 		}
 
-		return db.AttachmentText, data, thumb, 0, 0, nil
+		return db.AttachmentText, data, thumb, 0, 0, 0, nil
 
 	default:
-		return "", nil, nil, 0, 0, errUnsupportedAttachment
+		return "", nil, nil, 0, 0, 0, errUnsupportedAttachment
 	}
+}
+
+// processUploadedPDF computes the just-uploaded PDF's page count and renders
+// a real preview of its first page for the thumbnail, both via
+// server/pdf.go. Either can independently fail for a PDF this package
+// cannot fully parse or render (an unsupported feature, malformed content,
+// etc. — see pdf-viewer's error taxonomy) without the upload itself failing:
+// a page count that can't be determined is stored as 0 (the same "not
+// computed" sentinel used for a pre-existing PDF from before this feature
+// existed — see db.SetAttachmentPages), and a thumbnail that can't be
+// rendered falls back to the same generic icon+filename thumbnail PDFs
+// always got before first-page rendering existed. This mirrors the rest of
+// this file's posture toward untrusted upload content: never let a single
+// malformed or unusual file turn an otherwise-acceptable upload into an
+// error.
+func processUploadedPDF(data []byte, filename string) (stored, thumb []byte, pages int) {
+	if n, err := pdfPageCount(data); err == nil {
+		pages = n
+	}
+
+	if img, err := renderPDFPage(data, 0, pdfPageThumbMaxEdge); err == nil {
+		var buf bytes.Buffer
+		if png.Encode(&buf, img) == nil {
+			return data, buf.Bytes(), pages
+		}
+	}
+
+	if fallback, err := genericThumbnail("PDF", filename); err == nil {
+		thumb = fallback
+	}
+
+	return data, thumb, pages
 }
 
 // detectAttachmentKind sniffs data's kind by content alone — never by a

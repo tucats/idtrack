@@ -346,6 +346,7 @@ func Start(cfg Config) error {
 	mux.Handle(route("GET /api/issues/{id}/attachments"), s.auth(http.HandlerFunc(s.handleListAttachments)))
 	mux.Handle(route("GET /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleGetAttachmentImage)))
 	mux.Handle(route("GET /api/attachments/{aid}/thumbnail"), s.auth(http.HandlerFunc(s.handleGetAttachmentThumbnail)))
+	mux.Handle(route("GET /api/attachments/{aid}/page/{page}"), s.auth(http.HandlerFunc(s.handleGetAttachmentPage)))
 	mux.Handle(route("DELETE /api/attachments/{aid}"), s.auth(http.HandlerFunc(s.handleDeleteAttachment)))
 
 	// Push notifications (server/notifications.go, notify.go). Self-service,
