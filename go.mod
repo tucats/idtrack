@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/go-webauthn/webauthn v0.17.4
 	github.com/google/uuid v1.6.0
-	github.com/tucats/pdf-viewer v0.2.0
+	github.com/tucats/pdf-viewer v0.3.1
 	github.com/yuin/goldmark v1.8.2
 	golang.org/x/crypto v0.52.0
 	golang.org/x/image v0.45.0

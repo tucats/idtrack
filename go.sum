@@ -36,8 +36,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/tinylib/msgp v1.6.4 h1:mOwYbyYDLPj35mkA2BjjYejgJk9BuHxDdvRnb6v2ZcQ=
 github.com/tinylib/msgp v1.6.4/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
-github.com/tucats/pdf-viewer v0.2.0 h1:3NxDw58Jwo5y9bQCM2RzRcgH7ez/D+FL5ZvL+dFcXWo=
-github.com/tucats/pdf-viewer v0.2.0/go.mod h1:NGsxXorVL/hSJoFbdRCBlSDn6xNDBqtQwC3PpiTJELU=
+github.com/tucats/pdf-viewer v0.3.1 h1:g5srTbszu2l3SMx1E2rA6Sw9j8GU+uz51nwRZ55kwh4=
+github.com/tucats/pdf-viewer v0.3.1/go.mod h1:NGsxXorVL/hSJoFbdRCBlSDn6xNDBqtQwC3PpiTJELU=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 github.com/yuin/goldmark v1.8.2 h1:kEGpgqJXdgbkhcOgBxkC0X0PmoPG1ZyoZ117rDVp4zE=
